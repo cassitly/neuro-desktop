@@ -1,10 +1,54 @@
-mod os_agent;
-use os_agent::OsAgent;
+mod controller;
+use controller::Controller;
 
-fn main() {
-    let mut agent = OsAgent::start();
+mod integration;
 
-    agent.move_mouse(400, 300);
-    agent.click(400, 300);
-    agent.type_text("Hello from Neuro 👋");
+use integration::{start_integration, NeuroInput};
+
+#[tokio::main]
+async fn main() {
+    // let controller = Controller::initialize_drivers().expect("Failed to start Controller Drivers");
+
+    // controller.mouse_move(400, 300).expect("Failed to move mouse");
+    // controller.mouse_click(400, 300).expect("Failed to click");
+    // controller.type_text("Hello from Neuro 👋").expect("Failed to type text");
+
+    // println!("{}", controller.action_history().expect("Failed to get action history"));
+
+    // controller.execute_instructions().expect("Failed to execute instructions");
+
+    // Ok(())
+
+    let (neuro_tx, mut neuro_rx) = start_integration(
+        "Neuro's Desktop",
+        "ws://localhost:8080/neuro",
+    )
+    .await;
+
+    // // Send initial context
+    // neuro_tx
+    //     .send(NeuroInput::Context(
+    //         "Player at (0,0), enemy at (5,5)".into(),
+    //     ))
+    //     .await
+    //     .unwrap();
+
+    // Game loop
+    loop {
+        if let Some(action) = neuro_rx.recv().await {
+            println!("Neuro chose: {}", action.action);
+
+            // YOU handle what this does
+            // ...
+
+            // Report result
+            neuro_tx
+                .send(NeuroInput::ActionResult {
+                    action: action.action,
+                    result: "success".into(),
+                })
+                .await
+                .unwrap();
+        }
+    }
 }
