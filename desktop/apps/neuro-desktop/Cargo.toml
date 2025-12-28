@@ -4,7 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-neuro-sama = "0.4.5"
 rust-core = { path = "../../native/rust-core" }
+
+# This is for the python packages
+pyo3 = { version = "0.21.0", features = ["auto-initialize"] }
+anyhow = "1"
+
+# This is also used by the neuro integration
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Neruosama Integration Dependencies
+tungstenite = "0.20"        # for WebSocket I/O
+neuro-sama = "0.4.5"
+url = "2.4"                 # parse WebSocket URL
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
