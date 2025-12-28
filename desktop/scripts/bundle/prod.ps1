@@ -27,6 +27,22 @@ Pop-Location
 
 Copy-Item frontend/dist -Recurse $DIST/frontend
 
+# ---------- Build Go Neuro SDK ----------
+Write-Host "Building Go Neuro SDK..."
+Push-Location backend/go/neuro-sdk
+
+$env:GOOS = "windows"
+$env:GOARCH = "amd64"
+
+go build -o neuro-sdk.exe ./cmd/neuro-sdk
+
+Pop-Location
+
+New-Item -ItemType Directory -Force -Path $GO_DIST | Out-Null
+Copy-Item `
+  backend/go/neuro-sdk/neuro-sdk.exe `
+  "$GO_DIST/neuro-sdk.exe"
+
 # ---------- Bundle Python (EMBEDDED) ----------
 Write-Host "Bundling Python files and libraries..."
 
