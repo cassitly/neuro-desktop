@@ -13,5 +13,6 @@ rust:
 clean:
 	rm -rf native/**/build frontend/dist
 
-run: native frontend rust
+run: native
+	powershell.exe .\scripts\bundle\dev.ps1
 	cd apps/neuro-desktop && cargo run --release
