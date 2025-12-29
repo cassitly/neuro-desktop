@@ -3,8 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
-
-	""
+	"neuro/go/neuro-integration-sdk"
 )
 
 func main() {
@@ -23,8 +22,8 @@ func main() {
 
 	// register actions your game supports
 	client.RegisterActions([]map[string]interface{}{
-		{"name":"move","description":"Move someplace"},
-		{"name":"attack","description":"Attack the enemy"},
+		{"name": "move", "description": "Move someplace"},
+		{"name": "attack", "description": "Attack the enemy"},
 	})
 
 	for {
