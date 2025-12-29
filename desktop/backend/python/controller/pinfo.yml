@@ -4,6 +4,12 @@ description: "An package that utilizes python, to allow control of the mouse and
 version: "0.1.0"
 package-id: "io.cassitly.controller"
 build-date: "2025-12-28"
+author: "cassitly"  
+license: "MIT"  
+repository: "https://github.com/Nakashireyumi/neuro-desktop"
+
+dependencies:  
+  - pyautogui>=0.9.53  
 
 files:
   - name: "lib.py"
