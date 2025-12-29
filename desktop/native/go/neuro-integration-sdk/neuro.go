@@ -3,7 +3,6 @@ package neuro
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 	"sync"
 
@@ -137,10 +136,10 @@ func (c *Client) UnregisterActions(names []string) error {
 
 func (c *Client) ForceActions(state, query string, names []string) error {
 	data := struct {
-		State   string   `json:"state,omitempty"`
-		Query   string   `json:"query"`
-		Ephemeral bool   `json:"ephemeral_context,omitempty"`
-		Names   []string `json:"action_names"`
+		State     string   `json:"state,omitempty"`
+		Query     string   `json:"query"`
+		Ephemeral bool     `json:"ephemeral_context,omitempty"`
+		Names     []string `json:"action_names"`
 	}{state, query, true, names}
 
 	return c.send(Message{"actions/force", c.game, toRawMessage(data)})
