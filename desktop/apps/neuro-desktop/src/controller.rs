@@ -126,8 +126,8 @@ impl Controller {
         .map_err(Into::into)
     }
 
-    // Expose DesktopMonitor class
-    pub fn get_monitor(&self) -> &Monitor {
+    /// Expose the DesktopMonitor Python object  
+    pub fn get_monitor(&self) -> &Py<PyAny> {
         &self.monitor
     }
 
