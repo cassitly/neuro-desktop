@@ -1,3 +1,5 @@
+$ErrorActionPreference = "Stop"
+
 $DIST = "apps/neuro-desktop/target/release"
 
 Remove-Item -Recurse -Force $DIST/python -ErrorAction SilentlyContinue
@@ -19,21 +21,21 @@ New-Item -ItemType Directory -Force -Path $PY_DIST | Out-Null
 
 Copy-Item backend/python/.venv/Lib $PY_DIST/Lib -Recurse
 
-# ---------- Build Go Neuro SDK ----------
-Write-Host "Building Go Neuro SDK..."
-Push-Location backend/go/neuro-sdk
+# ---------- Build Go Neuro Integration ----------
+Write-Host "Building Go Neuro Integration..."
+Push-Location native/go
 
 $env:GOOS = "windows"
 $env:GOARCH = "amd64"
 
-go build -o neuro-sdk.exe ./cmd/neuro-sdk
+go build -o neuro-integration.exe ./main.go
 
 Pop-Location
 
 New-Item -ItemType Directory -Force -Path "$DIST/go" | Out-Null
 Copy-Item `
-  backend/go/neuro-sdk/neuro-sdk.exe `
-  "$DIST/go/neuro-sdk.exe"
+  native/go/neuro-integration.exe `
+  "$DIST/go/neuro-integration.exe"
 
 # ---------- Copy Controller Drivers ----------
 Copy-Item `
