@@ -142,7 +142,7 @@ impl Controller {
 
 // // Example usage
 //
-// let controller = Controller::start()?;
+// let controller = Controller::initialize_drivers()?;  
 //
 // // High-level script
 // controller.run_script(r#"
