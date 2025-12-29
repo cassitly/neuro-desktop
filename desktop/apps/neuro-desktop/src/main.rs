@@ -21,7 +21,7 @@ async fn main() {
 
     let (neuro_tx, mut neuro_rx) = start_integration(
         "Neuro's Desktop",
-        "ws://localhost:8080/neuro",
+        "ws://localhost:8080/",
     )
     .await;
 
