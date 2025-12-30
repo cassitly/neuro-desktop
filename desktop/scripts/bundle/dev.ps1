@@ -1,12 +1,24 @@
-$ErrorActionPreference = "Stop"
+# ============================================================
+# desktop/scripts/bundle/dev.ps1
+# ============================================================
 
 $DIST = "apps/neuro-desktop/target/release"
+$PY_DIST = "$DIST/python"
 
 Remove-Item -Recurse -Force $DIST/python -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $DIST/frontend -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force $DIST/config -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force $DIST/go -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force "apps/neuro-desktop/libs" -ErrorAction SilentlyContinue
+
+# ---------- Build Go Integration ----------
+Write-Host "Building Go integration..."
+Push-Location native/go-neuro-integration
+go build -o go-neuro-integration.exe main.go
+Pop-Location
+
+Copy-Item `
+  native/go-neuro-integration/go-neuro-integration.exe `
+  $DIST/go-neuro-integration.exe
+
+Write-Host "  ✓ Go binary copied to $DIST"
 
 # ---------- Build frontend ----------
 Write-Host "Building frontend..."
@@ -16,7 +28,6 @@ Pop-Location
 
 Copy-Item frontend/dist -Recurse $DIST/frontend
 
-# ---------- Bundle Python files ----------
 $PY_DIST = "$DIST/python"
 Write-Host "Bundling Python files and libraries..."
 
@@ -30,31 +41,7 @@ Copy-Item `
   "$PY_DIST/controller" `
   -Recurse
 
-# ---------- Copy Configuration Files ----------
-New-Item -ItemType Directory -Force -Path "$DIST/config" | Out-Null
-
-Copy-Item `
-  config/integration-config.yml `
-  "$DIST/config/integration-config.yml" `
-  -Recurse
-
-# # ---------- Build Go Neuro Integration ----------
-# Write-Host "Building Go Neuro Integration..."
-# Push-Location native/go
-
-# $env:GOOS = "windows"
-# $env:GOARCH = "amd64"
-
-# go build -buildmode=c-archive -o neuro-integration.lib .
-
-# Pop-Location
-
-# New-Item -ItemType Directory -Force -Path "apps/neuro-desktop/libs" | Out-Null
-# New-Item -ItemType Directory -Force -Path "$DIST/go" | Out-Null
-# Copy-Item `
-#   native/go/neuro-integration.lib `
-#   "apps/neuro-desktop/libs/neuro-integration.lib"
-
-# Copy-Item `
-#   native/go/neuro-integration.h `
-#   "apps/neuro-desktop/libs/neuro-integration.h"
+Write-Host ""
+Write-Host "=== Dev bundle complete ==="
+Write-Host "Run from: $DIST"
+Write-Host "Execute:  .\neuro-desktop.exe"
