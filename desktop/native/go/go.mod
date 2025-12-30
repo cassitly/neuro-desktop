@@ -1,5 +1,4 @@
-module github.com/neuro-desktop/integration-code
+module github.com/neuro-desktop/native-go
 
 go 1.22
 
-require github.com/gorilla/websocket v1.5.3 // indirect
