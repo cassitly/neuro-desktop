@@ -11,13 +11,12 @@ pyo3 = { version = "0.21.0", features = ["auto-initialize"] }
 anyhow = "1"
 
 # This is also used by the neuro integration
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1"
 
 # Neruosama Integration Dependencies
-tokio-tungstenite = "0.20"  # for async WebSocket I/O  
-tungstenite = "0.20"        # for WebSocket I/O
+futures-util = "0.3.31"
 neuro-sama = "0.4.5"
-url = "2.4"                 # parse WebSocket URL
-tokio = { version = "1", features = ["full"] }
-futures-util = "0.3"
+schemars = "0.8.21"
+tokio = { version = "1.42.0", features = ["rt-multi-thread", "rt", "macros", "sync", "time"] }
+tokio-tungstenite = "0.21" # this matches tungstenite 0.28
