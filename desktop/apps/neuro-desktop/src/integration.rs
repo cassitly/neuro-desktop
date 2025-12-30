@@ -2,19 +2,20 @@ use std::{sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use neuro_sama::game::Api;
+use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Message;
+
+use crate::controller::Controller;
+
+struct NeuroDesktop(mpsc::UnboundedSender<Message>, Controller);
+
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tokio::sync::mpsc;
-
-struct NeuroDesktop(mpsc::UnboundedSender<tungstenite::Message>);
 
 #[allow(unused)]
 #[derive(Debug, Deserialize, JsonSchema)]
-struct Action1 {
-    a: String,
-    b: u32,
-    c: u16,
-    d: bool,
+pub struct ExecuteHLCommandScript {
+    script_contents: String,
 }
 
 #[allow(unused)]
@@ -28,11 +29,11 @@ struct Action2 {
 struct Action3;
 
 #[derive(Debug, neuro_sama::derive::Actions)]
-enum Action {
+pub enum Action {
     /// Action 1 description
     #[allow(unused)]
-    #[name = "action1"]
-    Action1(Action1),
+    #[name = "ExecuteHLCommandScript"]
+    ExecuteHLCommandScript(ExecuteHLCommandScript),
     /// Action 2 description
     #[name = "action2"]
     Action2(Action2),
@@ -40,11 +41,10 @@ enum Action {
     #[name = "action3"]
     Action3(Action3),
 }
-
 impl neuro_sama::game::Game for NeuroDesktop {
     const NAME: &'static str = "Neuro Desktop";
     type Actions<'a> = Action;
-    fn send_command(&self, message: tungstenite::Message) {
+    fn send_command(&self, message: Message) {
         let _ = self.0.send(message);
     }
     fn reregister_actions(&self) {
@@ -60,10 +60,22 @@ impl neuro_sama::game::Game for NeuroDesktop {
     > {
         match action {
             Action::Action3(_) => Err(Some("try again")),
-            Action::Action1(_) => Ok(None),
+            // This action is for manual execution of a provided command script.
+            // While normally, an higher level system will be used.
+
+            // That system takes an description of what neuro / evil would want
+            // to do, in ENGLISH. and compiles it, into an command script.
+            Action::ExecuteHLCommandScript(act) => {
+                // Execute High Level Command Script for neuro desktop
+                self.1
+                    .run_script(&act.script_contents)
+                    .map_err(|_| Some("script failed"))?;
+
+                Ok(Some("script executed".to_string()))
+            },
             Action::Action2(act) => {
                 if act.b {
-                    Ok(Some("ok"))
+                    Ok(Some("ok".to_string()))
                 } else {
                     Err(Some("err"))
                 }
@@ -73,9 +85,9 @@ impl neuro_sama::game::Game for NeuroDesktop {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn start_integration() {
+pub async fn start_integration(controller: Controller) {
     let (game2ws_tx, mut game2ws_rx) = mpsc::unbounded_channel();
-    let game = Arc::new(NeuroDesktop(game2ws_tx));
+    let game = Arc::new(NeuroDesktop(game2ws_tx, controller));
     game.initialize().unwrap();
     let game1 = game.clone();
     tokio::spawn(async move {
