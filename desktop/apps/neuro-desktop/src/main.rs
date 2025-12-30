@@ -2,12 +2,13 @@ mod controller;
 use controller::Controller;
 
 mod integration;
-
-use integration::{start_integration, NeuroInput};
+use integration::{start_integration};
 
 #[tokio::main]
 async fn main() {
-    // let controller = Controller::initialize_drivers().expect("Failed to start Controller Drivers");
+    let controller = Controller::initialize_drivers().expect("Failed to start Controller Drivers");
+
+    start_integration(controller);
 
     // controller.mouse_move(400, 300).expect("Failed to move mouse");
     // controller.mouse_click(400, 300).expect("Failed to click");
@@ -19,36 +20,36 @@ async fn main() {
 
     // Ok(())
 
-    let (neuro_tx, mut neuro_rx) = start_integration(
-        "Neuro's Desktop",
-        "ws://localhost:8080/",
-    )
-    .await;
+    // let (neuro_tx, mut neuro_rx) = start_integration(
+    //     "Neuro's Desktop",
+    //     "ws://localhost:8080/" | "ws://localhost:1337",
+    // )
+    // .await;
 
     // // Send initial context
     // neuro_tx
     //     .send(NeuroInput::Context(
-    //         "Player at (0,0), enemy at (5,5)".into(),
+    //         "Initial context".into(),
     //     ))
     //     .await
     //     .unwrap();
 
-    // Game loop
-    loop {
-        if let Some(action) = neuro_rx.recv().await {
-            println!("Neuro chose: {}", action.action);
+    // // Game loop
+    // loop {
+    //     if let Some(action) = neuro_rx.recv().await {
+    //         println!("Neuro chose: {}", action.action);
 
-            // YOU handle what this does
-            // ...
+    //         // YOU handle what this does
+    //         // ...
 
-            // Report result
-            neuro_tx
-                .send(NeuroInput::ActionResult {
-                    action: action.action,
-                    result: "success".into(),
-                })
-                .await
-                .unwrap();
-        }
-    }
+    //         // Report result
+    //         neuro_tx
+    //             .send(NeuroInput::ActionResult {
+    //                 action: action.action,
+    //                 result: "success".into(),
+    //             })
+    //             .await
+    //             .unwrap();
+    //     }
+    // }
 }
