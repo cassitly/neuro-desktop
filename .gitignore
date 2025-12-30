@@ -3,6 +3,6 @@ dist/
 target/
 
 __pycache__/
-neuro-integration.*
 
 libs/
+build/
