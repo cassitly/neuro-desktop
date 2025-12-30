@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-struct TestGame(mpsc::UnboundedSender<tungstenite::Message>);
+struct NeuroDesktop(mpsc::UnboundedSender<tungstenite::Message>);
 
 #[allow(unused)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -41,8 +41,8 @@ enum Action {
     Action3(Action3),
 }
 
-impl neuro_sama::game::Game for TestGame {
-    const NAME: &'static str = "Test Game";
+impl neuro_sama::game::Game for NeuroDesktop {
+    const NAME: &'static str = "Neuro Desktop";
     type Actions<'a> = Action;
     fn send_command(&self, message: tungstenite::Message) {
         let _ = self.0.send(message);
@@ -75,7 +75,7 @@ impl neuro_sama::game::Game for TestGame {
 #[tokio::main(flavor = "current_thread")]
 async fn start_integration() {
     let (game2ws_tx, mut game2ws_rx) = mpsc::unbounded_channel();
-    let game = Arc::new(TestGame(game2ws_tx));
+    let game = Arc::new(NeuroDesktop(game2ws_tx));
     game.initialize().unwrap();
     let game1 = game.clone();
     tokio::spawn(async move {
