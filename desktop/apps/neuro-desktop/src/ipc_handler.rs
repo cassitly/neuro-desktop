@@ -7,6 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::controller::Controller;
+use crate::go_manager::GoProcessManager;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -16,6 +17,10 @@ pub enum IPCCommand {
     KeyPress { params: KeyPressParams },
     KeyType { params: KeyTypeParams },
     RunScript { params: RunScriptParams },
+    ClearActionQueue,
+
+    ShutdownGracefully,
+    ShutdownImmediately,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +77,14 @@ impl IPCResponse {
             error: Some(error),
         }
     }
+
+    pub fn shutdown() -> IPCResponse {
+        IPCResponse {
+            success: true,
+            data: Option::Some(serde_json::json!({"shutdown": true})),
+            error: None,
+        }
+    }
 }
 
 pub struct IPCHandler {
@@ -83,22 +96,40 @@ impl IPCHandler {
     pub fn new(ipc_path: &str) -> Self {
         let ipc_file = PathBuf::from(ipc_path);
         let response_file = PathBuf::from(format!("{}.response", ipc_path));
+        let running = false;
 
         Self {
             ipc_file,
             response_file,
+            running,
         }
     }
 
     pub fn start(self, controller: Controller) {
         thread::spawn(move || {
+            self.running = true; // Mark IPC handler as running
             loop {
-                if let Err(e) = self.process_once(&controller) {
+                let result = self.process_once(&controller);
+                if let Err(e) = result {
                     eprintln!("IPC processing error: {}", e);
+                }
+                if let Some("shutdown") = result {
+                    // Print out that IPC Handler stopped, so that debugging
+                    // is easier, if something went wrong during shutdown,
+                    // where it went wrong during the process of shutdown.
+                    println!("Stopped IPC handler");
+                    // Mark as off, so main.rs can
+                    // receive the shutdown signal
+                    self.running = false;
+                    break;
                 }
                 thread::sleep(Duration::from_millis(50));
             }
         });
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.is_running
     }
 
     fn process_once(&self, controller: &Controller) -> Result<()> {
@@ -120,6 +151,12 @@ impl IPCHandler {
         // Write response
         let response_json = serde_json::to_string(&response)?;
         fs::write(&self.response_file, response_json)?;
+
+        // Check for shutdown signal last, because we don't want the go process
+        // to wait for the response to it's shutdown message.
+        if response.data.as_ref().and_then(|d| d.get("shutdown")).is_some() {
+            return Ok(Some("shutdown"));
+        }
 
         Ok(())
     }
@@ -187,6 +224,21 @@ impl IPCHandler {
                     Ok(_) => IPCResponse::success(),
                     Err(e) => IPCResponse::failure(format!("Script execution failed: {}", e)),
                 }
+            }
+
+            IPCCommand::ClearActionQueue => {
+                controller.clear_action_queue();
+                IPCResponse::success()
+            }
+
+            IPCCommand::ShutdownGracefully => {
+                controller.shutdown();
+                IPCResponse::shutdown()
+            }
+
+            IPCCommand::ShutdownImmediately => {
+                controller.shutdown();
+                IPCResponse::shutdown()
             }
         }
     }
