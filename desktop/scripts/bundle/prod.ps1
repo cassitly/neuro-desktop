@@ -32,13 +32,19 @@ New-Item -ItemType Directory -Force -Path native/neuro-integration/dist | Out-Nu
 Push-Location native/neuro-integration
 
 # Build for Windows
-go build -o neuro-integration.exe main.go
+go build -o dist/neuro-integration.exe main.go
 
 Pop-Location
 
 Copy-Item `
   native/neuro-integration/dist/neuro-integration.exe `
   $DIST/neuro-integration.exe
+
+New-Item -ItemType Directory -Force -Path $DIST/integration-docs | Out-Null
+
+Copy-Item `
+  native/neuro-integration/integration-docs/"Action Script Documentation.md" `
+  $DIST/integration-docs/"Action Script Documentation.md"
 
 Write-Host "      ✓ Neuro Integration binary built"
 

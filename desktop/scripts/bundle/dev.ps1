@@ -10,6 +10,7 @@ $PY_DIST = "$DIST/python"
 
 Remove-Item -Recurse -Force $DIST/python -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $DIST/frontend -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force $DIST/config -ErrorAction SilentlyContinue
 
 # ---------- Build Neuro Integration ----------
 Write-Host "Building Neuro integration..."
@@ -23,6 +24,12 @@ Pop-Location
 Copy-Item `
   native/neuro-integration/dist/neuro-integration.exe `
   $DIST/neuro-integration.exe
+
+New-Item -ItemType Directory -Force -Path $DIST/integration-docs | Out-Null
+
+Copy-Item `
+  native/neuro-integration/integration-docs/"Action Script Documentation.md" `
+  $DIST/integration-docs/"Action Script Documentation.md"
 
 Write-Host "  ✓ Neuro Integration binary copied to $DIST"
 

@@ -13,19 +13,39 @@ use crate::controller::Controller;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IPCCommand {
-    MouseMove { params: MouseMoveParams },
-    MouseClick { params: MouseClickParams },
-    KeyPress { params: KeyPressParams },
-    KeyType { params: KeyTypeParams },
-    RunScript { params: RunScriptParams },
+    MouseMove { 
+        params: MouseMoveParams,
+        execute_now: Option<bool>,
+        clear_after: Option<bool>,
+    },
+    MouseClick { 
+        params: MouseClickParams,
+        execute_now: Option<bool>,
+        clear_after: Option<bool>,
+    },
+    KeyPress { 
+        params: KeyPressParams,
+        execute_now: Option<bool>,
+        clear_after: Option<bool>,
+    },
+    KeyType { 
+        params: KeyTypeParams,
+        execute_now: Option<bool>,
+        clear_after: Option<bool>,
+    },
+    RunScript { 
+        params: RunScriptParams,
+        execute_now: Option<bool>,
+        clear_after: Option<bool>,
+    },
+    
+    ExecuteQueue,
     ClearActionQueue,
-
-    #[serde(rename = "shutdown_gracefully")]
     ShutdownGracefully,
-    #[serde(rename = "shutdown_immediately")]
     ShutdownImmediately,
 }
 
+// Add these new params structs to handle the nested structure:
 #[derive(Debug, Deserialize)]
 pub struct MouseMoveParams {
     pub x: i32,
@@ -138,81 +158,133 @@ fn process_once(
 }
 
 fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse {
-        match command {
-            IPCCommand::MouseMove { params } => {
-                match controller.mouse_move(params.x, params.y) {
-                    Ok(_) => {
+    match command {
+        IPCCommand::MouseMove { params, execute_now, clear_after } => {
+            let execute = execute_now.unwrap_or(true);
+            let clear = clear_after.unwrap_or(true);
+            
+            match controller.mouse_move(params.x, params.y) {
+                Ok(_) => {
+                    if execute {
                         controller.execute_instructions().ok();
-                        IPCResponse::success()
+                        if clear {
+                            controller.clear_action_queue().ok();
+                        }
                     }
-                    Err(e) => IPCResponse::failure(format!("Mouse move failed: {}", e)),
+                    IPCResponse::success()
                 }
-            }
-
-            IPCCommand::MouseClick { params } => {
-                // If coordinates provided, move first
-                if let (Some(x), Some(y)) = (params.x, params.y) {
-                    if let Err(e) = controller.mouse_move(x, y) {
-                        return IPCResponse::failure(format!("Mouse move failed: {}", e));
-                    }
-                }
-
-                // Then click
-                match controller.mouse_click(
-                    params.x.unwrap_or(0),
-                    params.y.unwrap_or(0),
-                ) {
-                    Ok(_) => {
-                        controller.execute_instructions().ok();
-                        IPCResponse::success()
-                    }
-                    Err(e) => IPCResponse::failure(format!("Mouse click failed: {}", e)),
-                }
-            }
-
-            IPCCommand::KeyPress { params } => {
-                // Build script for key press with modifiers
-                let script = if let Some(modifiers) = params.modifiers {
-                    let mods = modifiers.join(" ");
-                    format!("SHORTCUT {} {}", mods, params.key)
-                } else {
-                    format!("PRESS {}", params.key)
-                };
-
-                match controller.run_script(&script) {
-                    Ok(_) => IPCResponse::success(),
-                    Err(e) => IPCResponse::failure(format!("Key press failed: {}", e)),
-                }
-            }
-
-            IPCCommand::KeyType { params } => {
-                match controller.type_text(&params.text) {
-                    Ok(_) => {
-                        controller.execute_instructions().ok();
-                        IPCResponse::success()
-                    }
-                    Err(e) => IPCResponse::failure(format!("Type text failed: {}", e)),
-                }
-            }
-
-            IPCCommand::RunScript { params } => {
-                match controller.run_script(&params.script) {
-                    Ok(_) => IPCResponse::success(),
-                    Err(e) => IPCResponse::failure(format!("Script execution failed: {}", e)),
-                }
-            }
-
-            IPCCommand::ClearActionQueue => {
-                let _ = controller.clear_action_queue();
-                IPCResponse::success()
-            }
-
-            IPCCommand::ShutdownGracefully | IPCCommand::ShutdownImmediately => {
-                let _ = controller.shutdown();
-                IPCResponse::shutdown()
+                Err(e) => IPCResponse::failure(format!("Mouse move failed: {}", e)),
             }
         }
+
+        IPCCommand::MouseClick { params, execute_now, clear_after } => {
+            let execute = execute_now.unwrap_or(true);
+            let clear = clear_after.unwrap_or(true);
+            
+            // If coordinates provided, move first
+            if let (Some(x), Some(y)) = (params.x, params.y) {
+                if let Err(e) = controller.mouse_move(x, y) {
+                    return IPCResponse::failure(format!("Mouse move failed: {}", e));
+                }
+            }
+
+            // Then click
+            let x = params.x.unwrap_or(0);
+            let y = params.y.unwrap_or(0);
+            let button = params.button.as_deref().unwrap_or("left");
+
+            match controller.mouse_click(x, y, button) {
+                Ok(_) => {
+                    if execute {
+                        controller.execute_instructions().ok();
+                        if clear {
+                            controller.clear_action_queue().ok();
+                        }
+                    }
+                    IPCResponse::success()
+                }
+                Err(e) => IPCResponse::failure(format!("Mouse click failed: {}", e)),
+            }
+        }
+
+        IPCCommand::KeyPress { params, execute_now, clear_after } => {
+            let execute = execute_now.unwrap_or(true);
+            let clear = clear_after.unwrap_or(true);
+            
+            let script = if let Some(modifiers) = params.modifiers {
+                let mods = modifiers.join(" ");
+                format!("SHORTCUT {} {}", mods, params.key)
+            } else {
+                format!("PRESS {}", params.key)
+            };
+
+            match controller.run_script(&script) {
+                Ok(_) => {
+                    if !execute {
+                        // Script auto-executes, so this shouldn't happen
+                        // but we keep the flag for consistency
+                    }
+                    if execute && clear {
+                        controller.clear_action_queue().ok();
+                    }
+                    IPCResponse::success()
+                }
+                Err(e) => IPCResponse::failure(format!("Key press failed: {}", e)),
+            }
+        }
+
+        IPCCommand::KeyType { params, execute_now, clear_after } => {
+            let execute = execute_now.unwrap_or(true);
+            let clear = clear_after.unwrap_or(true);
+            
+            match controller.type_text(&params.text) {
+                Ok(_) => {
+                    if execute {
+                        controller.execute_instructions().ok();
+                        if clear {
+                            controller.clear_action_queue().ok();
+                        }
+                    }
+                    IPCResponse::success()
+                }
+                Err(e) => IPCResponse::failure(format!("Type text failed: {}", e)),
+            }
+        }
+
+        IPCCommand::RunScript { params, execute_now, clear_after } => {
+            let execute = execute_now.unwrap_or(true);
+            let clear = clear_after.unwrap_or(true);
+            
+            match controller.run_script(&params.script) {
+                Ok(_) => {
+                    // run_script auto-executes in Python
+                    if execute && clear {
+                        controller.clear_action_queue().ok();
+                    }
+                    IPCResponse::success()
+                }
+                Err(e) => IPCResponse::failure(format!("Script execution failed: {}", e)),
+            }
+        }
+
+        IPCCommand::ExecuteQueue => {
+            match controller.execute_instructions() {
+                Ok(_) => IPCResponse::success(),
+                Err(e) => IPCResponse::failure(format!("Execute queue failed: {}", e)),
+            }
+        }
+
+        IPCCommand::ClearActionQueue => {
+            let _ = controller.clear_action_queue();
+            IPCResponse::success()
+        }
+
+        IPCCommand::ShutdownGracefully | IPCCommand::ShutdownImmediately => {
+            let _ = controller.shutdown();
+            IPCResponse::shutdown()
+        }
     }
+}
 
 impl IPCHandler {
     pub fn new(ipc_path: &str) -> Self {

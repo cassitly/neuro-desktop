@@ -39,10 +39,11 @@ const (
 	CmdKeyPress         CommandType = "key_press"
 	CmdKeyType          CommandType = "key_type"
 	CmdRunScript        CommandType = "run_script"
+	CmdExecuteQueue     CommandType = "execute_queue"
 	CmdClearActionQueue CommandType = "clear_action_queue"
 
-	CmdShutdownGracefully  CommandType = "shutdown/gracefully"
-	CmdShutdownImmediately CommandType = "shutdown/immediately"
+	CmdShutdownGracefully  CommandType = "shutdown_gracefully"
+	CmdShutdownImmediately CommandType = "shutdown_immediately"
 )
 
 // IPC Command to Rust binary
@@ -106,83 +107,124 @@ func (n *NeuroIntegration) sendContext(message string, silent bool) error {
 
 func (n *NeuroIntegration) registerActions() error {
 	actions := []ActionDefinition{
-		{
-			Name:        "move_mouse",
-			Description: "Move the mouse cursor to specific screen coordinates",
-			Schema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"x": map[string]interface{}{
-						"type":        "integer",
-						"description": "X coordinate",
-					},
-					"y": map[string]interface{}{
-						"type":        "integer",
-						"description": "Y coordinate",
-					},
-				},
-				"required": []string{"x", "y"},
-			},
-		},
-		{
-			Name:        "click_mouse",
-			Description: "Click the mouse at current position or specific coordinates",
-			Schema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"x": map[string]interface{}{
-						"type":        "integer",
-						"description": "X coordinate (optional)",
-					},
-					"y": map[string]interface{}{
-						"type":        "integer",
-						"description": "Y coordinate (optional)",
-					},
-					"button": map[string]interface{}{
-						"type":        "string",
-						"enum":        []string{"left", "right", "middle"},
-						"description": "Mouse button to click",
-					},
-				},
-				"required": []string{},
-			},
-		},
-		{
-			Name:        "type_text",
-			Description: "Type text using the keyboard",
-			Schema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"text": map[string]interface{}{
-						"type":        "string",
-						"description": "Text to type",
-						"maxLength":   1000,
-					},
-				},
-				"required": []string{"text"},
-			},
-		},
-		{
-			Name:        "press_key",
-			Description: "Press a specific keyboard key or shortcut. Common keys: enter, escape, tab, space, backspace, shift, ctrl, alt",
-			Schema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"key": map[string]interface{}{
-						"type":        "string",
-						"description": "Key to press",
-					},
-					"modifiers": map[string]interface{}{
-						"type":        "array",
-						"description": "Modifier keys (shift, ctrl, alt)",
-						"items": map[string]interface{}{
-							"type": "string",
-						},
-					},
-				},
-				"required": []string{"key"},
-			},
-		},
+		// THESE 3 ACTIONS ARE BROKEN ASF, DON'T UNCOMMENT
+		// {
+		// 	Name:        "move_mouse",
+		// 	Description: "Move the mouse cursor to specific screen coordinates",
+		// 	Schema: map[string]interface{}{
+		// 		"type": "object",
+		// 		"properties": map[string]interface{}{
+		// 			"x": map[string]interface{}{
+		// 				"type":        "integer",
+		// 				"description": "X coordinate",
+		// 			},
+		// 			"y": map[string]interface{}{
+		// 				"type":        "integer",
+		// 				"description": "Y coordinate",
+		// 			},
+		// 			"execute_now": map[string]interface{}{
+		// 				"type":        "boolean",
+		// 				"description": "Execute immediately (true) or queue for macro (false). Default: true",
+		// 				"default":     true,
+		// 			},
+		// 			"clear_after": map[string]interface{}{
+		// 				"type":        "boolean",
+		// 				"description": "Clear action queue after execution (true) or keep for macro (false). Default: true",
+		// 				"default":     true,
+		// 			},
+		// 		},
+		// 		"required": []string{"x", "y"},
+		// 	},
+		// },
+		// {
+		// 	Name:        "click_mouse",
+		// 	Description: "Click the mouse at current position or specific coordinates",
+		// 	Schema: map[string]interface{}{
+		// 		"type": "object",
+		// 		"properties": map[string]interface{}{
+		// 			"x": map[string]interface{}{
+		// 				"type":        "integer",
+		// 				"description": "X coordinate (optional)",
+		// 			},
+		// 			"y": map[string]interface{}{
+		// 				"type":        "integer",
+		// 				"description": "Y coordinate (optional)",
+		// 			},
+		// 			"button": map[string]interface{}{
+		// 				"type":        "string",
+		// 				"enum":        []string{"left", "right", "middle"},
+		// 				"description": "Mouse button to click",
+		// 			},
+		// 			"execute_now": map[string]interface{}{
+		// 				"type":        "boolean",
+		// 				"description": "Execute immediately (true) or queue for macro (false). Default: true",
+		// 				"default":     true,
+		// 			},
+		// 			"clear_after": map[string]interface{}{
+		// 				"type":        "boolean",
+		// 				"description": "Clear action queue after execution (true) or keep for macro (false). Default: true",
+		// 				"default":     true,
+		// 			},
+		// 		},
+		// 		"required": []string{},
+		// 	},
+		// },
+		// {
+		// 	Name:        "type_text",
+		// 	Description: "Type text using the keyboard",
+		// 	Schema: map[string]interface{}{
+		// 		"type": "object",
+		// 		"properties": map[string]interface{}{
+		// 			"text": map[string]interface{}{
+		// 				"type":        "string",
+		// 				"description": "Text to type",
+		// 				"maxLength":   1000,
+		// 			},
+		// 			"execute_now": map[string]interface{}{
+		// 				"type":        "boolean",
+		// 				"description": "Execute immediately (true) or queue for macro (false). Default: true",
+		// 				"default":     true,
+		// 			},
+		// 			"clear_after": map[string]interface{}{
+		// 				"type":        "boolean",
+		// 				"description": "Clear action queue after execution (true) or keep for macro (false). Default: true",
+		// 				"default":     true,
+		// 			},
+		// 		},
+		// 		"required": []string{"text"},
+		// 	},
+		// },
+		// {
+		// 	Name:        "press_key",
+		// 	Description: "Press a specific keyboard key or shortcut. Common keys: enter, escape, tab, space, backspace, shift, ctrl, alt",
+		// 	Schema: map[string]interface{}{
+		// 		"type": "object",
+		// 		"properties": map[string]interface{}{
+		// 			"key": map[string]interface{}{
+		// 				"type":        "string",
+		// 				"description": "Key to press",
+		// 			},
+		// 			"modifiers": map[string]interface{}{
+		// 				"type":        "array",
+		// 				"description": "Modifier keys (shift, ctrl, alt)",
+		// 				"items": map[string]interface{}{
+		// 					"type": "string",
+		// 				},
+		// 			},
+		// 			"execute_now": map[string]interface{}{
+		// 				"type":        "boolean",
+		// 				"description": "Execute immediately (true) or queue for macro (false). Default: true",
+		// 				"default":     true,
+		// 			},
+		// 			"clear_after": map[string]interface{}{
+		// 				"type":        "boolean",
+		// 				"description": "Clear action queue after execution (true) or keep for macro (false). Default: true",
+		// 				"default":     true,
+		// 			},
+		// 		},
+		// 		"required": []string{"key"},
+		// 	},
+		// },
 		{
 			Name:        "clear_action_queue",
 			Description: "Clear the action queue. The action queue persists across every action, you must clear it manually. Unless you are creating a macro.",
@@ -198,9 +240,24 @@ func (n *NeuroIntegration) registerActions() error {
 						"type":        "string",
 						"description": "Script with multiple commands, one per line",
 					},
+					"execute_now": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Execute immediately (true) or queue for macro (false). Default: true",
+						"default":     true,
+					},
+					"clear_after": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Clear action queue after execution (true) or keep for macro (false). Default: true",
+						"default":     true,
+					},
 				},
 				"required": []string{"script"},
 			},
+		},
+		{
+			Name:        "execute_queue",
+			Description: "Execute the action queue.",
+			Schema:      map[string]interface{}{},
 		},
 	}
 
@@ -218,12 +275,13 @@ func (n *NeuroIntegration) registerActions() error {
 func (n *NeuroIntegration) unregisterActions() error {
 	data := map[string]interface{}{
 		"actions": []string{
-			"move_mouse",
-			"click_mouse",
-			"type_text",
-			"press_key",
+			// "move_mouse",
+			// "click_mouse",
+			// "type_text",
+			// "press_key",
 			"clear_action_queue",
 			"run_script",
+			"execute_queue",
 		},
 	}
 	dataBytes, _ := json.Marshal(data)
@@ -285,7 +343,34 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 
 	// Parse action data
 	if len(action.Data) > 0 {
-		json.Unmarshal(action.Data, &params)
+		// Step 1: extract string
+		var raw string
+		if err := json.Unmarshal(action.Data, &raw); err == nil {
+			// Step 2: parse JSON inside string
+			if err := json.Unmarshal([]byte(raw), &params); err != nil {
+				log.Printf("Failed to parse action data (inner JSON): %v", err)
+				n.sendActionResult(action.ID, false, "Invalid action parameters")
+				return
+			}
+		} else {
+			// If it's not a string, try direct object (future-proof)
+			if err := json.Unmarshal(action.Data, &params); err != nil {
+				log.Printf("Failed to parse action data: %v", err)
+				n.sendActionResult(action.ID, false, "Invalid action parameters")
+				return
+			}
+		}
+	}
+
+	// Extract execute_now and clear_after (default to true)
+	executeNow := true
+	clearAfter := true
+
+	if val, ok := params["execute_now"].(bool); ok {
+		executeNow = val
+	}
+	if val, ok := params["clear_after"].(bool); ok {
+		clearAfter = val
 	}
 
 	// Build IPC command based on action
@@ -296,8 +381,10 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 		cmd = IPCCommand{
 			Type: CmdMouseMove,
 			Params: map[string]interface{}{
-				"x": int(x),
-				"y": int(y),
+				"x":           int(x),
+				"y":           int(y),
+				"execute_now": executeNow,
+				"clear_after": clearAfter,
 			},
 		}
 
@@ -306,11 +393,10 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 		if button == "" {
 			button = "left"
 		}
-		cmd = IPCCommand{
-			Type: CmdMouseClick,
-			Params: map[string]interface{}{
-				"button": button,
-			},
+		clickParams := map[string]interface{}{
+			"button":      button,
+			"execute_now": executeNow,
+			"clear_after": clearAfter,
 		}
 		// Add coordinates if provided
 		if x, ok := params["x"].(float64); ok {
@@ -320,29 +406,41 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 			cmd.Params["y"] = int(y)
 		}
 
+		cmd = IPCCommand{
+			Type:   CmdMouseClick,
+			Params: clickParams,
+		}
+
 	case "type_text":
 		text, _ := params["text"].(string)
 		cmd = IPCCommand{
 			Type: CmdKeyType,
 			Params: map[string]interface{}{
-				"text": text,
+				"text":        text,
+				"execute_now": executeNow,
+				"clear_after": clearAfter,
 			},
 		}
 
 	case "press_key":
 		key, _ := params["key"].(string)
-		cmd = IPCCommand{
-			Type: CmdKeyPress,
-			Params: map[string]interface{}{
-				"key": key,
-			},
+		keyParams := map[string]interface{}{
+			"key":         key,
+			"execute_now": executeNow,
+			"clear_after": clearAfter,
 		}
+
 		if modifiers, ok := params["modifiers"].([]interface{}); ok {
 			modStrs := make([]string, len(modifiers))
 			for i, m := range modifiers {
 				modStrs[i] = m.(string)
 			}
-			cmd.Params["modifiers"] = modStrs
+			keyParams["modifiers"] = modStrs
+		}
+
+		cmd = IPCCommand{
+			Type:   CmdKeyPress,
+			Params: keyParams,
 		}
 
 	case "run_script":
@@ -351,7 +449,14 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 			Type: CmdRunScript,
 			Params: map[string]interface{}{
 				"script": script,
+				// "execute_now": executeNow,
+				// "clear_after": clearAfter,
 			},
+		}
+
+	case "execute_queue":
+		cmd = IPCCommand{
+			Type: CmdExecuteQueue,
 		}
 
 	case "clear_action_queue":
@@ -494,6 +599,11 @@ func main() {
 
 	// Send initial context
 	integration.sendContext("Neuro Desktop is ready. You can control the mouse, keyboard, and run scripts.", true)
+	content, err := os.ReadFile("./integration-docs/Action Script Documentation.md")
+	if err != nil {
+		log.Fatalf("Failed to read documentation file: %v", err)
+	}
+	integration.sendContext(string(content), true)
 
 	// Register actions
 	log.Println("Registering actions...")
