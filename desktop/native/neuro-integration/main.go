@@ -34,11 +34,15 @@ type IncomingAction struct {
 type CommandType string
 
 const (
-	CmdMouseMove  CommandType = "mouse_move"
-	CmdMouseClick CommandType = "mouse_click"
-	CmdKeyPress   CommandType = "key_press"
-	CmdKeyType    CommandType = "key_type"
-	CmdRunScript  CommandType = "run_script"
+	CmdMouseMove        CommandType = "mouse_move"
+	CmdMouseClick       CommandType = "mouse_click"
+	CmdKeyPress         CommandType = "key_press"
+	CmdKeyType          CommandType = "key_type"
+	CmdRunScript        CommandType = "run_script"
+	CmdClearActionQueue CommandType = "clear_action_queue"
+
+	CmdShutdownGracefully  CommandType = "shutdown/gracefully"
+	CmdShutdownImmediately CommandType = "shutdown/immediately"
 )
 
 // IPC Command to Rust binary
@@ -180,6 +184,11 @@ func (n *NeuroIntegration) registerActions() error {
 			},
 		},
 		{
+			Name:        "clear_action_queue",
+			Description: "Clear the action queue. The action queue persists across every action, you must clear it manually. Unless you are creating a macro.",
+			Schema:      map[string]interface{}{},
+		},
+		{
 			Name:        "run_script",
 			Description: "Execute a sequence of actions using a simple script language. Commands: TYPE \"text\", ENTER, MOVE x y, CLICK x y, WAIT seconds, PRESS key",
 			Schema: map[string]interface{}{
@@ -202,6 +211,25 @@ func (n *NeuroIntegration) registerActions() error {
 
 	return n.sendMessage(NeuroMessage{
 		Command: "actions/register",
+		Data:    dataBytes,
+	})
+}
+
+func (n *NeuroIntegration) unregisterActions() error {
+	data := map[string]interface{}{
+		"actions": []string{
+			"move_mouse",
+			"click_mouse",
+			"type_text",
+			"press_key",
+			"clear_action_queue",
+			"run_script",
+		},
+	}
+	dataBytes, _ := json.Marshal(data)
+
+	return n.sendMessage(NeuroMessage{
+		Command: "actions/unregister",
 		Data:    dataBytes,
 	})
 }
@@ -326,6 +354,11 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 			},
 		}
 
+	case "clear_action_queue":
+		cmd = IPCCommand{
+			Type: CmdClearActionQueue,
+		}
+
 	default:
 		n.sendActionResult(action.ID, false, fmt.Sprintf("Unknown action: %s", action.Name))
 		return
@@ -369,6 +402,31 @@ func (n *NeuroIntegration) listen() {
 			log.Println("Reregistering actions...")
 			n.registerActions()
 
+		case "shutdown/graceful":
+			var shutdownReq struct {
+				WantsShutdown bool `json:"wants_shutdown"`
+			}
+			if err := json.Unmarshal(msg.Data, &shutdownReq); err != nil {
+				log.Printf("Failed to parse shutdown request: %v", err)
+				continue
+			}
+			if shutdownReq.WantsShutdown {
+				log.Println("Graceful shutdown was requested, closing Integration Code...")
+				n.sendToRust(IPCCommand{ // Tell the main executable that we want to shut down gracefully
+					Type: CmdShutdownGracefully,
+				})
+				n.Close()
+				return
+			}
+
+		case "shutdown/immediate":
+			log.Println("Immediate shutdown was requested, closing Integration Code...")
+			n.sendToRust(IPCCommand{ // Tell the main executable that we want to shut down immediately
+				Type: CmdShutdownImmediately,
+			})
+			n.Close()
+			return
+
 		default:
 			log.Printf("Unknown command: %s", msg.Command)
 		}
@@ -376,6 +434,12 @@ func (n *NeuroIntegration) listen() {
 }
 
 func (n *NeuroIntegration) Close() error {
+	// Tell neuro the integration is shutting down. So that she has some sense, of what happened.
+	n.sendContext("Neuro Desktop integration is shutting down. Websocket will close.", true)
+
+	// Unregister actions, to properly clear
+	// the action list for the next integration
+	n.unregisterActions()
 	return n.ws.Close()
 }
 

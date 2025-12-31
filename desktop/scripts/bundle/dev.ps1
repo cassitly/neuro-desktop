@@ -1,6 +1,9 @@
 # ============================================================
 # desktop/scripts/bundle/dev.ps1
 # ============================================================
+$ErrorActionPreference = "Stop"
+
+Write-Host "=== Building Neuro Desktop Development Bundle ==="
 
 $DIST = "apps/neuro-desktop/target/release"
 $PY_DIST = "$DIST/python"
@@ -8,17 +11,20 @@ $PY_DIST = "$DIST/python"
 Remove-Item -Recurse -Force $DIST/python -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $DIST/frontend -ErrorAction SilentlyContinue
 
-# ---------- Build Go Integration ----------
-Write-Host "Building Go integration..."
-Push-Location native/go-neuro-integration
-go build -o go-neuro-integration.exe main.go
+# ---------- Build Neuro Integration ----------
+Write-Host "Building Neuro integration..."
+
+New-Item -ItemType Directory -Force -Path native/neuro-integration/dist | Out-Null
+Push-Location native/neuro-integration/
+
+go build -o neuro-integration.exe main.go
 Pop-Location
 
 Copy-Item `
-  native/go-neuro-integration/go-neuro-integration.exe `
-  $DIST/go-neuro-integration.exe
+  native/neuro-integration/dist/neuro-integration.exe `
+  $DIST/neuro-integration.exe
 
-Write-Host "  ✓ Go binary copied to $DIST"
+Write-Host "  ✓ Neuro Integration binary copied to $DIST"
 
 # ---------- Build frontend ----------
 Write-Host "Building frontend..."
@@ -36,10 +42,7 @@ New-Item -ItemType Directory -Force -Path $PY_DIST | Out-Null
 Copy-Item backend/python/.venv/Lib $PY_DIST/Lib -Recurse
 
 # ---------- Copy Controller Drivers ----------
-Copy-Item `
-  backend/python/controller `
-  "$PY_DIST/controller" `
-  -Recurse
+Copy-Item backend/python/controller "$PY_DIST/controller" -Recurse
 
 Write-Host ""
 Write-Host "=== Dev bundle complete ==="
