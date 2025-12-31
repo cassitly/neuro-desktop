@@ -9,7 +9,7 @@ connection:
 
 package: # Information about the build
   name: "neuro-desktop"
-  version: "1.0.0"
+  version: "0.0.3b-dev"
   build: "release/28-12-2025"
   package-id: "builtby.nakashireyumi/neuro-desktop"
   description: "An neuro integration, that gives Neuro access to a Computer!"
