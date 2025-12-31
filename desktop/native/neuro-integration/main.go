@@ -380,6 +380,12 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 	n.sendActionResult(action.ID, resp.Success, message)
 }
 
+func (n *NeuroIntegration) sendShutdownReady() error {
+	return n.sendMessage(NeuroMessage{
+		Command: "shutdown/ready",
+	})
+}
+
 func (n *NeuroIntegration) listen() {
 	for {
 		var msg NeuroMessage
@@ -411,19 +417,33 @@ func (n *NeuroIntegration) listen() {
 				continue
 			}
 			if shutdownReq.WantsShutdown {
-				log.Println("Graceful shutdown was requested, closing Integration Code...")
-				n.sendToRust(IPCCommand{ // Tell the main executable that we want to shut down gracefully
+				log.Println("Graceful shutdown requested, preparing...")
+
+				// Tell Rust to save state
+				resp, err := n.sendToRust(IPCCommand{
 					Type: CmdShutdownGracefully,
 				})
+
+				if err != nil || !resp.Success {
+					log.Printf("Warning: Rust shutdown failed: %v", err)
+				}
+
+				// Send ready signal
+				n.sendShutdownReady()
 				n.Close()
 				return
 			}
 
 		case "shutdown/immediate":
-			log.Println("Immediate shutdown was requested, closing Integration Code...")
-			n.sendToRust(IPCCommand{ // Tell the main executable that we want to shut down immediately
+			log.Println("Immediate shutdown requested!")
+
+			// Tell Rust to save what it can
+			n.sendToRust(IPCCommand{
 				Type: CmdShutdownImmediately,
 			})
+
+			// Send ready signal
+			n.sendShutdownReady()
 			n.Close()
 			return
 
