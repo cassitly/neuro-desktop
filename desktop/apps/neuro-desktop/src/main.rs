@@ -38,24 +38,27 @@ async fn main() -> anyhow::Result<()> {
     println!();
 
     // Initialize Python controller drivers
-    println!("[1/3] Initializing Python controller drivers...");
+    println!("[1/4] Initializing Python controller drivers...");
     let controller = Controller::initialize_drivers()
         .expect("Failed to initialize controller drivers");
     println!("      ✓ Python drivers loaded");
     println!();
 
+    // Initialize Go process manager
+    println!("[2/4] Initializing Neuro integration Integration...");
+    let mut go_manager = GoProcessManager::new()
+        .expect("Failed to create Go manager");
+    println!("      ✓ Go integration ready");
+
     // Start IPC handler
-    println!("[2/3] Starting IPC handler...");
+    println!("[3/4] Starting IPC handler...");
     let ipc = IPCHandler::new(&ipc_path);
     ipc.start(controller);
     println!("      ✓ IPC handler running on: {}", ipc_path);
     println!();
 
     // Start Go integration
-    println!("[3/3] Starting Go WebSocket integration...");
-    let mut go_manager = GoProcessManager::new()
-        .expect("Failed to create Go manager");
-    
+    println!("[4/4] Starting Neuro Integration Code...");
     go_manager.start(&ws_url, &ipc_path)
         .expect("Failed to start Go integration");
     println!("      ✓ Go integration connected to Neuro");
@@ -75,13 +78,21 @@ async fn main() -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = check_interval.tick() => {
+                if !ipc.is_running() { // check for this first, to hopefully avoid a race condition
+                    // where go_manager might try to restart, using the code below this if statement.
+                    println!(); // Print out a space, so that this message can be seen more clearly
+                    println!("Shutdown signal received, Neuro Desktop is stopping fully...");
+                    go_manager.stop();
+                    break;
+                }
+
                 if !go_manager.is_running() {
-                    eprintln!("⚠ Go integration crashed! Attempting restart...");
+                    eprintln!("⚠ Neuro integration crashed! Attempting restart...");
                     if let Err(e) = go_manager.restart(&ws_url, &ipc_path) {
-                        eprintln!("✗ Failed to restart Go integration: {}", e);
+                        eprintln!("✗ Failed to restart Neuro integration: {}", e);
                         break;
                     }
-                    println!("✓ Go integration restarted");
+                    println!("✓ Neuro integration restarted");
                 }
             }
 
