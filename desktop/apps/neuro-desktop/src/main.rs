@@ -45,10 +45,11 @@ async fn main() -> anyhow::Result<()> {
     println!();
 
     // Initialize Go process manager
-    println!("[2/4] Initializing Neuro integration Integration...");
+    println!("[2/4] Initializing Neuro integration...");
     let mut go_manager = GoProcessManager::new()
         .expect("Failed to create Go manager");
     println!("      ✓ Go integration ready");
+    println!();
 
     // Start IPC handler
     println!("[3/4] Starting IPC handler...");
@@ -78,14 +79,15 @@ async fn main() -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = check_interval.tick() => {
-                if !ipc.is_running() { // check for this first, to hopefully avoid a race condition
-                    // where go_manager might try to restart, using the code below this if statement.
-                    println!(); // Print out a space, so that this message can be seen more clearly
+                // Check for IPC shutdown first
+                if !ipc.is_running() {
+                    println!(); // Print out a space for clarity
                     println!("Shutdown signal received, Neuro Desktop is stopping fully...");
                     go_manager.stop();
                     break;
                 }
 
+                // Check if Go process crashed
                 if !go_manager.is_running() {
                     eprintln!("⚠ Neuro integration crashed! Attempting restart...");
                     if let Err(e) = go_manager.restart(&ws_url, &ipc_path) {
