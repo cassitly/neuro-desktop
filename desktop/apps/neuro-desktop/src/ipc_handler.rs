@@ -108,17 +108,21 @@ impl IPCHandler {
         }
     }
 
-    pub fn start(self, controller: Controller) -> Self {
+    pub fn start(self, controller: Controller) -> Arc<AtomicBool> {
         let running = Arc::clone(&self.running);
+        let running_clone = Arc::clone(&self.running);
         running.store(true, Ordering::SeqCst);
+        
+        let ipc_file = self.ipc_file.clone();
+        let response_file = self.response_file.clone();
         
         thread::spawn(move || {
             loop {
-                if !running.load(Ordering::SeqCst) {
+                if !running_clone.load(Ordering::SeqCst) {
                     break;
                 }
                 
-                let result = self.process_once(&controller);
+                let result = process_once(&ipc_file, &response_file, &controller, &running_clone);
                 if let Err(e) = result {
                     eprintln!("IPC processing error: {}", e);
                 }
@@ -127,28 +131,33 @@ impl IPCHandler {
             println!("Stopped IPC handler");
         });
 
-        self
+        running
     }
 
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
 
-    fn process_once(&self, controller: &Controller) -> Result<()> {
+    fn process_once(
+        ipc_file: &PathBuf,
+        response_file: &PathBuf,
+        controller: &Controller,
+        running: &Arc<AtomicBool>
+    ) -> Result<()> {
         // Check if command file exists
-        if !self.ipc_file.exists() {
+        if !ipc_file.exists() {
             return Ok(());
         }
 
         // Read command
-        let data = fs::read_to_string(&self.ipc_file)?;
+        let data = fs::read_to_string(&ipc_file)?;
         let command: IPCCommand = serde_json::from_str(&data)?;
 
         // Delete command file immediately
-        fs::remove_file(&self.ipc_file)?;
+        fs::remove_file(&ipc_file)?;
 
         // Execute command
-        let response = self.execute_command(controller, command);
+        let response = execute_command(controller, command);
 
         // Check for shutdown signal before writing response
         let should_shutdown = response.data.as_ref()
@@ -158,18 +167,18 @@ impl IPCHandler {
 
         // Write response
         let response_json = serde_json::to_string(&response)?;
-        fs::write(&self.response_file, response_json)?;
+        fs::write(&response_file, response_json)?;
 
         // Handle shutdown after writing response
         if should_shutdown {
-            println!(); // Print out a space for clarity
+            println!();
             println!("Shutdown signal received, stopping IPC handler...");
-            self.running.store(false, Ordering::SeqCst);
+            running.store(false, Ordering::SeqCst);
         }
 
         Ok(())
     }
-
+    
     fn execute_command(&self, controller: &Controller, command: IPCCommand) -> IPCResponse {
         match command {
             IPCCommand::MouseMove { params } => {
