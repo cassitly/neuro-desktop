@@ -8,7 +8,7 @@ native:
 	cd native/c_cpp && cmake -S . -B build && cmake --build build
 
 go:
-	cd native/go-neuro-integration && go build -o go-neuro-integration main.go
+	cd native/neuro-integration && go build -o neuro-integration main.go
 
 frontend:
 	cd frontend && npm install && npm run build
@@ -16,10 +16,10 @@ frontend:
 rust:
 	cd apps/neuro-desktop && cargo build --release
 
-bundle-dev: go rust
+bundle-dev: rust
 	powershell.exe .\scripts\bundle\dev.ps1
 
-bundle-prod: go rust frontend
+bundle-prod: rust
 	powershell.exe .\scripts\bundle\prod.ps1
 
 clean:
