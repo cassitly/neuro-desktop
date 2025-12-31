@@ -11,8 +11,9 @@ use ipc_handler::IPCHandler;
 use go_manager::GoProcessManager;
 use std::env;
 
+use std::path::PathBuf;
 use std::fs;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize};
 
 #[derive(Debug, Deserialize)]
 struct IntegrationConfig {
@@ -126,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             _ = check_interval.tick() => {
                 // Check for IPC shutdown first
-                if !ipc_handler.is_running() {
+                if !ipc_handler.load(std::sync::atomic::Ordering::SeqCst) {
                     println!(); // Print out a space for clarity
                     println!("Shutdown signal received, Neuro Desktop is stopping fully...");
                     go_manager.stop();
