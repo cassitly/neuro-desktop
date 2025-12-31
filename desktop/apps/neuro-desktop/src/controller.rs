@@ -87,12 +87,12 @@ impl Controller {
         .map_err(Into::into)
     }
 
-    pub fn mouse_click(&self, x: i32, y: i32) -> Result<()> {
+    pub fn mouse_click(&self, x: i32, y: i32, button: &str) -> Result<()> {
         Python::with_gil(|py| {
             self.mouse
                 .bind(py)
                 .getattr("queue_click")?
-                .call1((x, y))?;
+                .call1((x, y, button))?;
             Ok::<(), PyErr>(())
         })
         .map_err(Into::into)
@@ -104,6 +104,15 @@ impl Controller {
                 .bind(py)
                 .getattr("type")?
                 .call1((text,))?;
+            Ok::<(), PyErr>(())
+        })
+        .map_err(Into::into)
+    }
+
+    pub fn clear_action_queue(&self) -> Result<()> {
+        Python::with_gil(|py| {
+            self.mouse.bind(py).getattr("clear")?.call0()?;
+            self.keyboard.bind(py).getattr("clear")?.call0()?;
             Ok::<(), PyErr>(())
         })
         .map_err(Into::into)

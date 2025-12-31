@@ -25,20 +25,28 @@ Copy-Item `
 
 Write-Host "      ✓ Rust binary built"
 
-# ---------- Build Go Integration ----------
-Write-Host "[2/4] Building Go integration..."
-Push-Location native/go-neuro-integration
+# ---------- Build Neuro Integration ----------
+Write-Host "[2/4] Building Neuro integration..."
+
+New-Item -ItemType Directory -Force -Path native/neuro-integration/dist | Out-Null
+Push-Location native/neuro-integration
 
 # Build for Windows
-go build -o go-neuro-integration.exe main.go
+go build -o dist/neuro-integration.exe main.go
 
 Pop-Location
 
 Copy-Item `
-  native/go-neuro-integration/go-neuro-integration.exe `
-  $DIST/go-neuro-integration.exe
+  native/neuro-integration/dist/neuro-integration.exe `
+  $DIST/neuro-integration.exe
 
-Write-Host "      ✓ Go binary built"
+New-Item -ItemType Directory -Force -Path $DIST/integration-docs | Out-Null
+
+Copy-Item `
+  native/neuro-integration/integration-docs/"Action Script Documentation.md" `
+  $DIST/integration-docs/"Action Script Documentation.md"
+
+Write-Host "      ✓ Neuro Integration binary built"
 
 # ---------- Build frontend ----------
 Write-Host "[3/4] Building frontend..."
@@ -49,6 +57,11 @@ Pop-Location
 Copy-Item frontend/dist -Recurse $DIST/frontend
 
 Write-Host "      ✓ Frontend built"
+
+# ---------- Copy Config ----------
+Write-Host "Copying configuration files..."
+Copy-Item config "$DIST/config" -Recurse
+Write-Host "  ✓ Config files copied"
 
 # ---------- Bundle Python (EMBEDDED) ----------
 Write-Host "[4/4] Bundling Python runtime..."

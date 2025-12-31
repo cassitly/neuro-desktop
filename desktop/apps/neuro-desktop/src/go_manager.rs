@@ -19,15 +19,15 @@ impl GoProcessManager {
             .to_path_buf();
 
         #[cfg(target_os = "windows")]
-        let binary_name = "go-neuro-integration.exe";
+        let binary_name = "neuro-integration.exe";
         #[cfg(not(target_os = "windows"))]
-        let binary_name = "go-neuro-integration";
+        let binary_name = "neuro-integration";
 
         let binary_path = exe_dir.join(binary_name);
 
         if !binary_path.exists() {
             anyhow::bail!(
-                "Go integration binary not found at: {}",
+                "Neuro integration binary not found at: {}",
                 binary_path.display()
             );
         }
@@ -40,20 +40,20 @@ impl GoProcessManager {
 
     pub fn start(&mut self, ws_url: &str, ipc_file: &str) -> Result<()> {
         if self.child.is_some() {
-            println!("Go integration already running");
+            println!("Neuro integration already running");
             return Ok(());
         }
 
-        println!("Starting Go integration at: {}", self.binary_path.display());
+        println!("Starting Neuro integration at: {}", self.binary_path.display());
 
         let child = Command::new(&self.binary_path)
             .env("NEURO_SDK_WS_URL", ws_url)
             .env("NEURO_IPC_FILE", ipc_file)
             .spawn()
-            .context("Failed to start Go integration")?;
+            .context("Failed to start Neuro integration")?;
 
         self.child = Some(child);
-        println!("Go integration started with PID: {}", self.child.as_ref().unwrap().id());
+        println!("Neuro integration started with PID: {}", self.child.as_ref().unwrap().id());
 
         Ok(())
     }
@@ -62,13 +62,13 @@ impl GoProcessManager {
         if let Some(child) = &mut self.child {
             match child.try_wait() {
                 Ok(Some(_)) => {
-                    println!("Go integration has exited");
+                    println!("Neuro integration has exited");
                     self.child = None;
                     false
                 }
                 Ok(None) => true,
                 Err(e) => {
-                    eprintln!("Error checking Go process status: {}", e);
+                    eprintln!("Error checking Neuro process status: {}", e);
                     false
                 }
             }
@@ -78,7 +78,7 @@ impl GoProcessManager {
     }
 
     pub fn restart(&mut self, ws_url: &str, ipc_file: &str) -> Result<()> {
-        println!("Restarting Go integration...");
+        println!("Restarting Neuro integration...");
         self.stop();
         std::thread::sleep(std::time::Duration::from_millis(500));
         self.start(ws_url, ipc_file)
@@ -86,15 +86,15 @@ impl GoProcessManager {
 
     pub fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            println!("Stopping Go integration...");
+            println!("Stopping Neuro integration...");
             
             match child.kill() {
                 Ok(_) => {
                     let _ = child.wait();
-                    println!("Go integration stopped");
+                    println!("Neuro integration stopped");
                 }
                 Err(e) => {
-                    eprintln!("Failed to kill Go process: {}", e);
+                    eprintln!("Failed to kill Neuro integration process: {}", e);
                 }
             }
         }

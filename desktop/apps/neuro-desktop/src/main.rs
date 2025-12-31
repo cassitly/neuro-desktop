@@ -11,6 +11,42 @@ use ipc_handler::IPCHandler;
 use go_manager::GoProcessManager;
 use std::env;
 
+use std::path::PathBuf;
+use std::fs;
+use serde::{Deserialize};
+
+#[derive(Debug, Deserialize)]
+struct IntegrationConfig {
+    connection: ConnectionConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConnectionConfig {
+    #[serde(rename = "neuro-backend")]
+    neuro_backend: String,
+}
+
+fn load_config() -> Result<IntegrationConfig, Box<dyn std::error::Error>> {
+    let exe_dir = env::current_exe()?
+        .parent()
+        .ok_or("No parent dir")?
+        .to_path_buf();
+    
+    let config_path = exe_dir.join("config").join("integration-config.yml");
+    
+    if !config_path.exists() {
+        // Fallback to development path
+        let dev_config = PathBuf::from("config/integration-config.yml");
+        if dev_config.exists() {
+            let content = fs::read_to_string(dev_config)?;
+            return Ok(serde_yaml::from_str(&content)?);
+        }
+    }
+    
+    let content = fs::read_to_string(config_path)?;
+    Ok(serde_yaml::from_str(&content)?)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("=======================================================");
@@ -18,10 +54,21 @@ async fn main() -> anyhow::Result<()> {
     println!("=======================================================");
     println!();
 
+    // Load config
+    let config = load_config().unwrap_or_else(|e| {
+        eprintln!("Warning: Could not load config file: {}", e);
+        eprintln!("Using default values...");
+        IntegrationConfig {
+            connection: ConnectionConfig {
+                neuro_backend: "ws://localhost:8000".to_string(),
+            }
+        }
+    });
+
     // Configuration
     let ws_url = env::var("NEURO_SDK_WS_URL")
-        .unwrap_or_else(|_| "ws://localhost:8000".to_string());
-    
+        .unwrap_or_else(|_| config.connection.neuro_backend.clone());
+
     let ipc_path = env::var("NEURO_IPC_FILE")
         .unwrap_or_else(|_| {
             env::current_exe()
@@ -38,24 +85,28 @@ async fn main() -> anyhow::Result<()> {
     println!();
 
     // Initialize Python controller drivers
-    println!("[1/3] Initializing Python controller drivers...");
+    println!("[1/4] Initializing Python controller drivers...");
     let controller = Controller::initialize_drivers()
         .expect("Failed to initialize controller drivers");
     println!("      ✓ Python drivers loaded");
     println!();
 
+    // Initialize Go process manager
+    println!("[2/4] Initializing Neuro integration...");
+    let mut go_manager = GoProcessManager::new()
+        .expect("Failed to create Go manager");
+    println!("      ✓ Go integration ready");
+    println!();
+
     // Start IPC handler
-    println!("[2/3] Starting IPC handler...");
+    println!("[3/4] Starting IPC handler...");
     let ipc = IPCHandler::new(&ipc_path);
-    ipc.start(controller);
+    let ipc_handler = ipc.start(controller);
     println!("      ✓ IPC handler running on: {}", ipc_path);
     println!();
 
     // Start Go integration
-    println!("[3/3] Starting Go WebSocket integration...");
-    let mut go_manager = GoProcessManager::new()
-        .expect("Failed to create Go manager");
-    
+    println!("[4/4] Starting Neuro Integration Code...");
     go_manager.start(&ws_url, &ipc_path)
         .expect("Failed to start Go integration");
     println!("      ✓ Go integration connected to Neuro");
@@ -75,13 +126,22 @@ async fn main() -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = check_interval.tick() => {
+                // Check for IPC shutdown first
+                if !ipc_handler.load(std::sync::atomic::Ordering::SeqCst) {
+                    println!(); // Print out a space for clarity
+                    println!("Shutdown signal received, Neuro Desktop is stopping fully...");
+                    go_manager.stop();
+                    break;
+                }
+
+                // Check if Go process crashed
                 if !go_manager.is_running() {
-                    eprintln!("⚠ Go integration crashed! Attempting restart...");
+                    eprintln!("⚠ Neuro integration crashed! Attempting restart...");
                     if let Err(e) = go_manager.restart(&ws_url, &ipc_path) {
-                        eprintln!("✗ Failed to restart Go integration: {}", e);
+                        eprintln!("✗ Failed to restart Neuro integration: {}", e);
                         break;
                     }
-                    println!("✓ Go integration restarted");
+                    println!("✓ Neuro integration restarted");
                 }
             }
 
