@@ -3,7 +3,7 @@
 # ============================================================
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== Building Neuro Desktop Development Bundle ==="
+Write-Host "=== Development Bundle ==="
 
 $DIST = "apps/neuro-desktop/target/release"
 $PY_DIST = "$DIST/python"
@@ -17,7 +17,7 @@ Write-Host "Building Neuro integration..."
 New-Item -ItemType Directory -Force -Path native/neuro-integration/dist | Out-Null
 Push-Location native/neuro-integration/
 
-go build -o neuro-integration.exe main.go
+go build -o dist/neuro-integration.exe main.go
 Pop-Location
 
 Copy-Item `
