@@ -109,6 +109,15 @@ impl Controller {
         .map_err(Into::into)
     }
 
+    pub fn clear_action_queue(&self) -> Result<()> {
+        Python::with_gil(|py| {
+            self.mouse.bind(py).getattr("clear")?.call0()?;
+            self.keyboard.bind(py).getattr("clear")?.call0()?;
+            Ok::<(), PyErr>(())
+        })
+        .map_err(Into::into)
+    }
+
     // =====================================================
     // Telemetry access
     // =====================================================
