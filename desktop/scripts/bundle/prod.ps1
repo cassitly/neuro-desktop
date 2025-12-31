@@ -52,6 +52,11 @@ Copy-Item frontend/dist -Recurse $DIST/frontend
 
 Write-Host "      ✓ Frontend built"
 
+# ---------- Copy Config ----------
+Write-Host "Copying configuration files..."
+Copy-Item config "$DIST/config" -Recurse
+Write-Host "  ✓ Config files copied"
+
 # ---------- Bundle Python (EMBEDDED) ----------
 Write-Host "[4/4] Bundling Python runtime..."
 

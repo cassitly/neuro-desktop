@@ -34,6 +34,12 @@ Pop-Location
 
 Copy-Item frontend/dist -Recurse $DIST/frontend
 
+# ---------- Copy Config ----------
+Write-Host "Copying configuration files..."
+Copy-Item config "$DIST/config" -Recurse
+Write-Host "  ✓ Config files copied"
+
+# ---------- Bundle Python (EMBEDDED) ----------
 $PY_DIST = "$DIST/python"
 Write-Host "Bundling Python files and libraries..."
 
