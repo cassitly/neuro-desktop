@@ -5,9 +5,11 @@ from ..desktop import DesktopMonitor
 
 Point = Tuple[int, int]
 
+from ..libraries.mouse_pathfinder import AlgorithmicPath
 
 class MouseInstruction:
     """Base class for mouse instructions."""
+    pathfinder = AlgorithmicPath()
     def execute(self):
         raise NotImplementedError
 
@@ -19,17 +21,15 @@ class MoveInstruction(MouseInstruction):
         self.duration = duration
 
     def execute(self):
-        pyautogui.moveTo(self.x, self.y, duration=self.duration)
+        self.pathfinder.move_to(self.x, self.y, duration=self.duration)
 
 
 class ClickInstruction(MouseInstruction):
-    def __init__(self, x: int, y: int, button: str = "left"):
-        self.x = x
-        self.y = y
+    def __init__(self, button: str = "left"):
         self.button = button
 
     def execute(self):
-        pyautogui.click(self.x, self.y, button=self.button)
+        pyautogui.click(button=self.button)
 
 
 class WaitInstruction(MouseInstruction):
@@ -97,14 +97,13 @@ class MouseController:
         x, y = self.clamp_point(x, y)
         self.instruction_queue.append(MoveInstruction(x, y, duration))
 
-    def queue_click(self, x: int, y: int, button: str = "left"):
+    def queue_click(self, button: str = "left"):
         self.monitor.record_action(
             source="mouse",
             action_type="CLICK",
-            data={"x": x, "y": y, "button": button}
+            data={"button": button}
         )
-        x, y = self.clamp_point(x, y)
-        self.instruction_queue.append(ClickInstruction(x, y, button))
+        self.instruction_queue.append(ClickInstruction(button))
 
     def queue_wait(self, duration: float):
         self.monitor.record_action(
