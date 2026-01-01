@@ -10,6 +10,13 @@ sudo add-apt-repository ppa:deadsnakes/ppa
 sudo apt update
 sudo apt install python3.10 python3.10-venv python3.10-dev
 
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+nvm install --lts
+
+sudo apt update
+sudo apt install nodejs npm
+winget install OpenJS.NodeJS
+
 echo "Development environment setup complete."
 echo "Go Version: $(go version)"
 echo "Python Version: $(python3.10 --version)"
