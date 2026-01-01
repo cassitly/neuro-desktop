@@ -73,8 +73,8 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| {
             env::current_exe()
                 .ok()
-                .and_then(|p| p.parent().map(|p| p.join("neuro_ipc.json")))
-                .unwrap_or_else(|| std::path::PathBuf::from("./neuro_ipc.json"))
+                .and_then(|p| p.parent().map(|p| p.join("neuro-integration-code-ipc.json")))
+                .unwrap_or_else(|| std::path::PathBuf::from("./neuro-integration-code-ipc.json"))
                 .to_string_lossy()
                 .to_string()
         });
