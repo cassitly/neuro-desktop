@@ -26,6 +26,5 @@ clean:
 	rm -rf native/**/build frontend/dist apps/neuro-desktop/target dist
 
 run: bundle-dev
-	cd apps/neuro-desktop/target/release && ./neuro-desktop
 
 .PHONY: all native go frontend rust bundle-dev bundle-prod clean run
