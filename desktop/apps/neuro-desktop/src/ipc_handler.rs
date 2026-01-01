@@ -13,8 +13,8 @@ use crate::controller::Controller;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IPCCommand {
-    MouseMove { 
-        params: MouseMoveParams,
+    MoveMouseTo { 
+        params: MoveMouseToParams,
         execute_now: Option<bool>,
         clear_after: Option<bool>,
     },
@@ -28,8 +28,8 @@ pub enum IPCCommand {
         execute_now: Option<bool>,
         clear_after: Option<bool>,
     },
-    KeyType { 
-        params: KeyTypeParams,
+    TypeText { 
+        params: TypeTextParams,
         execute_now: Option<bool>,
         clear_after: Option<bool>,
     },
@@ -47,7 +47,7 @@ pub enum IPCCommand {
 
 // Add these new params structs to handle the nested structure:
 #[derive(Debug, Deserialize)]
-pub struct MouseMoveParams {
+pub struct MoveMouseToParams {
     pub x: i32,
     pub y: i32,
 }
@@ -66,7 +66,7 @@ pub struct KeyPressParams {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct KeyTypeParams {
+pub struct TypeTextParams {
     pub text: String,
 }
 
@@ -159,7 +159,7 @@ fn process_once(
 
 fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse {
     match command {
-        IPCCommand::MouseMove { params, execute_now, clear_after } => {
+        IPCCommand::MoveMouseTo { params, execute_now, clear_after } => {
             let execute = execute_now.unwrap_or(true);
             let clear = clear_after.unwrap_or(true);
             
@@ -167,9 +167,9 @@ fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse 
                 Ok(_) => {
                     if execute {
                         controller.execute_instructions().ok();
-                        if clear {
-                            controller.clear_action_queue().ok();
-                        }
+                    }
+                    if clear {
+                        controller.clear_action_queue().ok();
                     }
                     IPCResponse::success()
                 }
@@ -180,26 +180,25 @@ fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse 
         IPCCommand::MouseClick { params, execute_now, clear_after } => {
             let execute = execute_now.unwrap_or(true);
             let clear = clear_after.unwrap_or(true);
+
+            let x = params.x.unwrap_or(0);
+            let y = params.y.unwrap_or(0);
             
-            // If coordinates provided, move first
-            if let (Some(x), Some(y)) = (params.x, params.y) {
-                if let Err(e) = controller.mouse_move(x, y) {
-                    return IPCResponse::failure(format!("Mouse move failed: {}", e));
-                }
+            // Move to coordinates if provided
+            if let Err(e) = controller.mouse_move(x, y) {
+                return IPCResponse::failure(format!("Mouse move failed: {}", e));
             }
 
             // Then click
-            let x = params.x.unwrap_or(0);
-            let y = params.y.unwrap_or(0);
             let button = params.button.as_deref().unwrap_or("left");
 
-            match controller.mouse_click(x, y, button) {
+            match controller.mouse_click(button) {
                 Ok(_) => {
                     if execute {
                         controller.execute_instructions().ok();
-                        if clear {
-                            controller.clear_action_queue().ok();
-                        }
+                    }
+                    if clear {
+                        controller.clear_action_queue().ok();
                     }
                     IPCResponse::success()
                 }
@@ -220,11 +219,10 @@ fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse 
 
             match controller.run_script(&script) {
                 Ok(_) => {
-                    if !execute {
-                        // Script auto-executes, so this shouldn't happen
-                        // but we keep the flag for consistency
+                    if execute {
+                        controller.execute_instructions().ok();
                     }
-                    if execute && clear {
+                    if clear {
                         controller.clear_action_queue().ok();
                     }
                     IPCResponse::success()
@@ -233,7 +231,7 @@ fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse 
             }
         }
 
-        IPCCommand::KeyType { params, execute_now, clear_after } => {
+        IPCCommand::TypeText { params, execute_now, clear_after } => {
             let execute = execute_now.unwrap_or(true);
             let clear = clear_after.unwrap_or(true);
             
@@ -241,9 +239,9 @@ fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse 
                 Ok(_) => {
                     if execute {
                         controller.execute_instructions().ok();
-                        if clear {
-                            controller.clear_action_queue().ok();
-                        }
+                    }
+                    if clear {
+                        controller.clear_action_queue().ok();
                     }
                     IPCResponse::success()
                 }
@@ -257,8 +255,10 @@ fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse 
             
             match controller.run_script(&params.script) {
                 Ok(_) => {
-                    // run_script auto-executes in Python
-                    if execute && clear {
+                    if execute {
+                        controller.execute_instructions().ok();
+                    }
+                    if clear {
                         controller.clear_action_queue().ok();
                     }
                     IPCResponse::success()
