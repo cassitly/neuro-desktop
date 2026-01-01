@@ -32,7 +32,7 @@ New-Item -ItemType Directory -Force -Path native/neuro-integration/dist | Out-Nu
 Push-Location native/neuro-integration
 
 # Build for Windows
-go build -o dist/neuro-integration.exe main.go
+go build -o dist/neuro-integration.exe .
 
 Pop-Location
 

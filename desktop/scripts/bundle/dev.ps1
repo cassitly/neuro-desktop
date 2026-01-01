@@ -18,7 +18,7 @@ Write-Host "Building Neuro integration..."
 New-Item -ItemType Directory -Force -Path native/neuro-integration/dist | Out-Null
 Push-Location native/neuro-integration/
 
-go build -o dist/neuro-integration.exe main.go
+go build -o dist/neuro-integration.exe .
 Pop-Location
 
 Copy-Item `
