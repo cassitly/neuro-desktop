@@ -119,6 +119,21 @@ impl Controller {
     // Telemetry access
     // =====================================================
 
+    pub fn get_current_mouse_position(&self) -> Result<(i32, i32)> {
+        Python::with_gil(|py| {
+            let result = self
+                .monitor
+                .bind(py)
+                .getattr("get_current_mouse_position")?
+                .call0()?;
+            let tuple = result.downcast::<PyTuple>()?;
+            let x = tuple.get_item(0)?.extract::<i32>()?;
+            let y = tuple.get_item(1)?.extract::<i32>()?;
+            Ok::<(i32, i32), PyErr>((x, y))
+        })
+        .map_err(Into::into)
+    }
+
     pub fn action_history(&self) -> Result<String> {
         Python::with_gil(|py| {
             let history = self
