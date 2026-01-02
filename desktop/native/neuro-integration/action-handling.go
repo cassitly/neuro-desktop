@@ -46,6 +46,24 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 
 	// Build IPC command based on action
 	switch action.Name {
+
+	// These two switch between registering and unregistering the actions
+	case string(EnableLLControls):
+		RegisterLLActionsOnStartup = true
+		RegisterHLActionsOnStartup = false
+		n.sendActionResult(action.ID, true, "Unregistering High Level actions and registering Low Level actions")
+		n.unregisterActions()
+		n.registerActions()
+		return
+
+	case string(DisableLLControls):
+		RegisterLLActionsOnStartup = false
+		RegisterHLActionsOnStartup = true
+		n.sendActionResult(action.ID, true, "Unregistering Low Level actions and registering High Level actions")
+		n.unregisterActions()
+		n.registerActions()
+		return
+
 	case string(CmdMouseMove):
 		x, _ := params["x"].(float64)
 		y, _ := params["y"].(float64)
@@ -81,14 +99,6 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 		key, _ := params["key"].(string)
 		keyParams := map[string]interface{}{
 			"key": key,
-		}
-
-		if modifiers, ok := params["modifiers"].([]interface{}); ok {
-			modStrs := make([]string, len(modifiers))
-			for i, m := range modifiers {
-				modStrs[i] = m.(string)
-			}
-			keyParams["modifiers"] = modStrs
 		}
 
 		cmd = IPCCommand{
