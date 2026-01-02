@@ -104,8 +104,6 @@ pub struct MoveMouseToParams {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct MouseClickParams {
-    pub x: Option<i32>,
-    pub y: Option<i32>,
     pub button: Option<String>,
 }
 
