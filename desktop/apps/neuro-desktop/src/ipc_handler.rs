@@ -110,7 +110,6 @@ pub struct MouseClickParams {
 #[derive(Debug, Deserialize, Clone)]
 pub struct KeyPressParams {
     pub key: String,
-    pub modifiers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -373,10 +372,10 @@ impl IPCHandler {
         // Should we = sw
         fn sw_execute_slash_clear(execute_now: bool, clear_after: bool, controller: &Controller) {
             if execute_now {
-                controller.execute_instructions()?;
+                let _ = controller.execute_instructions();
             }
             if clear_after {
-                controller.clear_action_queue()?;
+                let _ = controller.clear_action_queue();
             }
         }
 
@@ -408,9 +407,7 @@ impl IPCHandler {
             }
 
             IPCCommand::KeyPress { params, execute_now, clear_after } => {
-                let keys = params.keys.as_deref().unwrap_or("");
-
-                controller.press_key(keys)
+                controller.press_key(&params.key)
                     .and_then(|_| {
                         sw_execute_slash_clear(execute_now, clear_after, controller);
                         Ok(())
