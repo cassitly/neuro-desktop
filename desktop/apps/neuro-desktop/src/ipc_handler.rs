@@ -370,16 +370,21 @@ impl IPCHandler {
     }
 
     fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse {
+        // Should we = sw
+        fn sw_execute_slash_clear(execute_now: bool, clear_after: bool, controller: &Controller) {
+            if execute_now {
+                controller.execute_instructions()?;
+            }
+            if clear_after {
+                controller.clear_action_queue()?;
+            }
+        }
+
         let result = match command {
             IPCCommand::MoveMouseTo { params, execute_now, clear_after } => {
                 controller.mouse_move(params.x, params.y)
                     .and_then(|_| {
-                        if execute_now {
-                            controller.execute_instructions()?;
-                        }
-                        if clear_after {
-                            controller.clear_action_queue()?;
-                        }
+                        sw_execute_slash_clear(execute_now, clear_after, controller);
                         Ok(())
                     })
             }
@@ -389,12 +394,7 @@ impl IPCHandler {
 
                 controller.mouse_click(button)
                     .and_then(|_| {
-                        if execute_now {
-                            controller.execute_instructions()?;
-                        }
-                        if clear_after {
-                            controller.clear_action_queue()?;
-                        }
+                        sw_execute_slash_clear(execute_now, clear_after, controller);
                         Ok(())
                     })
             }
@@ -402,31 +402,17 @@ impl IPCHandler {
             IPCCommand::TypeText { params, execute_now, clear_after } => {
                 controller.type_text(&params.text)
                     .and_then(|_| {
-                        if execute_now {
-                            controller.execute_instructions()?;
-                        }
-                        if clear_after {
-                            controller.clear_action_queue()?;
-                        }
+                        sw_execute_slash_clear(execute_now, clear_after, controller);
                         Ok(())
                     })
             }
 
             IPCCommand::KeyPress { params, execute_now, clear_after } => {
-                let script = if let Some(modifiers) = params.modifiers {
-                    format!("SHORTCUT {} {}", modifiers.join(" "), params.key)
-                } else {
-                    format!("PRESS {}", params.key)
-                };
+                let keys = params.keys.as_deref().unwrap_or("");
 
-                controller.run_script(&script)
+                controller.press_key(keys)
                     .and_then(|_| {
-                        if execute_now {
-                            controller.execute_instructions()?;
-                        }
-                        if clear_after {
-                            controller.clear_action_queue()?;
-                        }
+                        sw_execute_slash_clear(execute_now, clear_after, controller);
                         Ok(())
                     })
             }
@@ -434,12 +420,7 @@ impl IPCHandler {
             IPCCommand::RunScript { params, execute_now, clear_after } => {
                 controller.run_script(&params.script)
                     .and_then(|_| {
-                        if execute_now {
-                            controller.execute_instructions()?;
-                        }
-                        if clear_after {
-                            controller.clear_action_queue()?;
-                        }
+                        sw_execute_slash_clear(execute_now, clear_after, controller);
                         Ok(())
                     })
             }
@@ -472,6 +453,7 @@ impl IPCHandler {
         };
 
         match result {
+
             Ok(_) => IPCResponse::success(),
             Err(e) => IPCResponse::failure(format!("Execution error: {}", e)),
         }
