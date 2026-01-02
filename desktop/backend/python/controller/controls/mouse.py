@@ -155,15 +155,12 @@ class MouseController:
     # Execution
     # ------------------------
 
-    def execute(self, clear_queue: bool = True):
+    def execute(self):
         """
         Executes all queued instructions sequentially.
         """
         for instr in self.instruction_queue:
             instr.execute()
-
-        if clear_queue:
-            self.instruction_queue.clear()
 
     def clear(self):
         self.instruction_queue.clear()

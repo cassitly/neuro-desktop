@@ -153,11 +153,9 @@ class KeyboardController:
     # Execution
     # ------------------------
 
-    def execute(self, clear_queue: bool = True):
+    def execute(self):
         for instr in self.queue:
             instr.execute()
-        if clear_queue:
-            self.queue.clear()
 
     def clear(self):
         self.queue.clear()
