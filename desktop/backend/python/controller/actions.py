@@ -151,11 +151,10 @@ class ActionParser:
         self.mouse.queue_move(x, y)
 
     def _mouse_click(self, tokens: List[str]):
-        if len(tokens) not in (3, 4):
-            raise ActionParseError("CLICK x y [button]")
-        x, y = int(tokens[1]), int(tokens[2])
-        button = tokens[3] if len(tokens) == 4 else "left"
-        self.mouse.queue_click(x, y, button)
+        if not tokens[1]:
+            raise ActionParseError("CLICK [button]")
+        button = tokens[1]
+        self.mouse.queue_click(button)
 
     def _mouse_click_normalized(self, tokens: List[str]):
         if len(tokens) != 3:
