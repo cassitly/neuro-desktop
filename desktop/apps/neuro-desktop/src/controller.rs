@@ -115,6 +115,50 @@ impl Controller {
         .map_err(Into::into)
     }
 
+    pub fn keyboard_shortcut(&self, keys: &str) -> Result<()> {
+        Python::with_gil(|py| {
+            self.keyboard
+                .bind(py)
+                .getattr("shortcut")?
+                .call1((keys,))?;
+            Ok::<(), PyErr>(())
+        })
+        .map_err(Into::into)
+    }
+
+    pub fn hold_key_down(&self, key: &str) -> Result<()> {
+        Python::with_gil(|py| {
+            self.keyboard
+                .bind(py)
+                .getattr("hold")?
+                .call1((key,))?;
+            Ok::<(), PyErr>(())
+        })
+        .map_err(Into::into)
+    }
+
+    pub fn release_key(&self, key: &str) -> Result<()> {
+        Python::with_gil(|py| {
+            self.keyboard
+                .bind(py)
+                .getattr("release")?
+                .call1((key,))?;
+            Ok::<(), PyErr>(())
+        })
+        .map_err(Into::into)
+    }
+
+    pub fn press_key(&self, key: &str) -> Result<()> {
+        Python::with_gil(|py| {
+            self.keyboard
+                .bind(py)
+                .getattr("press")?
+                .call1((key,))?;
+            Ok::<(), PyErr>(())
+        })
+        .map_err(Into::into)
+    }
+
     // =====================================================
     // Telemetry access
     // =====================================================
