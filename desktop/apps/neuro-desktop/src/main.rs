@@ -127,12 +127,12 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             _ = check_interval.tick() => {
                 // Check for IPC shutdown first
-                if !ipc_handler.load(std::sync::atomic::Ordering::SeqCst) {
-                    println!(); // Print out a space for clarity
-                    println!("Shutdown signal received, Neuro Desktop is stopping fully...");
-                    go_manager.stop();
-                    break;
-                }
+                // if !ipc_handler.load(std::sync::atomic::Ordering::SeqCst) {
+                //     println!(); // Print out a space for clarity
+                //     println!("Shutdown signal received, Neuro Desktop is stopping fully...");
+                //     go_manager.stop();
+                //     break;
+                // }
 
                 // Check if Go process crashed
                 if !go_manager.is_running() {
