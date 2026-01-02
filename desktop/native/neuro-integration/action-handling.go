@@ -38,11 +38,15 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 	clearAfter := true
 
 	if val, ok := params["execute_now"].(bool); ok {
+		fmt.Println("Execute now:", val)
 		executeNow = val
 	}
 	if val, ok := params["clear_after"].(bool); ok {
 		clearAfter = val
 	}
+
+	fmt.Println("Params:", params)
+	fmt.Println("Execute now:", executeNow)
 
 	// Build IPC command based on action
 	switch action.Name {
@@ -52,26 +56,15 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 		cmd = IPCCommand{
 			Type: CmdMouseMove,
 			Params: map[string]interface{}{
-				"x":           int(x),
-				"y":           int(y),
-				"execute_now": executeNow,
-				"clear_after": clearAfter,
+				"x": int(x),
+				"y": int(y),
 			},
 		}
 
 	case string(CmdMouseClick):
 		button, _ := params["button"].(string)
 		clickParams := map[string]interface{}{
-			"button":      button,
-			"execute_now": executeNow,
-			"clear_after": clearAfter,
-		}
-		// Add coordinates if provided
-		if x, ok := params["x"].(float64); ok {
-			cmd.Params["x"] = int(x)
-		}
-		if y, ok := params["y"].(float64); ok {
-			cmd.Params["y"] = int(y)
+			"button": button,
 		}
 
 		cmd = IPCCommand{
@@ -84,18 +77,14 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 		cmd = IPCCommand{
 			Type: CmdTypeText,
 			Params: map[string]interface{}{
-				"text":        text,
-				"execute_now": executeNow,
-				"clear_after": clearAfter,
+				"text": text,
 			},
 		}
 
 	case string(CmdKeyPress):
 		key, _ := params["key"].(string)
 		keyParams := map[string]interface{}{
-			"key":         key,
-			"execute_now": executeNow,
-			"clear_after": clearAfter,
+			"key": key,
 		}
 
 		if modifiers, ok := params["modifiers"].([]interface{}); ok {
@@ -116,9 +105,7 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 		cmd = IPCCommand{
 			Type: CmdRunScript,
 			Params: map[string]interface{}{
-				"script":      script,
-				"execute_now": executeNow,
-				"clear_after": clearAfter,
+				"script": script,
 			},
 		}
 
@@ -135,6 +122,14 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 	default:
 		n.sendActionResult(action.ID, false, fmt.Sprintf("Unknown action: %s", action.Name))
 		return
+	}
+
+	fmt.Println("Command:", cmd)
+	cmd = IPCCommand{
+		Type:       cmd.Type,
+		Params:     cmd.Params,
+		ExecuteNow: executeNow,
+		ClearAfter: clearAfter,
 	}
 
 	// Send to Rust

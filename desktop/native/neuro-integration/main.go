@@ -9,8 +9,10 @@ import (
 
 // IPC Command to Rust binary
 type IPCCommand struct {
-	Type   CommandType            `json:"type"`
-	Params map[string]interface{} `json:"params"`
+	Type       CommandType            `json:"type"`
+	Params     map[string]interface{} `json:"params"`
+	ExecuteNow bool                   `json:"execute_now"`
+	ClearAfter bool                   `json:"clear_after"`
 }
 
 // IPC Response from Rust binary

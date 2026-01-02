@@ -48,14 +48,6 @@ var ActionSchemas = map[string]ActionDefinition{
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"x": map[string]interface{}{
-					"type":        "integer",
-					"description": "X coordinate (optional)",
-				},
-				"y": map[string]interface{}{
-					"type":        "integer",
-					"description": "Y coordinate (optional)",
-				},
 				"button": map[string]interface{}{
 					"type":        "string",
 					"enum":        []string{"left", "right", "middle"},
