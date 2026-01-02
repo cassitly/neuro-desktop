@@ -304,13 +304,9 @@ impl IPCHandler {
         let data = fs::read_to_string(&ipc_file)
             .context("Failed to read IPC file")?;
 
-        println!("Received command: {}", data);
-
         // Parse command
         let command: IPCCommand = serde_json::from_str(&data)
             .context("Failed to parse IPC command")?;
-
-        println!("Received command: {:?}", command);
 
         // Validate command
         if let Err(e) = command.validate() {
@@ -324,8 +320,6 @@ impl IPCHandler {
         // Delete command file immediately
         fs::remove_file(&ipc_file)
             .context("Failed to remove IPC file")?;
-
-        debug!("Processing command: {:?}", command);
 
         // Execute command
         let response = Self::execute_command(controller, command);
@@ -378,15 +372,11 @@ impl IPCHandler {
     }
 
     fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse {
-        println!("Executing command: {:?}", command);
         let result = match command {
             IPCCommand::MoveMouseTo { params, execute_now, clear_after } => {
                 controller.mouse_move(params.x, params.y)
                     .and_then(|_| {
                         if execute_now {
-                            println!("Mouse moved to ({}, {})", params.x, params.y);
-                            println!("{}", execute_now);
-                            println!("{}", clear_after);
                             controller.execute_instructions()?;
                         }
                         if clear_after {

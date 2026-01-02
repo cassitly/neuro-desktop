@@ -38,15 +38,11 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 	clearAfter := true
 
 	if val, ok := params["execute_now"].(bool); ok {
-		fmt.Println("Execute now:", val)
 		executeNow = val
 	}
 	if val, ok := params["clear_after"].(bool); ok {
 		clearAfter = val
 	}
-
-	fmt.Println("Params:", params)
-	fmt.Println("Execute now:", executeNow)
 
 	// Build IPC command based on action
 	switch action.Name {
@@ -124,7 +120,6 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 		return
 	}
 
-	fmt.Println("Command:", cmd)
 	cmd = IPCCommand{
 		Type:       cmd.Type,
 		Params:     cmd.Params,
