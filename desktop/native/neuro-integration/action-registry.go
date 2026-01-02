@@ -1,10 +1,14 @@
 package main
 
 const (
-	CmdMouseMove        CommandType = "move_mouse_to"
-	CmdMouseClick       CommandType = "mouse_click"
-	CmdKeyPress         CommandType = "key_press"
-	CmdTypeText         CommandType = "type_text"
+	CmdMouseMove  CommandType = "move_mouse_to"
+	CmdMouseClick CommandType = "mouse_click"
+	CmdKeyPress   CommandType = "key_press"
+	CmdTypeText   CommandType = "type_text"
+
+	EnableLLControls  CommandType = "enable_low_level_controls"
+	DisableLLControls CommandType = "disable_low_level_controls"
+
 	CmdRunScript        CommandType = "run_script"
 	CmdExecuteQueue     CommandType = "execute_queue"
 	CmdClearActionQueue CommandType = "clear_action_queue"
@@ -13,7 +17,26 @@ const (
 	CmdShutdownImmediately CommandType = "shutdown_immediately"
 )
 
-var ActionSchemas = map[string]ActionDefinition{
+var (
+	RegisterHLActionsOnStartup bool = false
+	RegisterLLActionsOnStartup bool = true
+)
+
+var HLActionSchemas = map[string]ActionDefinition{
+	string(EnableLLControls): {
+		Name:        string(EnableLLControls),
+		Description: "Enable low-level mouse and keyboard controls, and disable high-level controls",
+		Schema:      map[string]interface{}{},
+	},
+}
+
+var LLActionSchemas = map[string]ActionDefinition{
+	string(DisableLLControls): {
+		Name:        string(DisableLLControls),
+		Description: "Disable low-level mouse and keyboard controls, and re-enable high-level controls",
+		Schema:      map[string]interface{}{},
+	},
+
 	string(CmdMouseMove): {
 		Name:        string(CmdMouseMove),
 		Description: "Move the mouse cursor (in a human-like way), towards specific screen coordinates (relative to the top left corner of the screen)",
@@ -102,13 +125,6 @@ var ActionSchemas = map[string]ActionDefinition{
 					"type":        "string",
 					"description": "Key to press",
 				},
-				"modifiers": map[string]interface{}{
-					"type":        "array",
-					"description": "Modifier keys (shift, ctrl, alt)",
-					"items": map[string]interface{}{
-						"type": "string",
-					},
-				},
 				"execute_now": map[string]interface{}{
 					"type":        "boolean",
 					"description": "Execute immediately (true) or queue for macro (false). Default: true",
@@ -122,11 +138,6 @@ var ActionSchemas = map[string]ActionDefinition{
 			},
 			"required": []string{"key"},
 		},
-	},
-	string(CmdClearActionQueue): {
-		Name:        string(CmdClearActionQueue),
-		Description: "Clear the action queue. The action queue persists across every action, you must clear it manually. Unless you are creating a macro.",
-		Schema:      map[string]interface{}{},
 	},
 	string(CmdRunScript): {
 		Name:        string(CmdRunScript),
@@ -155,6 +166,11 @@ var ActionSchemas = map[string]ActionDefinition{
 	string(CmdExecuteQueue): {
 		Name:        string(CmdExecuteQueue),
 		Description: "Execute the action queue.",
+		Schema:      map[string]interface{}{},
+	},
+	string(CmdClearActionQueue): {
+		Name:        string(CmdClearActionQueue),
+		Description: "Clear the action queue. The action queue persists across every action, you must clear it manually. Unless you are creating a macro.",
 		Schema:      map[string]interface{}{},
 	},
 }
