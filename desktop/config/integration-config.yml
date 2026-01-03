@@ -1,6 +1,6 @@
 connection:
   # APIs
-  neuro-backend: "ws://localhost:1337"
+  neuro-backend: "ws://localhost:8000"
   neuro-desktop-plugins-server: "ws://localhost:2328"
 
   # User interfaces
