@@ -2,7 +2,7 @@
 # desktop/Makefile
 # ============================================================
 
-all: native frontend rust go
+all: bundle-prod
 
 native:
 	cd native/c_cpp && cmake -S . -B build && cmake --build build
