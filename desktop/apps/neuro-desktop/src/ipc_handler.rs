@@ -415,11 +415,9 @@ impl IPCHandler {
             }
 
             IPCCommand::RunScript { params, execute_now, clear_after } => {
+                // This command auto executes
                 controller.run_script(&params.script)
-                    .and_then(|_| {
-                        sw_execute_slash_clear(execute_now, clear_after, controller);
-                        Ok(())
-                    })
+                    .and_then(|_| Ok(()))
             }
 
             IPCCommand::ExecuteQueue => controller.execute_instructions(),

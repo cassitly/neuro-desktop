@@ -149,16 +149,6 @@ var LLActionSchemas = map[string]ActionDefinition{
 					"type":        "string",
 					"description": "Script with multiple commands, one per line",
 				},
-				"execute_now": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Execute immediately (true) or queue for macro (false). Default: true",
-					"default":     true,
-				},
-				"clear_after": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Clear action queue after execution (true) or keep for macro (false). Default: true",
-					"default":     true,
-				},
 			},
 			"required": []string{"script"},
 		},
