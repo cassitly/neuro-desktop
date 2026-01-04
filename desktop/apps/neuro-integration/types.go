@@ -35,3 +35,18 @@ type NeuroIntegration struct {
 	// Neuro Desktop Specific
 	ipcFilePath string
 }
+
+// IPC Command to Rust binary
+type IPCCommand struct {
+	Type       CommandType            `json:"type"`
+	Params     map[string]interface{} `json:"params"`
+	ExecuteNow bool                   `json:"execute_now"`
+	ClearAfter bool                   `json:"clear_after"`
+}
+
+// IPC Response from Rust binary
+type IPCResponse struct {
+	Success bool                   `json:"success"`
+	Data    map[string]interface{} `json:"data,omitempty"`
+	Error   string                 `json:"error,omitempty"`
+}

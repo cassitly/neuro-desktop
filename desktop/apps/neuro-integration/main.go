@@ -3,23 +3,27 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
+
+	"github.com/gorilla/websocket"
 )
 
-// IPC Command to Rust binary
-type IPCCommand struct {
-	Type       CommandType            `json:"type"`
-	Params     map[string]interface{} `json:"params"`
-	ExecuteNow bool                   `json:"execute_now"`
-	ClearAfter bool                   `json:"clear_after"`
-}
+func NewNeuroIntegration(wsURL, gameName, ipcPath string) (*NeuroIntegration, error) {
+	// Connect to Neuro WebSocket
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Neuro: %w", err)
+	}
 
-// IPC Response from Rust binary
-type IPCResponse struct {
-	Success bool                   `json:"success"`
-	Data    map[string]interface{} `json:"data,omitempty"`
-	Error   string                 `json:"error,omitempty"`
+	integration := &NeuroIntegration{
+		ws:          ws,
+		gameName:    gameName,
+		ipcFilePath: ipcPath,
+	}
+
+	return integration, nil
 }
 
 func (n *NeuroIntegration) listen() {
