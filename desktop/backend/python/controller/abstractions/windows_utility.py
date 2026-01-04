@@ -4,7 +4,7 @@ import win32con
 import time
 import random
 
-from ..libraries.infoutils.windowinfo import WindowInfo
+from ..libraries.window_info import WindowInfo
 from ..libraries.mouse_pathfinder import AlgorithmicPath
 
 
