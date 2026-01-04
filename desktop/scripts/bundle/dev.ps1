@@ -61,3 +61,6 @@ Write-Host ""
 Write-Host "=== Dev bundle complete ==="
 Write-Host "Run from: $DIST"
 Write-Host "Execute:  .\neuro-desktop.exe"
+
+Set-Location $DIST
+.\neuro-desktop.exe
