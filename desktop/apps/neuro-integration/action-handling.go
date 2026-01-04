@@ -110,16 +110,16 @@ func (n *NeuroIntegration) handleAction(action IncomingAction) {
 	case string(EnableLLControls):
 		RegisterLLActionsOnStartup = true
 		RegisterHLActionsOnStartup = false
-		n.sendActionResult(action.ID, true, "Unregistering High Level actions and registering Low Level actions")
 		n.unregisterActions()
+		n.sendActionResult(action.ID, true, "Unregistering High Level actions and registering Low Level actions")
 		n.registerActions()
 		return
 
 	case string(DisableLLControls):
 		RegisterLLActionsOnStartup = false
 		RegisterHLActionsOnStartup = true
-		n.sendActionResult(action.ID, true, "Unregistering Low Level actions and registering High Level actions")
 		n.unregisterActions()
+		n.sendActionResult(action.ID, true, "Unregistering Low Level actions and registering High Level actions")
 		n.registerActions()
 		return
 
