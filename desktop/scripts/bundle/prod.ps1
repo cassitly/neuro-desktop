@@ -28,8 +28,8 @@ Write-Host "      ✓ Rust binary built"
 # ---------- Build Neuro Integration ----------
 Write-Host "[2/4] Building Neuro integration..."
 
-New-Item -ItemType Directory -Force -Path native/neuro-integration/dist | Out-Null
-Push-Location native/neuro-integration
+New-Item -ItemType Directory -Force -Path apps/neuro-integration/dist | Out-Null
+Push-Location apps/neuro-integration
 
 # Build for Windows
 go build -o dist/neuro-integration.exe .
@@ -37,13 +37,13 @@ go build -o dist/neuro-integration.exe .
 Pop-Location
 
 Copy-Item `
-  native/neuro-integration/dist/neuro-integration.exe `
+  apps/neuro-integration/dist/neuro-integration.exe `
   $DIST/neuro-integration.exe
 
 New-Item -ItemType Directory -Force -Path $DIST/integration-docs | Out-Null
 
 Copy-Item `
-  native/neuro-integration/integration-docs/"Action Script Documentation.md" `
+  apps/neuro-integration/integration-docs/"Action Script Documentation.md" `
   $DIST/integration-docs/"Action Script Documentation.md"
 
 Write-Host "      ✓ Neuro Integration binary built"
