@@ -6,6 +6,7 @@ import time
 
 import pyautogui
 
+pyautogui.PAUSE = 0
 @dataclass
 class PathProfile:
     """Tuning parameters for different 'personalities'"""
@@ -80,9 +81,9 @@ class AlgorithmicPath:
             duration = min(duration, self.profile.max_duration)
         
         # Adaptive steps: fewer steps = smoother, but distance-dependent
-        steps = max(15, int(distance / 10))  # About 10 pixels per step
-        steps = min(steps, 60)  # Cap at 60 for very long distances
-        
+        #steps = max(15, int(distance / 10))  # About 10 pixels per step
+        #steps = min(steps, 60)  # Cap at 60 for very long distances
+        steps = 1
         # Create control points for cubic Bézier
         # Add randomness to curve direction
         angle_offset = random.uniform(-math.pi/4, math.pi/4)
