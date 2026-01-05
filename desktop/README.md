@@ -93,7 +93,7 @@ $env:NEURO_SDK_WS_URL = "ws://localhost:8000"
 $env:NEURO_IPC_FILE = "./neuro_ipc.json"
 
 # Run Go integration
-cd native/go-neuro-integration
+cd apps/neuro-integration
 ./go-neuro-integration
 ```
 
@@ -118,7 +118,7 @@ go build -o go-neuro-integration.exe main.go
 Pop-Location
 
 Copy-Item `
-  native/go-neuro-integration/go-neuro-integration.exe `
+  apps/neuro-integration/dist/neuro-integration.exe `
   $DIST
 
 # ... rest of existing code ...
@@ -271,7 +271,7 @@ Check `neuro_ipc.json.response`:
 
 1. Start Randy: `cd Randy && npm start`
 2. Start Rust: `cargo run --release`
-3. Start Go: `./go-neuro-integration`
+3. Start Go: `./neuro-integration`
 4. Randy will force random actions
 
 ### 3. Test Script Execution
