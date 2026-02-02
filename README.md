@@ -1,3 +1,6 @@
+# Neuro's Desktop
+An integration that allows neuro to use Windows.
+
 ## Standard Development Environment
 ### Installation
 ```bash
