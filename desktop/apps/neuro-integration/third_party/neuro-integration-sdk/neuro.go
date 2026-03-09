@@ -158,6 +158,12 @@ func NewClient(config ClientConfig) (*Client, error) {
 // Connect establishes the websocket connection and starts the message loop
 func (c *Client) Connect() error {
 	c.connMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			c.connMu.Unlock()
+		}
+	}()
 
 	if c.closed {
 		return errors.New("client is closed")
@@ -196,6 +202,7 @@ func (c *Client) Connect() error {
 	// CRITICAL: Unlock BEFORE calling Startup() to avoid deadlock
 	// Startup() calls send() which needs to acquire a read lock
 	c.connMu.Unlock()
+	locked = false
 
 	// Send startup message
 	if err := c.Startup(); err != nil {

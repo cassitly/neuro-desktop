@@ -25,6 +25,19 @@ Copy-Item `
 
 Write-Host "      ??? Rust binary built"
 
+# ---------- Build Process Handler ----------
+Write-Host "[1.5/4] Building Process Handler..."
+Push-Location apps/process-handler
+if (!(Test-Path "build")) {
+    New-Item -ItemType Directory -Path "build" | Out-Null
+}
+Push-Location build
+cmake .. -DBUILD_TESTS=OFF
+cmake --build . --config Release
+Pop-Location
+Pop-Location
+Write-Host "      [ok] Process Handler built"
+
 # ---------- Build Neuro Integration ----------
 Write-Host "[2/4] Building Neuro integration..."
 
@@ -62,7 +75,7 @@ if ($processHandlerSource) {
     Copy-Item $processHandlerSource "$DIST/process-handler.exe"
     Write-Host "      [ok] Process Handler binary bundled"
 } else {
-    Write-Host "      [..] Process Handler binary not bundled (build apps/process-handler first)"
+    throw "Process Handler binary not found after build step"
 }
 
 $relayBinarySource = $env:NEURO_RELAY_BINARY_SOURCE

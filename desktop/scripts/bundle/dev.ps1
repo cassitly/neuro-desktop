@@ -52,6 +52,18 @@ else {
 
 Write-Host "  [ok] Neuro Integration binary copied to $DIST"
 
+# ---------- Build Process Handler ----------
+Write-Host "Building process handler..."
+Push-Location apps/process-handler
+if (!(Test-Path "build")) {
+  New-Item -ItemType Directory -Path "build" | Out-Null
+}
+Push-Location build
+cmake .. -DBUILD_TESTS=OFF
+cmake --build . --config Release
+Pop-Location
+Pop-Location
+
 # ---------- Copy Process Handler ----------
 $processHandlerCandidates = @(
   "apps/process-handler/build/Release/process-handler.exe",

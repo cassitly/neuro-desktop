@@ -65,6 +65,7 @@ int main(int argc, char* argv[]) {
     rust_config.enable_heartbeat = true;
     rust_config.heartbeat_interval = std::chrono::seconds(5);
     rust_config.env_vars["NEURO_IPC_FILE"] = "./ipc_rust_main.json";
+    rust_config.env_vars["NEURO_SUPERVISED"] = "true";
     
     // ============================================================
     // Configure Go Integration

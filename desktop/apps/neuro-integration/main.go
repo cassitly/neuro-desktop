@@ -2,10 +2,14 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	neuro "github.com/cassitly/neuro-integration-sdk"
 )
@@ -44,8 +48,35 @@ func NewNDIntegration(
 }
 
 func (n *NDIntegration) Start() error {
-	if err := n.client.Connect(); err != nil {
-		return err
+	retryDelaySeconds := 5
+	if rawRetryDelay := strings.TrimSpace(os.Getenv("NEURO_WS_RETRY_SECONDS")); rawRetryDelay != "" {
+		if parsedDelay, err := strconv.Atoi(rawRetryDelay); err == nil && parsedDelay > 0 {
+			retryDelaySeconds = parsedDelay
+		}
+	}
+
+	maxRetries := 0
+	if rawMaxRetries := strings.TrimSpace(os.Getenv("NEURO_WS_MAX_RETRIES")); rawMaxRetries != "" {
+		if parsedMax, err := strconv.Atoi(rawMaxRetries); err == nil && parsedMax >= 0 {
+			maxRetries = parsedMax
+		}
+	}
+
+	attempt := 0
+	for {
+		if err := n.client.Connect(); err == nil {
+			break
+		} else {
+			attempt++
+			log.Printf("Connect attempt %d failed: %v", attempt, err)
+
+			if maxRetries > 0 && attempt >= maxRetries {
+				return fmt.Errorf("failed to connect after %d attempts", attempt)
+			}
+
+			log.Printf("Retrying connection in %d second(s)...", retryDelaySeconds)
+			time.Sleep(time.Duration(retryDelaySeconds) * time.Second)
+		}
 	}
 
 	go func() {
