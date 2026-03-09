@@ -112,6 +112,22 @@ New-Item -ItemType Directory -Force -Path $PY_DIST | Out-Null
 
 Copy-Item backend/python/.venv/Lib $PY_DIST/Lib -Recurse
 
+$sitePackagesPath = Join-Path $PY_DIST "Lib/site-packages"
+if (Test-Path $sitePackagesPath) {
+    # Bundle only runtime dependencies needed by controller drivers.
+    # Local development environments sometimes contain optional scientific stacks
+    # (numpy/scipy) that can crash embedded Python builds on Windows.
+    $stripPatterns = @("numpy*", "scipy*")
+    foreach ($pattern in $stripPatterns) {
+        Get-ChildItem -Path $sitePackagesPath -Force -Filter $pattern -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # Remove cached wheel artifacts accidentally copied from development venvs.
+    Get-ChildItem -Path $sitePackagesPath -Force -Filter "*.whl" -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
 # ---------- Copy Controller Drivers ----------
 Copy-Item `
   backend/python/controller `

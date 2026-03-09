@@ -103,6 +103,20 @@ New-Item -ItemType Directory -Force -Path $PY_DIST | Out-Null
 
 Copy-Item backend/python/.venv/Lib $PY_DIST/Lib -Recurse
 
+$sitePackagesPath = Join-Path $PY_DIST "Lib/site-packages"
+if (Test-Path $sitePackagesPath) {
+  # Keep bundle runtime deterministic; avoid shipping optional scientific
+  # packages from local dev venvs that can destabilize embedded Python on Windows.
+  $stripPatterns = @("numpy*", "scipy*")
+  foreach ($pattern in $stripPatterns) {
+    Get-ChildItem -Path $sitePackagesPath -Force -Filter $pattern -ErrorAction SilentlyContinue |
+      Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  Get-ChildItem -Path $sitePackagesPath -Force -Filter "*.whl" -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
 # ---------- Copy Controller Drivers ----------
 Copy-Item backend/python/controller "$PY_DIST/controller" -Recurse
 
