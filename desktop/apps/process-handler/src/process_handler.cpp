@@ -40,6 +40,7 @@ std::string Message::to_json() const {
 }
 
 Message Message::from_json(const std::string& json) {
+    (void)json;
     // Simple JSON parsing (use a proper library in production)
     Message msg;
     // TODO: Implement proper JSON parsing
@@ -161,7 +162,7 @@ bool StdioChannel::send(const Message& msg) {
     
 #ifdef _WIN32
     DWORD written;
-    return WriteFile(stdin_pipe, json.c_str(), json.length(), &written, NULL);
+    return WriteFile(stdin_pipe, json.c_str(), static_cast<DWORD>(json.length()), &written, NULL);
 #else
     int fd = (int)(intptr_t)stdin_pipe;
     return write(fd, json.c_str(), json.length()) > 0;
@@ -169,6 +170,7 @@ bool StdioChannel::send(const Message& msg) {
 }
 
 bool StdioChannel::receive(Message& msg, int timeout_ms) {
+    (void)timeout_ms;
     // Non-blocking read with timeout
     char buffer[4096];
     
@@ -263,6 +265,8 @@ bool MessageValidator::is_safe_json(const std::string& json) {
 }
 
 bool MessageValidator::check_rate_limit(const std::string& source, int max_per_second) {
+    (void)source;
+    (void)max_per_second;
     // TODO: Implement rate limiting per source
     return true;
 }
@@ -560,6 +564,97 @@ bool ProcessManager::restart_process(const std::string& name) {
     stop_process(name, false);
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     return start_process(name);
+}
+
+bool ProcessManager::send_message(const std::string& target, const Message& msg) {
+    std::lock_guard<std::mutex> lock(manager_mutex);
+
+    auto proc_it = processes.find(target);
+    if (proc_it == processes.end()) {
+        return false;
+    }
+
+    const auto& info = proc_it->second;
+    for (auto method : info.config.comm_methods) {
+        const std::string channel_key = target + "_" + std::to_string(static_cast<int>(method));
+        auto channel_it = channels.find(channel_key);
+        if (channel_it != channels.end() && channel_it->second->send(msg)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool ProcessManager::broadcast_message(const Message& msg) {
+    std::lock_guard<std::mutex> lock(manager_mutex);
+
+    bool sent_any = false;
+    for (const auto& [name, info] : processes) {
+        if (info.state != ProcessState::RUNNING) {
+            continue;
+        }
+
+        Message target_msg = msg;
+        target_msg.target_process = name;
+
+        for (auto method : info.config.comm_methods) {
+            const std::string channel_key = name + "_" + std::to_string(static_cast<int>(method));
+            auto channel_it = channels.find(channel_key);
+            if (channel_it != channels.end() && channel_it->second->send(target_msg)) {
+                sent_any = true;
+                break;
+            }
+        }
+    }
+
+    return sent_any;
+}
+
+void ProcessManager::register_message_handler(
+    const std::string& command,
+    std::function<void(const Message&)> handler
+) {
+    if (router) {
+        router->register_handler(command, std::move(handler));
+    }
+}
+
+void ProcessManager::send_heartbeat_check(const std::string& name) {
+    Message heartbeat;
+    heartbeat.type = MessageType::HEARTBEAT;
+    heartbeat.source_process = "process_handler";
+    heartbeat.target_process = name;
+    heartbeat.command = "heartbeat";
+    heartbeat.data = "{}";
+    heartbeat.timestamp = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()
+        ).count()
+    );
+    heartbeat.message_id = "hb_" + name;
+
+    send_message(name, heartbeat);
+}
+
+void ProcessManager::enable_health_monitoring(bool enable) {
+    (void)enable;
+    // TODO: add dedicated health monitor thread/toggle when implemented.
+}
+
+std::string ProcessManager::get_health_report() {
+    std::lock_guard<std::mutex> lock(manager_mutex);
+
+    std::ostringstream oss;
+    oss << "Process Health Report\n";
+    for (const auto& [name, info] : processes) {
+        oss << "- " << name
+            << " state=" << static_cast<int>(info.state)
+            << " pid=" << info.pid
+            << " restarts=" << info.restart_count
+            << "\n";
+    }
+    return oss.str();
 }
 
 void ProcessManager::start_all() {

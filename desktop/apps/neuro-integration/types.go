@@ -1,50 +1,32 @@
 package main
 
 import (
-	"encoding/json"
+	"sync"
 
-	"github.com/gorilla/websocket"
+	neuro "github.com/cassitly/neuro-integration-sdk"
 )
 
-// Neuro API Message Types
-type NeuroMessage struct {
-	Command string          `json:"command"`
-	Game    string          `json:"game,omitempty"`
-	Data    json.RawMessage `json:"data,omitempty"`
-}
-
-type ActionDefinition struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Schema      map[string]interface{} `json:"schema,omitempty"`
-}
-
-type IncomingAction struct {
-	ID   string          `json:"id"`
-	Name string          `json:"name"`
-	Data json.RawMessage `json:"data,omitempty"`
-}
-
-// Command types that match your Rust implementation
+// Command types that match the Rust IPC implementation.
 type CommandType string
 
-type NeuroIntegration struct {
-	ws       *websocket.Conn
-	gameName string
-
-	// Neuro Desktop Specific
+type NDIntegration struct {
+	client      *neuro.Client
 	ipcFilePath string
+	permissions *PermissionPolicy
+	done        chan struct{}
+	doneOnce    sync.Once
+	ipcMu       sync.Mutex
 }
 
-// IPC Command to Rust binary
+// IPC Command to Rust binary.
 type IPCCommand struct {
 	Type       CommandType            `json:"type"`
-	Params     map[string]interface{} `json:"params"`
+	Params     map[string]interface{} `json:"params,omitempty"`
 	ExecuteNow bool                   `json:"execute_now"`
 	ClearAfter bool                   `json:"clear_after"`
 }
 
-// IPC Response from Rust binary
+// IPC Response from Rust binary.
 type IPCResponse struct {
 	Success bool                   `json:"success"`
 	Data    map[string]interface{} `json:"data,omitempty"`

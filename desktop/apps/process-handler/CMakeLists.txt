@@ -98,34 +98,43 @@ if(BUILD_TESTS)
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
     
-    # Test executable
-    add_executable(process-handler-tests
+    # Build each test source as its own executable.
+    # The test sources define their own `main`, so they must not be linked together.
+    set(PROCESS_HANDLER_TEST_SOURCES
         tests/test_message.cpp
         tests/test_validator.cpp
         tests/test_channels.cpp
         tests/test_process_manager.cpp
-        src/process_handler.cpp  # Include implementation
     )
-    
-    target_include_directories(process-handler-tests PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    
-    target_link_libraries(process-handler-tests PRIVATE
-        gtest_main
-        gmock_main
-        nlohmann_json::nlohmann_json
-    )
-    
-    if(WIN32)
-        target_link_libraries(process-handler-tests PRIVATE ws2_32 kernel32)
-    else()
-        target_link_libraries(process-handler-tests PRIVATE pthread dl)
-    endif()
-    
-    # Discover tests
+
     include(GoogleTest)
-    gtest_discover_tests(process-handler-tests)
+
+    foreach(TEST_SOURCE IN LISTS PROCESS_HANDLER_TEST_SOURCES)
+        get_filename_component(TEST_NAME ${TEST_SOURCE} NAME_WE)
+
+        add_executable(${TEST_NAME}
+            ${TEST_SOURCE}
+            src/process_handler.cpp
+        )
+
+        target_include_directories(${TEST_NAME} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+        )
+
+        target_link_libraries(${TEST_NAME} PRIVATE
+            gtest
+            gmock
+            nlohmann_json::nlohmann_json
+        )
+
+        if(WIN32)
+            target_link_libraries(${TEST_NAME} PRIVATE ws2_32 kernel32)
+        else()
+            target_link_libraries(${TEST_NAME} PRIVATE pthread dl)
+        endif()
+
+        gtest_discover_tests(${TEST_NAME})
+    endforeach()
 endif()
 
 # ============================================================

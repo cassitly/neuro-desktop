@@ -1,8 +1,8 @@
 // desktop/apps/neuro-desktop/src/go_manager.rs
 use anyhow::{Context, Result};
-use std::process::{Child, Command};
 use std::env;
 use std::path::PathBuf;
+use std::process::{Child, Command};
 
 pub struct GoProcessManager {
     child: Option<Child>,
@@ -38,22 +38,29 @@ impl GoProcessManager {
         })
     }
 
-    pub fn start(&mut self, ws_url: &str, ipc_file: &str) -> Result<()> {
+    pub fn start(&mut self, ws_url: &str, ipc_file: &str, permissions_file: &str) -> Result<()> {
         if self.child.is_some() {
             println!("Neuro integration already running");
             return Ok(());
         }
 
-        println!("Starting Neuro integration at: {}", self.binary_path.display());
+        println!(
+            "Starting Neuro integration at: {}",
+            self.binary_path.display()
+        );
 
         let child = Command::new(&self.binary_path)
             .env("NEURO_SDK_WS_URL", ws_url)
             .env("NEURO_IPC_FILE", ipc_file)
+            .env("NEURO_PERMISSIONS_FILE", permissions_file)
             .spawn()
             .context("Failed to start Neuro integration")?;
 
         self.child = Some(child);
-        println!("Neuro integration started with PID: {}", self.child.as_ref().unwrap().id());
+        println!(
+            "Neuro integration started with PID: {}",
+            self.child.as_ref().unwrap().id()
+        );
 
         Ok(())
     }
@@ -77,17 +84,17 @@ impl GoProcessManager {
         }
     }
 
-    pub fn restart(&mut self, ws_url: &str, ipc_file: &str) -> Result<()> {
+    pub fn restart(&mut self, ws_url: &str, ipc_file: &str, permissions_file: &str) -> Result<()> {
         println!("Restarting Neuro integration...");
         self.stop();
         std::thread::sleep(std::time::Duration::from_millis(500));
-        self.start(ws_url, ipc_file)
+        self.start(ws_url, ipc_file, permissions_file)
     }
 
     pub fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
             println!("Stopping Neuro integration...");
-            
+
             match child.kill() {
                 Ok(_) => {
                     let _ = child.wait();

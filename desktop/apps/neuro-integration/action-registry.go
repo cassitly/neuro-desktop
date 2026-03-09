@@ -1,5 +1,14 @@
 package main
 
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
+
+	neuro "github.com/cassitly/neuro-integration-sdk"
+)
+
 const (
 	CmdMouseMove  CommandType = "move_mouse_to"
 	CmdMouseClick CommandType = "mouse_click"
@@ -9,10 +18,31 @@ const (
 	EnableLLControls  CommandType = "enable_low_level_controls"
 	DisableLLControls CommandType = "disable_low_level_controls"
 
-	CmdRunScript        CommandType = "run_script"
-	CmdExecuteQueue     CommandType = "execute_queue"
-	CmdClearActionQueue CommandType = "clear_action_queue"
-
+	CmdOpenWindowsMenu     CommandType = "open_windows_menu"
+	CmdShowDesktop         CommandType = "show_desktop"
+	CmdMinimizeAll         CommandType = "minimize_all_windows"
+	CmdCloseForeground     CommandType = "close_foreground_app"
+	CmdOpenTaskManager     CommandType = "open_task_manager"
+	CmdCloseAllApps        CommandType = "close_all_apps"
+	CmdOpenExplorer        CommandType = "open_file_explorer"
+	CmdOpenRunDialog       CommandType = "open_run_dialog"
+	CmdOpenSearch          CommandType = "open_windows_search"
+	CmdSnapWindowLeft      CommandType = "snap_window_left"
+	CmdSnapWindowRight     CommandType = "snap_window_right"
+	CmdOpenSettings        CommandType = "open_windows_settings"
+	CmdOpenNotification    CommandType = "open_notification_center"
+	CmdOpenClipboard       CommandType = "open_clipboard_history"
+	CmdLockWorkstation     CommandType = "lock_workstation"
+	CmdSwitchAppNext       CommandType = "switch_app_next"
+	CmdSwitchAppPrevious   CommandType = "switch_app_previous"
+	CmdOpenPowerUserMenu   CommandType = "open_power_user_menu"
+	CmdTakeScreenSnip      CommandType = "take_screen_snip"
+	CmdListCatalogItems    CommandType = "list_catalog_items"
+	CmdFindCatalogItems    CommandType = "find_catalog_items"
+	CmdGetCatalogItem      CommandType = "get_catalog_item"
+	CmdRunScript           CommandType = "run_script"
+	CmdExecuteQueue        CommandType = "execute_queue"
+	CmdClearActionQueue    CommandType = "clear_action_queue"
 	CmdShutdownGracefully  CommandType = "shutdown_gracefully"
 	CmdShutdownImmediately CommandType = "shutdown_immediately"
 )
@@ -20,147 +50,510 @@ const (
 var (
 	RegisterHLActionsOnStartup bool = false
 	RegisterLLActionsOnStartup bool = true
+
+	currentActionList   = map[string]neuro.ActionHandler{}
+	currentActionListMu sync.Mutex
+	actionModeMu        sync.Mutex
 )
 
-var HLActionSchemas = map[string]ActionDefinition{
-	string(EnableLLControls): {
-		Name:        string(EnableLLControls),
+type actionSpec struct {
+	Name        CommandType
+	Description string
+	Schema      *neuro.ActionSchema
+}
+
+var HLActionSpecs = []actionSpec{
+	{
+		Name:        EnableLLControls,
 		Description: "Enable low-level mouse and keyboard controls, and disable high-level controls",
-		Schema:      map[string]interface{}{},
+		Schema:      nil,
+	},
+	{
+		Name:        CmdOpenWindowsMenu,
+		Description: "Open the Windows start menu",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdShowDesktop,
+		Description: "Show desktop (win + d)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdMinimizeAll,
+		Description: "Minimize all windows",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdCloseForeground,
+		Description: "Close foreground application (alt + f4)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdOpenTaskManager,
+		Description: "Open Task Manager (ctrl + shift + esc)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdCloseAllApps,
+		Description: "Close all apps fallback (show desktop)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdOpenExplorer,
+		Description: "Open File Explorer (win + e)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdOpenRunDialog,
+		Description: "Open Run dialog (win + r)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdOpenSearch,
+		Description: "Open Windows search (win + s)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdSnapWindowLeft,
+		Description: "Snap active window to the left half (win + left)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdSnapWindowRight,
+		Description: "Snap active window to the right half (win + right)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdOpenSettings,
+		Description: "Open Windows Settings (win + i)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdOpenNotification,
+		Description: "Open Windows notification center (win + a)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdOpenClipboard,
+		Description: "Open clipboard history (win + v)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdLockWorkstation,
+		Description: "Lock the current Windows workstation (win + l)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdSwitchAppNext,
+		Description: "Switch to the next app (alt + tab)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdSwitchAppPrevious,
+		Description: "Switch to the previous app (alt + shift + tab)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdOpenPowerUserMenu,
+		Description: "Open power user menu (win + x)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdTakeScreenSnip,
+		Description: "Open snipping overlay for screenshot selection (win + shift + s)",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdListCatalogItems,
+		Description: "List available catalog integrations/apps configured for Neuro Desktop",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdFindCatalogItems,
+		Description: "Search catalog items by name, id, description, or tags",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"query": map[string]interface{}{
+				"type":        "string",
+				"description": "Search query",
+			},
+			"limit": map[string]interface{}{
+				"type":        "integer",
+				"default":     5,
+				"description": "Maximum number of results (1-20)",
+			},
+		}, []string{"query"}),
+	},
+	{
+		Name:        CmdGetCatalogItem,
+		Description: "Get detailed metadata for a single catalog item by id",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"item_id": map[string]interface{}{
+				"type":        "string",
+				"description": "Catalog item id",
+			},
+		}, []string{"item_id"}),
 	},
 }
 
-var LLActionSchemas = map[string]ActionDefinition{
-	string(DisableLLControls): {
-		Name:        string(DisableLLControls),
-		Description: "Disable low-level mouse and keyboard controls, and re-enable high-level controls",
-		Schema:      map[string]interface{}{},
+var LLActionSpecs = []actionSpec{
+	{
+		Name:        DisableLLControls,
+		Description: "Disable low-level controls and re-enable high-level controls",
+		Schema:      nil,
 	},
+	{
+		Name:        CmdMouseMove,
+		Description: "Move mouse cursor to specific coordinates",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"x": map[string]interface{}{
+				"type":        "integer",
+				"description": "X coordinate",
+			},
+			"y": map[string]interface{}{
+				"type":        "integer",
+				"description": "Y coordinate",
+			},
+			"execute_now": map[string]interface{}{
+				"type":        "boolean",
+				"default":     true,
+				"description": "Execute immediately or keep in queue",
+			},
+			"clear_after": map[string]interface{}{
+				"type":        "boolean",
+				"default":     true,
+				"description": "Clear queue after execution",
+			},
+		}, []string{"x", "y"}),
+	},
+	{
+		Name:        CmdMouseClick,
+		Description: "Click mouse button at current cursor position",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"button": map[string]interface{}{
+				"type":        "string",
+				"enum":        []string{"left", "right", "middle"},
+				"default":     "left",
+				"description": "Mouse button",
+			},
+			"execute_now": map[string]interface{}{
+				"type":        "boolean",
+				"default":     true,
+				"description": "Execute immediately or keep in queue",
+			},
+			"clear_after": map[string]interface{}{
+				"type":        "boolean",
+				"default":     true,
+				"description": "Clear queue after execution",
+			},
+		}, nil),
+	},
+	{
+		Name:        CmdTypeText,
+		Description: "Type text using keyboard",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"text": map[string]interface{}{
+				"type":        "string",
+				"maxLength":   1000,
+				"description": "Text to type",
+			},
+			"execute_now": map[string]interface{}{
+				"type":        "boolean",
+				"default":     true,
+				"description": "Execute immediately or keep in queue",
+			},
+			"clear_after": map[string]interface{}{
+				"type":        "boolean",
+				"default":     true,
+				"description": "Clear queue after execution",
+			},
+		}, []string{"text"}),
+	},
+	{
+		Name:        CmdKeyPress,
+		Description: "Press a specific keyboard key",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"key": map[string]interface{}{
+				"type":        "string",
+				"description": "Key to press",
+			},
+			"execute_now": map[string]interface{}{
+				"type":        "boolean",
+				"default":     true,
+				"description": "Execute immediately or keep in queue",
+			},
+			"clear_after": map[string]interface{}{
+				"type":        "boolean",
+				"default":     true,
+				"description": "Clear queue after execution",
+			},
+		}, []string{"key"}),
+	},
+	{
+		Name:        CmdRunScript,
+		Description: "Execute action script language (see integration docs)",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"script": map[string]interface{}{
+				"type":        "string",
+				"description": "Action script body",
+			},
+			"execute_now": map[string]interface{}{
+				"type":        "boolean",
+				"default":     true,
+				"description": "Execute immediately or keep in queue",
+			},
+			"clear_after": map[string]interface{}{
+				"type":        "boolean",
+				"default":     true,
+				"description": "Clear queue after execution",
+			},
+		}, []string{"script"}),
+	},
+	{
+		Name:        CmdExecuteQueue,
+		Description: "Execute queued actions",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdClearActionQueue,
+		Description: "Clear queued actions",
+		Schema:      nil,
+	},
+}
 
-	string(CmdMouseMove): {
-		Name:        string(CmdMouseMove),
-		Description: "Move the mouse cursor (in a human-like way), towards specific screen coordinates (relative to the top left corner of the screen)",
-		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"x": map[string]interface{}{
-					"type":        "integer",
-					"description": "X coordinate",
-				},
-				"y": map[string]interface{}{
-					"type":        "integer",
-					"description": "Y coordinate",
-				},
-				"execute_now": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Execute immediately (true) or queue for macro (false). Default: true",
-					"default":     true,
-				},
-				"clear_after": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Clear action queue after execution (true) or keep for macro (false). Default: true",
-					"default":     true,
-				},
+type IPCProxyAction struct {
+	integration *NDIntegration
+	spec        actionSpec
+}
+
+func (a *IPCProxyAction) GetName() string {
+	return string(a.spec.Name)
+}
+
+func (a *IPCProxyAction) GetDescription() string {
+	return a.spec.Description
+}
+
+func (a *IPCProxyAction) GetSchema() *neuro.ActionSchema {
+	return a.spec.Schema
+}
+
+func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.ExecutionResult) {
+	if a.integration.permissions != nil && !a.integration.permissions.IsAllowed(a.GetName()) {
+		return nil, neuro.NewFailureResult(fmt.Sprintf("Action denied by policy: %s", a.GetName()))
+	}
+
+	params := map[string]interface{}{}
+	if err := neuro.ParseActionData(data, &params); err != nil {
+		return nil, neuro.NewFailureResult("Invalid action parameters")
+	}
+
+	executeNow := getBoolParam(params, "execute_now", true)
+	clearAfter := getBoolParam(params, "clear_after", true)
+
+	switch a.spec.Name {
+	case EnableLLControls:
+		if err := a.integration.switchActionMode(false, true); err != nil {
+			return nil, neuro.NewFailureResult(err.Error())
+		}
+		return nil, neuro.NewSuccessResult("Enabled low-level controls")
+
+	case DisableLLControls:
+		if err := a.integration.switchActionMode(true, false); err != nil {
+			return nil, neuro.NewFailureResult(err.Error())
+		}
+		return nil, neuro.NewSuccessResult("Enabled high-level controls")
+
+	case CmdOpenWindowsMenu:
+		return nil, a.integration.executeScriptIntent("OPEN_WINDOWS_MENU")
+	case CmdShowDesktop:
+		return nil, a.integration.executeScriptIntent("SHOW_DESKTOP")
+	case CmdMinimizeAll:
+		return nil, a.integration.executeScriptIntent("MINIMIZE_ALL_WINDOWS")
+	case CmdCloseForeground:
+		return nil, a.integration.executeScriptIntent("CLOSE_FOREGROUND_APP")
+	case CmdOpenTaskManager:
+		return nil, a.integration.executeScriptIntent("OPEN_TASK_MANAGER")
+	case CmdCloseAllApps:
+		return nil, a.integration.executeScriptIntent("CLOSE_ALL_APPS")
+	case CmdOpenExplorer:
+		return nil, a.integration.executeScriptIntent("OPEN_FILE_EXPLORER")
+	case CmdOpenRunDialog:
+		return nil, a.integration.executeScriptIntent("OPEN_RUN_DIALOG")
+	case CmdOpenSearch:
+		return nil, a.integration.executeScriptIntent("OPEN_SEARCH")
+	case CmdSnapWindowLeft:
+		return nil, a.integration.executeScriptIntent("SNAP_WINDOW_LEFT")
+	case CmdSnapWindowRight:
+		return nil, a.integration.executeScriptIntent("SNAP_WINDOW_RIGHT")
+	case CmdOpenSettings:
+		return nil, a.integration.executeScriptIntent("OPEN_WINDOWS_SETTINGS")
+	case CmdOpenNotification:
+		return nil, a.integration.executeScriptIntent("OPEN_NOTIFICATION_CENTER")
+	case CmdOpenClipboard:
+		return nil, a.integration.executeScriptIntent("OPEN_CLIPBOARD_HISTORY")
+	case CmdLockWorkstation:
+		return nil, a.integration.executeScriptIntent("LOCK_WORKSTATION")
+	case CmdSwitchAppNext:
+		return nil, a.integration.executeScriptIntent("SWITCH_APP_NEXT")
+	case CmdSwitchAppPrevious:
+		return nil, a.integration.executeScriptIntent("SWITCH_APP_PREVIOUS")
+	case CmdOpenPowerUserMenu:
+		return nil, a.integration.executeScriptIntent("OPEN_POWER_USER_MENU")
+	case CmdTakeScreenSnip:
+		return nil, a.integration.executeScriptIntent("TAKE_SCREEN_SNIP")
+	case CmdListCatalogItems:
+		return nil, a.integration.listCatalogItems()
+	case CmdFindCatalogItems:
+		query, _ := params["query"].(string)
+		query = strings.TrimSpace(query)
+		if query == "" {
+			return nil, neuro.NewFailureResult("query is required")
+		}
+
+		limit := 5
+		if rawLimit, ok := params["limit"].(float64); ok {
+			limit = int(rawLimit)
+		}
+		return nil, a.integration.findCatalogItems(query, limit)
+	case CmdGetCatalogItem:
+		itemID, _ := params["item_id"].(string)
+		itemID = strings.TrimSpace(itemID)
+		if itemID == "" {
+			return nil, neuro.NewFailureResult("item_id is required")
+		}
+		return nil, a.integration.getCatalogItem(itemID)
+	}
+
+	cmd, err := buildIPCCommand(a.spec.Name, params, executeNow, clearAfter)
+	if err != nil {
+		return nil, neuro.NewFailureResult(err.Error())
+	}
+
+	resp, err := a.integration.sendToRust(cmd)
+	if err != nil {
+		return nil, neuro.NewFailureResult(fmt.Sprintf("IPC error: %v", err))
+	}
+	if !resp.Success {
+		message := resp.Error
+		if message == "" {
+			message = "Command failed"
+		}
+		return nil, neuro.NewFailureResult(message)
+	}
+
+	return nil, neuro.NewSuccessResult("ok")
+}
+
+func (a *IPCProxyAction) Execute(state interface{}) {
+	// Execution is handled synchronously during validation so we can return
+	// IPC status in action/result immediately.
+}
+
+func getBoolParam(params map[string]interface{}, key string, defaultValue bool) bool {
+	val, ok := params[key]
+	if !ok {
+		return defaultValue
+	}
+	typed, ok := val.(bool)
+	if !ok {
+		return defaultValue
+	}
+	return typed
+}
+
+func buildIPCCommand(
+	action CommandType,
+	params map[string]interface{},
+	executeNow bool,
+	clearAfter bool,
+) (IPCCommand, error) {
+	switch action {
+	case CmdMouseMove:
+		x, xOK := params["x"].(float64)
+		y, yOK := params["y"].(float64)
+		if !xOK || !yOK {
+			return IPCCommand{}, fmt.Errorf("x and y are required numbers")
+		}
+		return IPCCommand{
+			Type: CmdMouseMove,
+			Params: map[string]interface{}{
+				"x": int(x),
+				"y": int(y),
 			},
-			"required": []string{"x", "y"},
-		},
-	},
-	string(CmdMouseClick): {
-		Name:        string(CmdMouseClick),
-		Description: "Click the mouse at current position or specific coordinates",
-		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"button": map[string]interface{}{
-					"type":        "string",
-					"enum":        []string{"left", "right", "middle"},
-					"description": "Mouse button to click",
-				},
-				"execute_now": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Execute immediately (true) or queue for macro (false). Default: true",
-					"default":     true,
-				},
-				"clear_after": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Clear action queue after execution (true) or keep for macro (false). Default: true",
-					"default":     true,
-				},
+			ExecuteNow: executeNow,
+			ClearAfter: clearAfter,
+		}, nil
+
+	case CmdMouseClick:
+		button := "left"
+		if rawButton, ok := params["button"].(string); ok && rawButton != "" {
+			button = rawButton
+		}
+		return IPCCommand{
+			Type: CmdMouseClick,
+			Params: map[string]interface{}{
+				"button": button,
 			},
-			"required": []string{"button"},
-		},
-	},
-	string(CmdTypeText): {
-		Name:        string(CmdTypeText),
-		Description: "Type text using the keyboard",
-		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"text": map[string]interface{}{
-					"type":        "string",
-					"description": "Text to type",
-					"maxLength":   1000,
-				},
-				"execute_now": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Execute immediately (true) or queue for macro (false). Default: true",
-					"default":     true,
-				},
-				"clear_after": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Clear action queue after execution (true) or keep for macro (false). Default: true",
-					"default":     true,
-				},
+			ExecuteNow: executeNow,
+			ClearAfter: clearAfter,
+		}, nil
+
+	case CmdTypeText:
+		text, ok := params["text"].(string)
+		if !ok || text == "" {
+			return IPCCommand{}, fmt.Errorf("text is required")
+		}
+		return IPCCommand{
+			Type: CmdTypeText,
+			Params: map[string]interface{}{
+				"text": text,
 			},
-			"required": []string{"text"},
-		},
-	},
-	string(CmdKeyPress): {
-		Name:        string(CmdKeyPress),
-		Description: "Press a specific keyboard key or shortcut. Common keys: enter, escape, tab, space, backspace, shift, ctrl, alt",
-		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"key": map[string]interface{}{
-					"type":        "string",
-					"description": "Key to press",
-				},
-				"execute_now": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Execute immediately (true) or queue for macro (false). Default: true",
-					"default":     true,
-				},
-				"clear_after": map[string]interface{}{
-					"type":        "boolean",
-					"description": "Clear action queue after execution (true) or keep for macro (false). Default: true",
-					"default":     true,
-				},
+			ExecuteNow: executeNow,
+			ClearAfter: clearAfter,
+		}, nil
+
+	case CmdKeyPress:
+		key, ok := params["key"].(string)
+		if !ok || key == "" {
+			return IPCCommand{}, fmt.Errorf("key is required")
+		}
+		return IPCCommand{
+			Type: CmdKeyPress,
+			Params: map[string]interface{}{
+				"key": key,
 			},
-			"required": []string{"key"},
-		},
-	},
-	string(CmdRunScript): {
-		Name:        string(CmdRunScript),
-		Description: "Execute a sequence of actions using a simple script language. Commands: TYPE \"text\", ENTER, MOVE x y, CLICK x y, WAIT seconds, PRESS key",
-		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"script": map[string]interface{}{
-					"type":        "string",
-					"description": "Script with multiple commands, one per line",
-				},
+			ExecuteNow: executeNow,
+			ClearAfter: clearAfter,
+		}, nil
+
+	case CmdRunScript:
+		script, ok := params["script"].(string)
+		if !ok || script == "" {
+			return IPCCommand{}, fmt.Errorf("script is required")
+		}
+		return IPCCommand{
+			Type: CmdRunScript,
+			Params: map[string]interface{}{
+				"script": script,
 			},
-			"required": []string{"script"},
-		},
-	},
-	string(CmdExecuteQueue): {
-		Name:        string(CmdExecuteQueue),
-		Description: "Execute the action queue.",
-		Schema:      map[string]interface{}{},
-	},
-	string(CmdClearActionQueue): {
-		Name:        string(CmdClearActionQueue),
-		Description: "Clear the action queue. The action queue persists across every action, you must clear it manually. Unless you are creating a macro.",
-		Schema:      map[string]interface{}{},
-	},
+			ExecuteNow: executeNow,
+			ClearAfter: clearAfter,
+		}, nil
+
+	case CmdExecuteQueue:
+		return IPCCommand{
+			Type:       CmdExecuteQueue,
+			ExecuteNow: executeNow,
+			ClearAfter: clearAfter,
+		}, nil
+
+	case CmdClearActionQueue:
+		return IPCCommand{
+			Type:       CmdClearActionQueue,
+			ExecuteNow: executeNow,
+			ClearAfter: clearAfter,
+		}, nil
+	}
+
+	return IPCCommand{}, fmt.Errorf("unknown action: %s", action)
 }

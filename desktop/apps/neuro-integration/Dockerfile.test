@@ -1,0 +1,7 @@
+FROM golang:1.22 AS test
+
+WORKDIR /workspace
+
+COPY . .
+
+RUN go test ./...

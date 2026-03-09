@@ -1,0 +1,11 @@
+{
+  "default_allow": true,
+  "allowed_actions": [
+    "run_script",
+    "execute_queue",
+    "clear_action_queue"
+  ],
+  "denied_actions": [
+    "shutdown_immediately"
+  ]
+}

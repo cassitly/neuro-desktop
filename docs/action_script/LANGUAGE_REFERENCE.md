@@ -212,6 +212,163 @@ SHORTCUT ctrl c
 
 ---
 
+### High-Level Desktop Commands
+
+These intent-style commands map to common Windows operations without raw
+pixel coordinates.
+
+#### OPEN_WINDOWS_MENU / OPEN_START_MENU
+
+Open Windows Start menu.
+
+**Syntax**: `OPEN_WINDOWS_MENU` or `OPEN_START_MENU`
+
+---
+
+#### SHOW_DESKTOP
+
+Show desktop by minimizing all windows to taskbar.
+
+**Syntax**: `SHOW_DESKTOP`
+
+---
+
+#### MINIMIZE_ALL_WINDOWS
+
+Minimize all windows.
+
+**Syntax**: `MINIMIZE_ALL_WINDOWS`
+
+---
+
+#### CLOSE_FOREGROUND_APP
+
+Close the currently focused application (`alt + f4`).
+
+**Syntax**: `CLOSE_FOREGROUND_APP`
+
+---
+
+#### OPEN_TASK_MANAGER
+
+Open Task Manager (`ctrl + shift + esc`).
+
+**Syntax**: `OPEN_TASK_MANAGER`
+
+---
+
+#### CLOSE_ALL_APPS
+
+Non-destructive fallback that behaves like `SHOW_DESKTOP`.
+
+**Syntax**: `CLOSE_ALL_APPS`
+
+---
+
+#### OPEN_FILE_EXPLORER
+
+Open File Explorer (`win + e`).
+
+**Syntax**: `OPEN_FILE_EXPLORER`
+
+---
+
+#### OPEN_RUN_DIALOG
+
+Open Run dialog (`win + r`).
+
+**Syntax**: `OPEN_RUN_DIALOG`
+
+---
+
+#### OPEN_SEARCH
+
+Open Windows search (`win + s`).
+
+**Syntax**: `OPEN_SEARCH`
+
+---
+
+#### SNAP_WINDOW_LEFT
+
+Snap the active window to the left half (`win + left`).
+
+**Syntax**: `SNAP_WINDOW_LEFT`
+
+---
+
+#### SNAP_WINDOW_RIGHT
+
+Snap the active window to the right half (`win + right`).
+
+**Syntax**: `SNAP_WINDOW_RIGHT`
+
+---
+
+#### OPEN_WINDOWS_SETTINGS
+
+Open Windows Settings (`win + i`).
+
+**Syntax**: `OPEN_WINDOWS_SETTINGS`
+
+---
+
+#### OPEN_NOTIFICATION_CENTER
+
+Open Notification Center / Quick Settings (`win + a`).
+
+**Syntax**: `OPEN_NOTIFICATION_CENTER`
+
+---
+
+#### OPEN_CLIPBOARD_HISTORY
+
+Open clipboard history (`win + v`).
+
+**Syntax**: `OPEN_CLIPBOARD_HISTORY`
+
+---
+
+#### LOCK_WORKSTATION
+
+Lock the current workstation (`win + l`).
+
+**Syntax**: `LOCK_WORKSTATION`
+
+---
+
+#### SWITCH_APP_NEXT
+
+Cycle to next application (`alt + tab`).
+
+**Syntax**: `SWITCH_APP_NEXT`
+
+---
+
+#### SWITCH_APP_PREVIOUS
+
+Cycle to previous application (`alt + shift + tab`).
+
+**Syntax**: `SWITCH_APP_PREVIOUS`
+
+---
+
+#### OPEN_POWER_USER_MENU
+
+Open Windows power-user menu (`win + x`).
+
+**Syntax**: `OPEN_POWER_USER_MENU`
+
+---
+
+#### TAKE_SCREEN_SNIP
+
+Open snipping overlay for selecting a screenshot area (`win + shift + s`).
+
+**Syntax**: `TAKE_SCREEN_SNIP`
+
+---
+
 ### Mouse Commands
 
 #### MOVE
@@ -235,7 +392,7 @@ MOVE 0 0               # Top-left corner
 **Notes**:
 - Screen origin (0,0) is top-left
 - Coordinates are clamped to screen bounds
-- Uses Bézier curves for human-like movement
+- Uses Bezier curves for human-like movement
 
 ---
 
@@ -294,16 +451,18 @@ CLICK middle         # Middle click
 
 Click at normalized coordinates.
 
-**Syntax**: `CLICK_N nx ny`
+**Syntax**: `CLICK_N nx ny [button]`
 
 **Parameters**:
 - `nx` (float): Normalized X
 - `ny` (float): Normalized Y
+- `button` (string, optional): Mouse button (`left`, `right`, `middle`)
 
 **Example**:
 ```text
 CLICK_N 0.5 0.5     # Click center of screen
 CLICK_N 0.9 0.1     # Click near top-right
+CLICK_N 0.9 0.1 right
 ```
 
 ---
@@ -777,3 +936,4 @@ The Action Script Language is designed for **safe, predictable desktop automatio
 - Use normalized coordinates for portability
 
 For more examples, see the [examples directory](../examples/) or the [integration tests](../tests/).
+

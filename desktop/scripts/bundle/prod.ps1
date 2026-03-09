@@ -23,7 +23,7 @@ Copy-Item `
   apps/neuro-desktop/target/release/neuro-desktop.exe `
   $DIST
 
-Write-Host "      ✓ Rust binary built"
+Write-Host "      ??? Rust binary built"
 
 # ---------- Build Neuro Integration ----------
 Write-Host "[2/4] Building Neuro integration..."
@@ -46,7 +46,19 @@ Copy-Item `
   apps/neuro-integration/integration-docs/"Action Script Documentation.md" `
   $DIST/integration-docs/"Action Script Documentation.md"
 
-Write-Host "      ✓ Neuro Integration binary built"
+Copy-Item `
+  apps/neuro-integration/permissions.example.json `
+  $DIST/permissions.json
+
+Write-Host "      ??? Neuro Integration binary built"
+
+$relayBinarySource = $env:NEURO_RELAY_BINARY_SOURCE
+if ($relayBinarySource -and (Test-Path $relayBinarySource)) {
+    Copy-Item $relayBinarySource "$DIST/neuro-relay.exe"
+    Write-Host "      [ok] Neuro Relay binary bundled"
+} else {
+    Write-Host "      [..] Neuro Relay binary not bundled (set NEURO_RELAY_BINARY_SOURCE)"
+}
 
 # ---------- Build frontend ----------
 Write-Host "[3/4] Building frontend..."
@@ -56,12 +68,16 @@ Pop-Location
 
 Copy-Item frontend/dist -Recurse $DIST/frontend
 
-Write-Host "      ✓ Frontend built"
+Write-Host "      ??? Frontend built"
 
 # ---------- Copy Config ----------
 Write-Host "Copying configuration files..."
 Copy-Item config "$DIST/config" -Recurse
-Write-Host "  ✓ Config files copied"
+Write-Host "  ??? Config files copied"
+
+Write-Host "Copying catalog files..."
+Copy-Item catalog "$DIST/catalog" -Recurse
+Write-Host "  [ok] Catalog files copied"
 
 # ---------- Bundle Python (EMBEDDED) ----------
 Write-Host "[4/4] Bundling Python runtime..."
@@ -76,7 +92,7 @@ Copy-Item `
   "$PY_DIST/controller" `
   -Recurse
 
-Write-Host "      ✓ Python runtime bundled"
+Write-Host "      ??? Python runtime bundled"
 
 # ---------- Metadata ----------
 @"
@@ -87,7 +103,8 @@ This is a self-contained bundle of Neuro Desktop.
 
 Contents:
   - neuro-desktop.exe         Main application (Rust)
-  - go-neuro-integration.exe  Neuro API connector (Go)
+  - neuro-integration.exe     Neuro API connector (Go)
+  - neuro-relay.exe           Optional relay binary (if bundled)
   - python/                   Python runtime and drivers
   - frontend/                 Web UI assets
 
@@ -102,8 +119,14 @@ Environment Variables (optional):
   - NEURO_IPC_FILE      Path to IPC file
                         Default: ./neuro_ipc.json
 
+  - NEURO_PERMISSIONS_FILE  Path to permissions policy file
+                            Default: ./permissions.json
+
+  - NEURO_RELAY_ENABLED     Enable bundled Neuro Relay
+                            Default: false
+
 The Go integration binary will be started automatically
-by the main Rust binary. You don't need to run it manually.
+by the main Rust binary. You do not need to run it manually.
 
 Press Ctrl+C to stop.
 

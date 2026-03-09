@@ -1,9 +1,12 @@
 import shlex
-from typing import List, Tuple
+from typing import TYPE_CHECKING, List, Tuple
 
-from .controls.keyboard import KeyboardController
-from .controls.mouse import MouseController, Point
-from .desktop import DesktopMonitor
+if TYPE_CHECKING:
+    from .controls.keyboard import KeyboardController
+    from .controls.mouse import MouseController
+    from .desktop import DesktopMonitor
+
+Point = Tuple[int, int]
 
 
 class ActionParseError(Exception):
@@ -15,7 +18,12 @@ class ActionParser:
     Unified keyboard + mouse action parser.
     """
 
-    def __init__(self, keyboard: KeyboardController, mouse: MouseController, monitor: DesktopMonitor):
+    def __init__(
+        self,
+        keyboard: "KeyboardController",
+        mouse: "MouseController",
+        monitor: "DesktopMonitor",
+    ):
         self.kbd = keyboard
         self.mouse = mouse
         self.monitor = monitor
@@ -37,7 +45,7 @@ class ActionParser:
                 self._parse_line(line)
             except Exception as e:
                 raise ActionParseError(
-                    f"Line {line_no}: {line}\n→ {e}"
+                    f"Line {line_no}: {line}\n-> {e}"
                 ) from e
 
     # ------------------------
@@ -75,6 +83,66 @@ class ActionParser:
 
         elif cmd == "SHORTCUT":
             self._kbd_shortcut(tokens)
+
+        # -------- High-level desktop intents --------
+        elif cmd == "OPEN_WINDOWS_MENU" or cmd == "OPEN_START_MENU":
+            self.kbd.press("win")
+
+        elif cmd == "SHOW_DESKTOP":
+            self.kbd.shortcut("win", "d")
+
+        elif cmd == "MINIMIZE_ALL_WINDOWS":
+            self.kbd.shortcut("win", "m")
+
+        elif cmd == "CLOSE_FOREGROUND_APP":
+            self.kbd.shortcut("alt", "f4")
+
+        elif cmd == "OPEN_TASK_MANAGER":
+            self.kbd.shortcut("ctrl", "shift", "esc")
+
+        elif cmd == "CLOSE_ALL_APPS":
+            # Windows has no universal "close everything safely" action.
+            # Use SHOW_DESKTOP behavior as a non-destructive fallback.
+            self.kbd.shortcut("win", "d")
+
+        elif cmd == "OPEN_FILE_EXPLORER":
+            self.kbd.shortcut("win", "e")
+
+        elif cmd == "OPEN_RUN_DIALOG":
+            self.kbd.shortcut("win", "r")
+
+        elif cmd == "OPEN_SEARCH":
+            self.kbd.shortcut("win", "s")
+
+        elif cmd == "SNAP_WINDOW_LEFT":
+            self.kbd.shortcut("win", "left")
+
+        elif cmd == "SNAP_WINDOW_RIGHT":
+            self.kbd.shortcut("win", "right")
+
+        elif cmd == "OPEN_WINDOWS_SETTINGS":
+            self.kbd.shortcut("win", "i")
+
+        elif cmd == "OPEN_NOTIFICATION_CENTER":
+            self.kbd.shortcut("win", "a")
+
+        elif cmd == "OPEN_CLIPBOARD_HISTORY":
+            self.kbd.shortcut("win", "v")
+
+        elif cmd == "LOCK_WORKSTATION":
+            self.kbd.shortcut("win", "l")
+
+        elif cmd == "SWITCH_APP_NEXT":
+            self.kbd.shortcut("alt", "tab")
+
+        elif cmd == "SWITCH_APP_PREVIOUS":
+            self.kbd.shortcut("alt", "shift", "tab")
+
+        elif cmd == "OPEN_POWER_USER_MENU":
+            self.kbd.shortcut("win", "x")
+
+        elif cmd == "TAKE_SCREEN_SNIP":
+            self.kbd.shortcut("win", "shift", "s")
 
         # -------- Mouse --------
         elif cmd == "MOVE":
@@ -136,6 +204,13 @@ class ActionParser:
     # Mouse commands
     # ========================
 
+    @staticmethod
+    def _parse_mouse_button(button: str) -> str:
+        normalized = button.lower()
+        if normalized not in ("left", "right", "middle"):
+            raise ActionParseError("Mouse button must be one of: left, right, middle")
+        return normalized
+
     def _mouse_move(self, tokens: List[str]):
         if len(tokens) not in (3, 4):
             raise ActionParseError("MOVE x y [duration]")
@@ -151,17 +226,19 @@ class ActionParser:
         self.mouse.queue_move(x, y)
 
     def _mouse_click(self, tokens: List[str]):
-        if not tokens[1]:
+        if len(tokens) > 2:
             raise ActionParseError("CLICK [button]")
-        button = tokens[1]
+        button = self._parse_mouse_button(tokens[1]) if len(tokens) == 2 else "left"
         self.mouse.queue_click(button)
 
     def _mouse_click_normalized(self, tokens: List[str]):
-        if len(tokens) != 3:
-            raise ActionParseError("CLICK_N nx ny")
+        if len(tokens) not in (3, 4):
+            raise ActionParseError("CLICK_N nx ny [button]")
         nx, ny = float(tokens[1]), float(tokens[2])
+        button = self._parse_mouse_button(tokens[3]) if len(tokens) == 4 else "left"
         x, y = self.mouse.map_normalized(nx, ny)
-        self.mouse.queue_click(x, y)
+        self.mouse.queue_move(x, y)
+        self.mouse.queue_click(button)
 
     def _mouse_line(self, tokens: List[str]):
         if len(tokens) < 5:
@@ -172,12 +249,16 @@ class ActionParser:
 
         if "STEPS" in tokens:
             idx = tokens.index("STEPS")
+            if idx + 1 >= len(tokens):
+                raise ActionParseError("LINE x1 y1 x2 y2 [STEPS n]")
             steps = int(tokens[idx + 1])
 
         path = self.mouse.draw_line((x1, y1), (x2, y2), steps)
         self.mouse.queue_path(path)
 
     def _mouse_path(self, tokens: List[str]):
+        if len(tokens) < 3:
+            raise ActionParseError("PATH requires at least one coordinate pair")
         if (len(tokens) - 1) % 2 != 0:
             raise ActionParseError("PATH requires even number of coordinates")
 

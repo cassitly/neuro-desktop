@@ -1,112 +1,97 @@
-// desktop/native/go-neuro-integration/main.go
 package main
 
 import (
-	"encoding/json"
-	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/gorilla/websocket"
+	neuro "github.com/cassitly/neuro-integration-sdk"
 )
 
-func NewNeuroIntegration(wsURL, gameName, ipcPath string) (*NeuroIntegration, error) {
-	// Connect to Neuro WebSocket
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+func NewNDIntegration(
+	wsURL string,
+	gameName string,
+	ipcPath string,
+	permissionsPath string,
+) (*NDIntegration, error) {
+	client, err := neuro.NewClient(neuro.ClientConfig{
+		Game:         gameName,
+		WebsocketURL: wsURL,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Neuro: %w", err)
+		return nil, err
 	}
 
-	integration := &NeuroIntegration{
-		ws:          ws,
-		gameName:    gameName,
-		ipcFilePath: ipcPath,
+	policy, err := loadPermissionPolicy(permissionsPath)
+	if err != nil {
+		return nil, err
 	}
+
+	integration := &NDIntegration{
+		client:      client,
+		ipcFilePath: ipcPath,
+		permissions: policy,
+		done:        make(chan struct{}),
+	}
+
+	integration.client.OnCommand("shutdown/graceful", integration.handleGracefulShutdown)
+	integration.client.OnCommand("shutdown/immediate", integration.handleImmediateShutdown)
 
 	return integration, nil
 }
 
-func (n *NeuroIntegration) listen() {
-	for {
-		var msg NeuroMessage
-		err := n.ws.ReadJSON(&msg)
-		if err != nil {
-			log.Printf("WebSocket read error: %v", err)
-			return
+func (n *NDIntegration) Start() error {
+	if err := n.client.Connect(); err != nil {
+		return err
+	}
+
+	go func() {
+		for err := range n.client.Errors() {
+			log.Printf("SDK error: %v", err)
+			n.markDone()
 		}
+	}()
 
-		switch msg.Command {
-		case "action":
-			var action IncomingAction
-			if err := json.Unmarshal(msg.Data, &action); err != nil {
-				log.Printf("Failed to parse action: %v", err)
-				continue
-			}
-			go n.handleAction(action)
+	if err := n.client.SendContext(
+		"Neuro Desktop is ready. You can control the mouse, keyboard, and run scripts.",
+		true,
+	); err != nil {
+		log.Printf("Warning: failed to send initial context: %v", err)
+	}
 
-		case "actions/reregister_all":
-			log.Println("Reregistering actions...")
-			n.registerActions()
-
-		case "shutdown/graceful":
-			var shutdownReq struct {
-				WantsShutdown bool `json:"wants_shutdown"`
-			}
-			if err := json.Unmarshal(msg.Data, &shutdownReq); err != nil {
-				log.Printf("Failed to parse shutdown request: %v", err)
-				continue
-			}
-			if shutdownReq.WantsShutdown {
-				log.Println("Graceful shutdown requested, preparing...")
-
-				// Tell Rust to save state
-				resp, err := n.sendToRust(IPCCommand{
-					Type: CmdShutdownGracefully,
-				})
-
-				if err != nil || !resp.Success {
-					log.Printf("Warning: Rust shutdown failed: %v", err)
-				}
-
-				// Send ready signal
-				n.sendShutdownReady()
-				n.Close()
-				return
-			}
-
-		case "shutdown/immediate":
-			log.Println("Immediate shutdown requested!")
-
-			// Tell Rust to save what it can
-			n.sendToRust(IPCCommand{
-				Type: CmdShutdownImmediately,
-			})
-
-			// Send ready signal
-			n.sendShutdownReady()
-			n.Close()
-			return
-
-		default:
-			log.Printf("Unknown command: %s", msg.Command)
+	content, contentPath, err := loadActionScriptDocumentation()
+	if err != nil {
+		log.Printf("Warning: failed to load action script documentation: %v", err)
+	} else {
+		log.Printf("Loaded action script documentation from %s", contentPath)
+		if err := n.client.SendContext(content, true); err != nil {
+			log.Printf("Warning: failed to send action script documentation: %v", err)
 		}
 	}
+
+	return n.registerActions()
 }
 
-func (n *NeuroIntegration) Close() error {
-	// Tell neuro the integration is shutting down. So that she has some sense, of what happened.
-	n.sendContext("Neuro Desktop integration is shutting down. Websocket will close.", true)
+func (n *NDIntegration) Close() error {
+	if err := n.client.SendContext(
+		"Neuro Desktop integration is shutting down. WebSocket will close.",
+		true,
+	); err != nil {
+		log.Printf("Warning: failed to send shutdown context: %v", err)
+	}
 
-	// Unregister actions, to properly clear
-	// the action list for the next integration
-	n.unregisterActions()
-	return n.ws.Close()
+	if err := n.unregisterActions(); err != nil {
+		log.Printf("Warning: failed to unregister actions: %v", err)
+	}
+
+	n.markDone()
+	return n.client.Close()
 }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	// Configuration from environment
 	wsURL := os.Getenv("NEURO_SDK_WS_URL")
 	if wsURL == "" {
 		wsURL = "ws://localhost:8000"
@@ -117,38 +102,36 @@ func main() {
 		ipcPath = "./neuro-integration-code-ipc.json"
 	}
 
-	// Create integration
-	log.Printf("Connecting to Neuro at %s...", wsURL)
-	integration, err := NewNeuroIntegration(wsURL, "Neuro Desktop", ipcPath)
+	permissionsPath := os.Getenv("NEURO_PERMISSIONS_FILE")
+	if permissionsPath == "" {
+		permissionsPath = "./permissions.json"
+	}
+
+	log.Printf("Starting Neuro Desktop integration")
+	log.Printf("- WebSocket URL: %s", wsURL)
+	log.Printf("- IPC file: %s", ipcPath)
+	log.Printf("- Permissions file: %s", permissionsPath)
+
+	integration, err := NewNDIntegration(wsURL, "Neuro Desktop", ipcPath, permissionsPath)
 	if err != nil {
 		log.Fatalf("Failed to create integration: %v", err)
 	}
+
+	if err := integration.Start(); err != nil {
+		log.Fatalf("Failed to start integration: %v", err)
+	}
 	defer integration.Close()
 
-	log.Println("Connected to Neuro!")
+	log.Println("Neuro Desktop integration running")
+	log.Println("Press Ctrl+C to stop")
 
-	// Send startup
-	if err := integration.startup(); err != nil {
-		log.Fatalf("Failed to send startup: %v", err)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	select {
+	case <-sigChan:
+		log.Println("Interrupt signal received")
+	case <-integration.done:
+		log.Println("Shutdown requested by command channel")
 	}
-
-	// Send initial context
-	integration.sendContext("Neuro Desktop is ready. You can control the mouse, keyboard, and run scripts.", true)
-	content, err := os.ReadFile("./integration-docs/Action Script Documentation.md")
-	if err != nil {
-		log.Fatalf("Failed to read documentation file: %v", err)
-	}
-	integration.sendContext(string(content), true)
-
-	// Register actions
-	log.Println("Registering actions...")
-	if err := integration.registerActions(); err != nil {
-		log.Fatalf("Failed to register actions: %v", err)
-	}
-
-	log.Println("Neuro Desktop Go integration running!")
-	log.Println("Listening for actions from Neuro...")
-
-	// Listen for messages
-	integration.listen()
 }

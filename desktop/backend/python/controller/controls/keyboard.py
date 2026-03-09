@@ -3,6 +3,15 @@ import pyautogui
 from typing import List, Union
 from ..desktop import DesktopMonitor
 
+
+KEY_ALIASES = {
+    "windows": "win",
+    "control": "ctrl",
+    "return": "enter",
+    "escape": "esc",
+}
+
+
 class KeyboardInstruction:
     def execute(self):
         raise NotImplementedError
@@ -71,6 +80,17 @@ class KeyboardController:
     def __init__(self, monitor: DesktopMonitor):
         self.queue: List[KeyboardInstruction] = []
         self.monitor = monitor
+        self._valid_keys = set(pyautogui.KEYBOARD_KEYS)
+
+    def _normalize_key(self, key: str) -> str:
+        normalized = key.strip().lower()
+        return KEY_ALIASES.get(normalized, normalized)
+
+    def _validate_key(self, key: str) -> str:
+        normalized = self._normalize_key(key)
+        if normalized not in self._valid_keys:
+            raise ValueError(f"Unsupported key: {key}")
+        return normalized
 
     # ------------------------
     # Intent-level API
@@ -85,36 +105,40 @@ class KeyboardController:
         self.queue.append(TypeText(text, interval))
 
     def press(self, key: str):
+        validated_key = self._validate_key(key)
         self.monitor.record_action(
             source="keyboard",
             action_type="PRESS",
-            data={"key": key}
+            data={"key": validated_key}
         )
-        self.queue.append(KeyTap(key))
+        self.queue.append(KeyTap(validated_key))
 
     def shortcut(self, *keys: str):
+        validated_keys = tuple(self._validate_key(key) for key in keys)
         self.monitor.record_action(
             source="keyboard",
             action_type="SHORTCUT",
-            data={"keys": keys}
+            data={"keys": validated_keys}
         )
-        self.queue.append(Shortcut(*keys))
+        self.queue.append(Shortcut(*validated_keys))
 
     def hold(self, key: str):
+        validated_key = self._validate_key(key)
         self.monitor.record_action(
             source="keyboard",
             action_type="HOLD",
-            data={"key": key}
+            data={"key": validated_key}
         )
-        self.queue.append(KeyDown(key))
+        self.queue.append(KeyDown(validated_key))
 
     def release(self, key: str):
+        validated_key = self._validate_key(key)
         self.monitor.record_action(
             source="keyboard",
             action_type="RELEASE",
-            data={"key": key}
+            data={"key": validated_key}
         )
-        self.queue.append(KeyUp(key))
+        self.queue.append(KeyUp(validated_key))
 
     def wait(self, seconds: float):
         self.monitor.record_action(

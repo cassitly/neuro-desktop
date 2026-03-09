@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Rust tests (neuro-desktop)
+        run: cargo test --manifest-path desktop/apps/neuro-desktop/Cargo.toml
+
+      - name: Rust format check
+        run: cargo fmt --manifest-path desktop/apps/neuro-desktop/Cargo.toml -- --check
+
+      - name: Go format check
+        run: |
+          $files = Get-ChildItem desktop/apps/neuro-integration -Recurse -Filter *.go |
+            Where-Object { $_.FullName -notmatch '\\dist\\' } |
+            ForEach-Object { $_.FullName }
+          $unformatted = gofmt -l $files
+          if ($unformatted) {
+            Write-Host "Unformatted Go files:"
+            Write-Host $unformatted
+            exit 1
+          }
+
+      - name: Go tests (neuro-integration)
+        working-directory: desktop/apps/neuro-integration
+        run: go test ./...
+
+      - name: Python parser tests
+        run: python -m unittest discover desktop/backend/python/tests
+
+      - name: Frontend build
+        working-directory: desktop/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Configure process-handler tests
+        run: cmake -S desktop/apps/process-handler -B desktop/apps/process-handler/build-ci -DBUILD_TESTS=ON
+
+      - name: Build process-handler tests
+        run: cmake --build desktop/apps/process-handler/build-ci --config Release --parallel
+
+      - name: Run process-handler tests
+        run: ctest --test-dir desktop/apps/process-handler/build-ci -C Release --output-on-failure

@@ -213,7 +213,7 @@ TYPE "neuro_message.txt"
 ENTER
 ```
 
-See [Action Script Documentation](docs/ACTION_SCRIPT.md) for complete reference.
+See [Action Script Documentation](docs/action_script/LANGUAGE_REFERENCE.md) for complete reference.
 
 ### Configuration
 
@@ -234,13 +234,56 @@ Or use environment variables:
 # Windows
 $env:NEURO_SDK_WS_URL = "ws://localhost:8000"
 $env:NEURO_IPC_FILE = "./neuro_ipc.json"
+$env:NEURO_PERMISSIONS_FILE = "./desktop/apps/neuro-integration/permissions.example.json"
+$env:NEURO_RELAY_ENABLED = "true"
+$env:NEURO_RELAY_EMULATED_ADDR = "127.0.0.1:8001"
+$env:NEURO_RELAY_NAME = "Neuro Desktop Hub"
+$env:NEURO_CATALOG_FILE = "./desktop/catalog/index.json"
 
 # Linux/macOS
 export NEURO_SDK_WS_URL="ws://localhost:8000"
 export NEURO_IPC_FILE="./neuro_ipc.json"
+export NEURO_PERMISSIONS_FILE="./desktop/apps/neuro-integration/permissions.example.json"
+export NEURO_RELAY_ENABLED="true"
+export NEURO_RELAY_EMULATED_ADDR="127.0.0.1:8001"
+export NEURO_RELAY_NAME="Neuro Desktop Hub"
+export NEURO_CATALOG_FILE="./desktop/catalog/index.json"
 ```
 
+Use [`permissions.example.json`](desktop/apps/neuro-integration/permissions.example.json) as a starting policy.
+Set `NEURO_RELAY_BINARY` to an explicit relay executable path if the binary is not in the same folder as `neuro-desktop.exe`.
+
 ## Development
+
+### Docker Modular Tests
+
+Run modular tests in Docker:
+
+```bash
+docker compose -f docker-compose.tests.yml run --rm go-integration-tests
+docker compose -f docker-compose.tests.yml run --rm python-parser-tests
+```
+
+### Optional Relay Build/Bundling
+
+If you have Neuro Relay source locally, set:
+
+```bash
+# PowerShell
+$env:NEURO_RELAY_SOURCE_DIR = "C:\\path\\to\\neuro-relay"
+
+# bash
+export NEURO_RELAY_SOURCE_DIR="/path/to/neuro-relay"
+```
+
+Then run:
+
+```bash
+cd desktop
+./scripts/build-all.ps1
+```
+
+The build script will compile relay and pass it to the bundle scripts automatically.
 
 ### Project Structure
 
@@ -359,12 +402,17 @@ Randy will send random actions to test your integration.
 
 ## Documentation
 
-- 📖 [Action Script Language Reference](docs/ACTION_SCRIPT.md)
+- 📖 [Action Script Language Reference](docs/action_script/LANGUAGE_REFERENCE.md)
 - 🏗️ [Architecture Deep Dive](docs/ARCHITECTURE.md)
-- 🔧 [API Specification](API/SPECIFICATION.md)
+- 🔧 [API Specification](desktop/apps/neuro-integration/integration-docs/Action Script Documentation.md)
 - 🚀 [Deployment Guide](docs/DEPLOYMENT.md)
-- 🧪 [Testing Guide](docs/TESTING.md)
+- 🧪 [Testing Guide](tests/README.md)
 - 🤝 [Contributing Guidelines](CONTRIBUTING.md)
+- 🧭 [Project Vision](VISION.md)
+- 🗺️ [Production TODO](docs/PRODUCTION_TODO.md)
+- 📝 [Changelog](CHANGELOG.md)
+- 🤝 [Code of Conduct](CODE_OF_CONDUCT.md)
+- 🔐 [Security Policy](SECURITY.md)
 
 ## Troubleshooting
 
@@ -439,3 +487,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 **Made with ❤️ by the Neuro Desktop Team**
 
 *"Giving Neuro the keys to the desktop, one action at a time."*
+

@@ -38,6 +38,8 @@ void setup_signal_handlers() {
 }
 
 int main(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
     std::cout << "=======================================================" << std::endl;
     std::cout << "        Neuro Desktop Process Handler" << std::endl;
     std::cout << "=======================================================" << std::endl;
@@ -107,6 +109,7 @@ int main(int argc, char* argv[]) {
     });
     
     manager.register_message_handler("status", [&manager](const Message& msg) {
+        (void)msg;
         std::cout << "\n=== Process Status ===" << std::endl;
         for (const auto& info : manager.get_all_processes()) {
             std::cout << info.config.name << ": " 
@@ -122,6 +125,7 @@ int main(int argc, char* argv[]) {
     });
     
     manager.register_message_handler("shutdown", [](const Message& msg) {
+        (void)msg;
         std::cout << "Shutdown requested" << std::endl;
         g_shutdown_requested = true;
     });

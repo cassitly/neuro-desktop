@@ -5,10 +5,10 @@
 all: bundle-prod
 
 native:
-	cd native/c_cpp && cmake -S . -B build && cmake --build build
+	cd apps/process-handler && cmake -S . -B build && cmake --build build
 
 go:
-	cd native/neuro-integration && go build -o neuro-integration main.go
+	cd apps/neuro-integration && go build -o dist/neuro-integration.exe .
 
 frontend:
 	cd frontend && npm install && npm run build
@@ -23,7 +23,7 @@ bundle-prod: rust
 	powershell.exe .\scripts\bundle\prod.ps1
 
 clean:
-	rm -rf native/**/build frontend/dist apps/neuro-desktop/target dist
+	rm -rf apps/process-handler/build apps/neuro-integration/dist frontend/dist apps/neuro-desktop/target dist
 
 run: bundle-dev
 

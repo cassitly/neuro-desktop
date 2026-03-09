@@ -1,6 +1,7 @@
 use anyhow::Result;
 use pyo3::prelude::*;
-use pyo3::types::{PyTuple};
+use pyo3::types::PyTuple;
+use std::env;
 
 use rust_core::paths::get_python_packages_path;
 
@@ -21,7 +22,38 @@ impl Controller {
             let path = sys.getattr("path")?;
             let path = path.downcast::<pyo3::types::PyList>()?;
 
-            path.insert(0, get_python_packages_path().to_str().unwrap())?;
+            let add_path = |candidate: std::path::PathBuf| -> PyResult<()> {
+                if candidate.exists() {
+                    path.insert(0, candidate.to_string_lossy().as_ref())?;
+                }
+                Ok(())
+            };
+
+            let runtime_python_root = get_python_packages_path();
+            add_path(runtime_python_root.clone())?;
+            add_path(runtime_python_root.join("Lib"))?;
+            add_path(runtime_python_root.join("Lib").join("site-packages"))?;
+
+            // Development fallback when running from source without a bundled runtime.
+            if !runtime_python_root.exists() {
+                if let Ok(exe_path) = env::current_exe() {
+                    if let Some(exe_dir) = exe_path.parent() {
+                        let mut probe = exe_dir.to_path_buf();
+                        for _ in 0..6 {
+                            let dev_python_root = probe.join("backend").join("python");
+                            if dev_python_root.exists() {
+                                add_path(dev_python_root.clone())?;
+                                add_path(dev_python_root.join("Lib"))?;
+                                add_path(dev_python_root.join("Lib").join("site-packages"))?;
+                                break;
+                            }
+                            if !probe.pop() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
 
             // -------------------------------------------------
             // Import lib module (the control driver's entrypoint)
@@ -50,10 +82,7 @@ impl Controller {
 
     pub fn run_script(&self, script: &str) -> Result<()> {
         Python::with_gil(|py| {
-            self.parser
-                .bind(py)
-                .getattr("parse")?
-                .call1((script,))?;
+            self.parser.bind(py).getattr("parse")?.call1((script,))?;
             Ok::<(), PyErr>(())
         })
         .map_err(Into::into)
@@ -75,10 +104,7 @@ impl Controller {
 
     pub fn mouse_move(&self, x: i32, y: i32) -> Result<()> {
         Python::with_gil(|py| {
-            self.mouse
-                .bind(py)
-                .getattr("queue_move")?
-                .call1((x, y))?;
+            self.mouse.bind(py).getattr("queue_move")?.call1((x, y))?;
             Ok::<(), PyErr>(())
         })
         .map_err(Into::into)
@@ -97,10 +123,7 @@ impl Controller {
 
     pub fn type_text(&self, text: &str) -> Result<()> {
         Python::with_gil(|py| {
-            self.keyboard
-                .bind(py)
-                .getattr("type")?
-                .call1((text,))?;
+            self.keyboard.bind(py).getattr("type")?.call1((text,))?;
             Ok::<(), PyErr>(())
         })
         .map_err(Into::into)
@@ -117,10 +140,7 @@ impl Controller {
 
     pub fn keyboard_shortcut(&self, keys: &str) -> Result<()> {
         Python::with_gil(|py| {
-            self.keyboard
-                .bind(py)
-                .getattr("shortcut")?
-                .call1((keys,))?;
+            self.keyboard.bind(py).getattr("shortcut")?.call1((keys,))?;
             Ok::<(), PyErr>(())
         })
         .map_err(Into::into)
@@ -128,10 +148,7 @@ impl Controller {
 
     pub fn hold_key_down(&self, key: &str) -> Result<()> {
         Python::with_gil(|py| {
-            self.keyboard
-                .bind(py)
-                .getattr("hold")?
-                .call1((key,))?;
+            self.keyboard.bind(py).getattr("hold")?.call1((key,))?;
             Ok::<(), PyErr>(())
         })
         .map_err(Into::into)
@@ -139,10 +156,7 @@ impl Controller {
 
     pub fn release_key(&self, key: &str) -> Result<()> {
         Python::with_gil(|py| {
-            self.keyboard
-                .bind(py)
-                .getattr("release")?
-                .call1((key,))?;
+            self.keyboard.bind(py).getattr("release")?.call1((key,))?;
             Ok::<(), PyErr>(())
         })
         .map_err(Into::into)
@@ -150,10 +164,7 @@ impl Controller {
 
     pub fn press_key(&self, key: &str) -> Result<()> {
         Python::with_gil(|py| {
-            self.keyboard
-                .bind(py)
-                .getattr("press")?
-                .call1((key,))?;
+            self.keyboard.bind(py).getattr("press")?.call1((key,))?;
             Ok::<(), PyErr>(())
         })
         .map_err(Into::into)
@@ -207,7 +218,7 @@ impl Controller {
 
 // // Example usage
 //
-// let controller = Controller::initialize_drivers()?;  
+// let controller = Controller::initialize_drivers()?;
 //
 // // High-level script
 // controller.run_script(r#"

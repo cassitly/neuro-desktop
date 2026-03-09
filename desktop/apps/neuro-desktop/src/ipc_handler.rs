@@ -3,14 +3,14 @@
 // ============================================================
 
 use anyhow::{Context, Result};
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-use log::{info, warn, error, debug};
 
 use crate::controller::Controller;
 
@@ -298,12 +298,11 @@ impl IPCHandler {
         let execution_start = Instant::now();
 
         // Read command
-        let data = fs::read_to_string(&ipc_file)
-            .context("Failed to read IPC file")?;
+        let data = fs::read_to_string(&ipc_file).context("Failed to read IPC file")?;
 
         // Parse command
-        let command: IPCCommand = serde_json::from_str(&data)
-            .context("Failed to parse IPC command")?;
+        let command: IPCCommand =
+            serde_json::from_str(&data).context("Failed to parse IPC command")?;
 
         // Validate command
         if let Err(e) = command.validate() {
@@ -315,8 +314,7 @@ impl IPCHandler {
         }
 
         // Delete command file immediately
-        fs::remove_file(&ipc_file)
-            .context("Failed to remove IPC file")?;
+        fs::remove_file(&ipc_file).context("Failed to remove IPC file")?;
 
         // Execute command
         let response = Self::execute_command(controller, command);
@@ -336,7 +334,7 @@ impl IPCHandler {
 
             // Update rolling average
             let n = stats_lock.total_commands as f64;
-            stats_lock.average_execution_time_ms = 
+            stats_lock.average_execution_time_ms =
                 (stats_lock.average_execution_time_ms * (n - 1.0) + execution_time_ms as f64) / n;
 
             stats_lock.uptime_seconds = start_time.elapsed().as_secs();
@@ -344,7 +342,11 @@ impl IPCHandler {
 
         // Check for shutdown signal
         if let Some(data) = &response_with_time.data {
-            if data.get("shutdown").and_then(|s| s.as_bool()).unwrap_or(false) {
+            if data
+                .get("shutdown")
+                .and_then(|s| s.as_bool())
+                .unwrap_or(false)
+            {
                 info!("Shutdown signal received");
                 Self::write_response(response_file, &response_with_time)?;
                 running.store(false, Ordering::SeqCst);
@@ -359,66 +361,73 @@ impl IPCHandler {
     }
 
     fn write_response(path: &PathBuf, response: &IPCResponse) -> Result<()> {
-        let json = serde_json::to_string(response)
-            .context("Failed to serialize response")?;
+        let json = serde_json::to_string(response).context("Failed to serialize response")?;
 
-        fs::write(path, json)
-            .context("Failed to write response file")?;
+        fs::write(path, json).context("Failed to write response file")?;
 
         Ok(())
     }
 
     fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse {
-        // Should we = sw
-        fn sw_execute_slash_clear(execute_now: bool, clear_after: bool, controller: &Controller) {
+        fn execute_and_maybe_clear(
+            execute_now: bool,
+            clear_after: bool,
+            controller: &Controller,
+        ) -> Result<()> {
             if execute_now {
-                let _ = controller.execute_instructions();
+                controller.execute_instructions()?;
             }
             if clear_after {
-                let _ = controller.clear_action_queue();
+                controller.clear_action_queue()?;
             }
+
+            Ok(())
         }
 
         let result = match command {
-            IPCCommand::MoveMouseTo { params, execute_now, clear_after } => {
-                controller.mouse_move(params.x, params.y)
-                    .and_then(|_| {
-                        sw_execute_slash_clear(execute_now, clear_after, controller);
-                        Ok(())
-                    })
-            }
+            IPCCommand::MoveMouseTo {
+                params,
+                execute_now,
+                clear_after,
+            } => controller
+                .mouse_move(params.x, params.y)
+                .and_then(|_| execute_and_maybe_clear(execute_now, clear_after, controller)),
 
-            IPCCommand::MouseClick { params, execute_now, clear_after } => {
+            IPCCommand::MouseClick {
+                params,
+                execute_now,
+                clear_after,
+            } => {
                 let button = params.button.as_deref().unwrap_or("left");
 
-                controller.mouse_click(button)
-                    .and_then(|_| {
-                        sw_execute_slash_clear(execute_now, clear_after, controller);
-                        Ok(())
-                    })
+                controller
+                    .mouse_click(button)
+                    .and_then(|_| execute_and_maybe_clear(execute_now, clear_after, controller))
             }
 
-            IPCCommand::TypeText { params, execute_now, clear_after } => {
-                controller.type_text(&params.text)
-                    .and_then(|_| {
-                        sw_execute_slash_clear(execute_now, clear_after, controller);
-                        Ok(())
-                    })
-            }
+            IPCCommand::TypeText {
+                params,
+                execute_now,
+                clear_after,
+            } => controller
+                .type_text(&params.text)
+                .and_then(|_| execute_and_maybe_clear(execute_now, clear_after, controller)),
 
-            IPCCommand::KeyPress { params, execute_now, clear_after } => {
-                controller.press_key(&params.key)
-                    .and_then(|_| {
-                        sw_execute_slash_clear(execute_now, clear_after, controller);
-                        Ok(())
-                    })
-            }
+            IPCCommand::KeyPress {
+                params,
+                execute_now,
+                clear_after,
+            } => controller
+                .press_key(&params.key)
+                .and_then(|_| execute_and_maybe_clear(execute_now, clear_after, controller)),
 
-            IPCCommand::RunScript { params, execute_now, clear_after } => {
-                // This command auto executes
-                controller.run_script(&params.script)
-                    .and_then(|_| Ok(()))
-            }
+            IPCCommand::RunScript {
+                params,
+                execute_now,
+                clear_after,
+            } => controller
+                .run_script(&params.script)
+                .and_then(|_| execute_and_maybe_clear(execute_now, clear_after, controller)),
 
             IPCCommand::ExecuteQueue => controller.execute_instructions(),
 
@@ -448,7 +457,6 @@ impl IPCHandler {
         };
 
         match result {
-
             Ok(_) => IPCResponse::success(),
             Err(e) => IPCResponse::failure(format!("Execution error: {}", e)),
         }
