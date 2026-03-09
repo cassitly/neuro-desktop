@@ -10,12 +10,14 @@ import (
 type CommandType string
 
 type NDIntegration struct {
-	client      *neuro.Client
-	ipcFilePath string
-	permissions *PermissionPolicy
-	done        chan struct{}
-	doneOnce    sync.Once
-	ipcMu       sync.Mutex
+	client          *neuro.Client
+	ipcFilePath     string
+	permissions     *PermissionPolicy
+	done            chan struct{}
+	doneOnce        sync.Once
+	ipcMu           sync.Mutex
+	contextStopChan chan struct{}
+	contextStopOnce sync.Once
 }
 
 // IPC Command to Rust binary.

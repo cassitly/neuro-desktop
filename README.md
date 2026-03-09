@@ -239,6 +239,12 @@ $env:NEURO_RELAY_ENABLED = "true"
 $env:NEURO_RELAY_EMULATED_ADDR = "127.0.0.1:8001"
 $env:NEURO_RELAY_NAME = "Neuro Desktop Hub"
 $env:NEURO_CATALOG_FILE = "./desktop/catalog/index.json"
+$env:NEURO_CONTEXT_POLL_SECONDS = "15"
+$env:NEURO_CONTEXT_CAPTURE_SCREENSHOT = "false"
+$env:NEURO_VISION_SERVER_URL = "http://127.0.0.1:8080/infer"
+$env:NEURO_EXTENSION_INSTALL_MODE = "metadata_only"
+$env:NEURO_EXTENSION_DIR = "./plugins"
+$env:NEURO_UI_LAUNCH = "true"
 
 # Linux/macOS
 export NEURO_SDK_WS_URL="ws://localhost:8000"
@@ -248,10 +254,17 @@ export NEURO_RELAY_ENABLED="true"
 export NEURO_RELAY_EMULATED_ADDR="127.0.0.1:8001"
 export NEURO_RELAY_NAME="Neuro Desktop Hub"
 export NEURO_CATALOG_FILE="./desktop/catalog/index.json"
+export NEURO_CONTEXT_POLL_SECONDS="15"
+export NEURO_CONTEXT_CAPTURE_SCREENSHOT="false"
+export NEURO_VISION_SERVER_URL="http://127.0.0.1:8080/infer"
+export NEURO_EXTENSION_INSTALL_MODE="metadata_only"
+export NEURO_EXTENSION_DIR="./plugins"
+export NEURO_UI_LAUNCH="true"
 ```
 
 Use [`permissions.example.json`](desktop/apps/neuro-integration/permissions.example.json) as a starting policy.
 Set `NEURO_RELAY_BINARY` to an explicit relay executable path if the binary is not in the same folder as `neuro-desktop.exe`.
+Use `NEURO_EXTENSION_INSTALL_MODE=git_clone` if you want extension installation to clone repositories from GitHub.
 
 ## Development
 
@@ -284,6 +297,18 @@ cd desktop
 ```
 
 The build script will compile relay and pass it to the bundle scripts automatically.
+
+### Supervised Runtime (Process Handler)
+
+The process handler can now supervise ND and integration workers directly:
+
+```bash
+# From dist bundle folder
+./process-handler.exe
+```
+
+`process-handler` starts `neuro-desktop.exe --supervised` and launches `neuro-integration.exe` itself.
+If `neuro-relay.exe` exists in the same folder, it is also supervised and the integration is routed through relay automatically.
 
 ### Project Structure
 

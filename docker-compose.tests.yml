@@ -3,10 +3,9 @@ services:
     build:
       context: ./desktop/apps/neuro-integration
       dockerfile: Dockerfile.test
+    command: go test ./...
 
   python-parser-tests:
-    image: python:3.12-slim
-    working_dir: /workspace
-    volumes:
-      - ./:/workspace
-    command: python -m unittest discover desktop/backend/python/tests
+    build:
+      context: ./desktop/backend/python
+      dockerfile: Dockerfile.test

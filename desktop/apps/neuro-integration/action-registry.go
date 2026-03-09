@@ -40,6 +40,14 @@ const (
 	CmdListCatalogItems    CommandType = "list_catalog_items"
 	CmdFindCatalogItems    CommandType = "find_catalog_items"
 	CmdGetCatalogItem      CommandType = "get_catalog_item"
+	CmdGetDesktopContext   CommandType = "get_desktop_context"
+	CmdSendDesktopContext  CommandType = "send_desktop_context"
+	CmdListInstalledExts   CommandType = "list_installed_extensions"
+	CmdInstallExtension    CommandType = "install_extension"
+	CmdUninstallExtension  CommandType = "uninstall_extension"
+	CmdEnableExtension     CommandType = "enable_extension"
+	CmdDisableExtension    CommandType = "disable_extension"
+	CmdGetStatus           CommandType = "get_status"
 	CmdRunScript           CommandType = "run_script"
 	CmdExecuteQueue        CommandType = "execute_queue"
 	CmdClearActionQueue    CommandType = "clear_action_queue"
@@ -190,6 +198,78 @@ var HLActionSpecs = []actionSpec{
 			"item_id": map[string]interface{}{
 				"type":        "string",
 				"description": "Catalog item id",
+			},
+		}, []string{"item_id"}),
+	},
+	{
+		Name:        CmdGetDesktopContext,
+		Description: "Collect current desktop context snapshot (window/process/action history + optional screenshot path)",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"capture_screenshot": map[string]interface{}{
+				"type":        "boolean",
+				"default":     false,
+				"description": "Capture a screenshot before generating context",
+			},
+		}, nil),
+	},
+	{
+		Name:        CmdSendDesktopContext,
+		Description: "Collect desktop context and send it to Neuro as a context message",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"capture_screenshot": map[string]interface{}{
+				"type":        "boolean",
+				"default":     false,
+				"description": "Capture a screenshot before generating context",
+			},
+			"silent": map[string]interface{}{
+				"type":        "boolean",
+				"default":     true,
+				"description": "Send context silently",
+			},
+		}, nil),
+	},
+	{
+		Name:        CmdListInstalledExts,
+		Description: "List installed/managed Neuro Desktop extensions",
+		Schema:      nil,
+	},
+	{
+		Name:        CmdInstallExtension,
+		Description: "Install an extension from the catalog (supports metadata-only or git-clone mode)",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"item_id": map[string]interface{}{
+				"type":        "string",
+				"description": "Catalog extension id",
+			},
+		}, []string{"item_id"}),
+	},
+	{
+		Name:        CmdUninstallExtension,
+		Description: "Uninstall an extension by id",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"item_id": map[string]interface{}{
+				"type":        "string",
+				"description": "Catalog extension id",
+			},
+		}, []string{"item_id"}),
+	},
+	{
+		Name:        CmdEnableExtension,
+		Description: "Enable an installed extension by id",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"item_id": map[string]interface{}{
+				"type":        "string",
+				"description": "Catalog extension id",
+			},
+		}, []string{"item_id"}),
+	},
+	{
+		Name:        CmdDisableExtension,
+		Description: "Disable an installed extension by id",
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"item_id": map[string]interface{}{
+				"type":        "string",
+				"description": "Catalog extension id",
 			},
 		}, []string{"item_id"}),
 	},
@@ -422,6 +502,47 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 			return nil, neuro.NewFailureResult("item_id is required")
 		}
 		return nil, a.integration.getCatalogItem(itemID)
+	case CmdGetDesktopContext:
+		capture := getBoolParam(params, "capture_screenshot", false)
+		contextMessage, err := a.integration.getDesktopContext(capture)
+		if err != nil {
+			return nil, neuro.NewFailureResult(err.Error())
+		}
+		return nil, neuro.NewSuccessResult(contextMessage)
+	case CmdSendDesktopContext:
+		capture := getBoolParam(params, "capture_screenshot", false)
+		silent := getBoolParam(params, "silent", true)
+		return nil, a.integration.sendDesktopContext(capture, silent)
+	case CmdListInstalledExts:
+		return nil, a.integration.listInstalledExtensions()
+	case CmdInstallExtension:
+		itemID, _ := params["item_id"].(string)
+		itemID = strings.TrimSpace(itemID)
+		if itemID == "" {
+			return nil, neuro.NewFailureResult("item_id is required")
+		}
+		return nil, a.integration.installExtension(itemID)
+	case CmdUninstallExtension:
+		itemID, _ := params["item_id"].(string)
+		itemID = strings.TrimSpace(itemID)
+		if itemID == "" {
+			return nil, neuro.NewFailureResult("item_id is required")
+		}
+		return nil, a.integration.uninstallExtension(itemID)
+	case CmdEnableExtension:
+		itemID, _ := params["item_id"].(string)
+		itemID = strings.TrimSpace(itemID)
+		if itemID == "" {
+			return nil, neuro.NewFailureResult("item_id is required")
+		}
+		return nil, a.integration.setExtensionEnabled(itemID, true)
+	case CmdDisableExtension:
+		itemID, _ := params["item_id"].(string)
+		itemID = strings.TrimSpace(itemID)
+		if itemID == "" {
+			return nil, neuro.NewFailureResult("item_id is required")
+		}
+		return nil, a.integration.setExtensionEnabled(itemID, false)
 	}
 
 	cmd, err := buildIPCCommand(a.spec.Name, params, executeNow, clearAfter)

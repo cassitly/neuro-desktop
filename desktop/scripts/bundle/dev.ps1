@@ -52,6 +52,20 @@ else {
 
 Write-Host "  [ok] Neuro Integration binary copied to $DIST"
 
+# ---------- Copy Process Handler ----------
+$processHandlerCandidates = @(
+  "apps/process-handler/build/Release/process-handler.exe",
+  "apps/process-handler/build/process-handler.exe"
+)
+
+$processHandlerSource = $processHandlerCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($processHandlerSource) {
+  Copy-Item $processHandlerSource "$DIST/process-handler.exe"
+  Write-Host "  [ok] Process Handler binary copied to $DIST/process-handler.exe"
+} else {
+  Write-Host "  [..] Process Handler binary not found (build apps/process-handler first)"
+}
+
 # ---------- Build frontend ----------
 Write-Host "Building frontend..."
 Push-Location frontend
@@ -84,6 +98,7 @@ Write-Host ""
 Write-Host "=== Dev bundle complete ==="
 Write-Host "Run from: $DIST"
 Write-Host "Execute:  .\neuro-desktop.exe"
+Write-Host "Supervised: .\process-handler.exe"
 
 if ($RunAfterBuild) {
     Set-Location $DIST

@@ -2,6 +2,7 @@ mod controller;
 mod go_manager;
 mod ipc_handler;
 mod relay_manager;
+mod ui_launcher;
 
 use controller::Controller;
 use go_manager::GoProcessManager;
@@ -70,6 +71,10 @@ fn env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn arg_present(target: &str) -> bool {
+    env::args().any(|arg| arg == target)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("=======================================================");
@@ -94,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         env::var("NEURO_PERMISSIONS_FILE").unwrap_or_else(|_| default_permissions_path());
 
     let relay_enabled = env_bool("NEURO_RELAY_ENABLED", false);
+    let supervised_mode = env_bool("NEURO_SUPERVISED", false) || arg_present("--supervised");
     let relay_name =
         env::var("NEURO_RELAY_NAME").unwrap_or_else(|_| "Neuro Desktop Hub".to_string());
     let relay_emulated_addr =
@@ -111,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  - IPC File:         {}", ipc_path);
     println!("  - Permissions File: {}", permissions_path);
     println!("  - Relay Enabled:    {}", relay_enabled);
+    println!("  - Supervised Mode:  {}", supervised_mode);
     if relay_enabled {
         println!("  - Relay Name:       {}", relay_name);
         println!("  - Relay Addr:       {}", relay_emulated_addr);
@@ -123,18 +130,22 @@ async fn main() -> anyhow::Result<()> {
     println!("      [ok] Python drivers loaded");
     println!();
 
-    println!("[2/5] Initializing Neuro integration process...");
-    let mut go_manager = GoProcessManager::new().expect("Failed to create Go manager");
-    println!("      [ok] Integration process manager ready");
-    println!();
-
-    println!("[3/5] Initializing optional relay process...");
-    let mut relay_manager = if relay_enabled {
+    println!("[2/5] Initializing optional relay process...");
+    let mut relay_manager = if !supervised_mode && relay_enabled {
         Some(RelayProcessManager::new().expect("Failed to create relay manager"))
     } else {
         None
     };
     println!("      [ok] Relay initialization complete");
+    println!();
+
+    println!("[3/5] Initializing Neuro integration process...");
+    let mut go_manager = if !supervised_mode {
+        Some(GoProcessManager::new().expect("Failed to create Go manager"))
+    } else {
+        None
+    };
+    println!("      [ok] Integration process manager ready");
     println!();
 
     println!("[4/5] Starting IPC handler...");
@@ -152,12 +163,18 @@ async fn main() -> anyhow::Result<()> {
         println!();
     }
 
-    println!("[5/5] Starting Neuro integration...");
-    go_manager
-        .start(&integration_ws_url, &ipc_path, &permissions_path)
-        .expect("Failed to start Go integration");
-    println!("      [ok] Integration process started");
+    if let Some(manager) = go_manager.as_mut() {
+        println!("[5/5] Starting Neuro integration...");
+        manager
+            .start(&integration_ws_url, &ipc_path, &permissions_path)
+            .expect("Failed to start Go integration");
+        println!("      [ok] Integration process started");
+    } else {
+        println!("[5/5] Integration launch delegated to process-handler (--supervised)");
+    }
     println!();
+
+    ui_launcher::launch_ui_if_enabled();
 
     println!("=======================================================");
     println!("Neuro Desktop is ready.");
@@ -173,7 +190,9 @@ async fn main() -> anyhow::Result<()> {
                 if !ipc_handler.load(std::sync::atomic::Ordering::SeqCst) {
                     println!();
                     println!("Shutdown signal received from IPC handler.");
-                    go_manager.stop();
+                    if let Some(manager) = go_manager.as_mut() {
+                        manager.stop();
+                    }
                     if let Some(relay) = relay_manager.as_mut() {
                         relay.stop();
                     }
@@ -191,20 +210,24 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                if !go_manager.is_running() {
-                    eprintln!("[warn] Neuro integration crashed, restarting...");
-                    if let Err(e) = go_manager.restart(&integration_ws_url, &ipc_path, &permissions_path) {
-                        eprintln!("[err] Failed to restart Neuro integration: {}", e);
-                        break;
+                if let Some(manager) = go_manager.as_mut() {
+                    if !manager.is_running() {
+                        eprintln!("[warn] Neuro integration crashed, restarting...");
+                        if let Err(e) = manager.restart(&integration_ws_url, &ipc_path, &permissions_path) {
+                            eprintln!("[err] Failed to restart Neuro integration: {}", e);
+                            break;
+                        }
+                        println!("[ok] Neuro integration restarted");
                     }
-                    println!("[ok] Neuro integration restarted");
                 }
             }
 
             _ = tokio::signal::ctrl_c() => {
                 println!();
                 println!("Shutting down...");
-                go_manager.stop();
+                if let Some(manager) = go_manager.as_mut() {
+                    manager.stop();
+                }
                 if let Some(relay) = relay_manager.as_mut() {
                     relay.stop();
                 }

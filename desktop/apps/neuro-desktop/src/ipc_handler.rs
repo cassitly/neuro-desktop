@@ -5,6 +5,7 @@
 use anyhow::{Context, Result};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -58,7 +59,10 @@ pub enum IPCCommand {
     },
     ExecuteQueue,
     ClearActionQueue,
-    GetStatus,
+    GetStatus {
+        #[serde(default)]
+        params: GetStatusParams,
+    },
     Heartbeat,
     ShutdownGracefully,
     ShutdownImmediately,
@@ -66,6 +70,18 @@ pub enum IPCCommand {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_max_open_windows() -> usize {
+    15
+}
+
+fn default_max_processes() -> usize {
+    20
+}
+
+fn default_max_actions() -> usize {
+    20
 }
 
 // Parameter validation
@@ -88,6 +104,17 @@ impl IPCCommand {
             Self::RunScript { params, .. } => {
                 if params.script.len() > 50000 {
                     anyhow::bail!("Script too long (max 50000 characters)");
+                }
+            }
+            Self::GetStatus { params } => {
+                if params.max_open_windows == 0 || params.max_open_windows > 200 {
+                    anyhow::bail!("max_open_windows must be between 1 and 200");
+                }
+                if params.max_processes == 0 || params.max_processes > 500 {
+                    anyhow::bail!("max_processes must be between 1 and 500");
+                }
+                if params.max_actions == 0 || params.max_actions > 200 {
+                    anyhow::bail!("max_actions must be between 1 and 200");
                 }
             }
             _ => {}
@@ -120,6 +147,32 @@ pub struct TypeTextParams {
 #[derive(Debug, Deserialize, Clone)]
 pub struct RunScriptParams {
     pub script: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct GetStatusParams {
+    #[serde(default)]
+    pub capture_screenshot: bool,
+    #[serde(default)]
+    pub screenshot_path: Option<String>,
+    #[serde(default = "default_max_open_windows")]
+    pub max_open_windows: usize,
+    #[serde(default = "default_max_processes")]
+    pub max_processes: usize,
+    #[serde(default = "default_max_actions")]
+    pub max_actions: usize,
+}
+
+impl Default for GetStatusParams {
+    fn default() -> Self {
+        Self {
+            capture_screenshot: false,
+            screenshot_path: None,
+            max_open_windows: default_max_open_windows(),
+            max_processes: default_max_processes(),
+            max_actions: default_max_actions(),
+        }
+    }
 }
 
 // ============================================================
@@ -433,11 +486,66 @@ impl IPCHandler {
 
             IPCCommand::ClearActionQueue => controller.clear_action_queue(),
 
-            IPCCommand::GetStatus => {
-                // Return system status
+            IPCCommand::GetStatus { params } => {
+                let mouse_position = controller
+                    .get_current_mouse_position()
+                    .ok()
+                    .map(|(x, y)| serde_json::json!({ "x": x, "y": y }))
+                    .unwrap_or(serde_json::Value::Null);
+
+                let active_window = controller.get_active_window().ok().flatten();
+
+                let mut open_windows = controller.get_open_windows().unwrap_or_default();
+                open_windows.truncate(params.max_open_windows);
+
+                let screen = controller
+                    .get_screen_size()
+                    .ok()
+                    .map(|(width, height)| serde_json::json!({ "width": width, "height": height }))
+                    .unwrap_or(serde_json::Value::Null);
+
+                let running_processes_raw = controller.get_running_processes().unwrap_or_default();
+                let mut deduped_processes: Vec<String> = running_processes_raw
+                    .into_iter()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                deduped_processes.truncate(params.max_processes);
+
+                let recent_actions = controller
+                    .action_history_json()
+                    .ok()
+                    .and_then(|v| v.as_array().cloned())
+                    .map(|mut actions| {
+                        if actions.len() > params.max_actions {
+                            actions = actions.split_off(actions.len() - params.max_actions);
+                        }
+                        actions
+                    })
+                    .unwrap_or_default();
+
+                let screenshot_path = if params.capture_screenshot {
+                    let path = params.screenshot_path.unwrap_or_else(|| {
+                        let mut tmp = std::env::temp_dir();
+                        tmp.push(format!("nd-capture-{}.png", current_timestamp()));
+                        tmp.to_string_lossy().to_string()
+                    });
+
+                    controller.capture_screen_to_file(&path).ok()
+                } else {
+                    None
+                };
+
                 return IPCResponse::success_with_data(serde_json::json!({
                     "status": "running",
                     "timestamp": current_timestamp(),
+                    "active_window": active_window,
+                    "open_windows": open_windows,
+                    "screen": screen,
+                    "mouse_position": mouse_position,
+                    "running_processes": deduped_processes,
+                    "recent_actions": recent_actions,
+                    "screenshot_path": screenshot_path,
                 }));
             }
 

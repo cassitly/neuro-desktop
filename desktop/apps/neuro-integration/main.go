@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -29,10 +30,11 @@ func NewNDIntegration(
 	}
 
 	integration := &NDIntegration{
-		client:      client,
-		ipcFilePath: ipcPath,
-		permissions: policy,
-		done:        make(chan struct{}),
+		client:          client,
+		ipcFilePath:     ipcPath,
+		permissions:     policy,
+		done:            make(chan struct{}),
+		contextStopChan: make(chan struct{}),
 	}
 
 	integration.client.OnCommand("shutdown/graceful", integration.handleGracefulShutdown)
@@ -70,6 +72,8 @@ func (n *NDIntegration) Start() error {
 		}
 	}
 
+	n.startContextLoop()
+
 	return n.registerActions()
 }
 
@@ -92,17 +96,31 @@ func (n *NDIntegration) Close() error {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	wsURL := os.Getenv("NEURO_SDK_WS_URL")
+	wsURLFlag := flag.String("ws-url", "", "Neuro API websocket URL")
+	ipcPathFlag := flag.String("ipc-file", "", "IPC command file path")
+	permissionsPathFlag := flag.String("permissions-file", "", "Permissions policy file path")
+	flag.Parse()
+
+	wsURL := *wsURLFlag
+	if wsURL == "" {
+		wsURL = os.Getenv("NEURO_SDK_WS_URL")
+	}
 	if wsURL == "" {
 		wsURL = "ws://localhost:8000"
 	}
 
-	ipcPath := os.Getenv("NEURO_IPC_FILE")
+	ipcPath := *ipcPathFlag
+	if ipcPath == "" {
+		ipcPath = os.Getenv("NEURO_IPC_FILE")
+	}
 	if ipcPath == "" {
 		ipcPath = "./neuro-integration-code-ipc.json"
 	}
 
-	permissionsPath := os.Getenv("NEURO_PERMISSIONS_FILE")
+	permissionsPath := *permissionsPathFlag
+	if permissionsPath == "" {
+		permissionsPath = os.Getenv("NEURO_PERMISSIONS_FILE")
+	}
 	if permissionsPath == "" {
 		permissionsPath = "./permissions.json"
 	}

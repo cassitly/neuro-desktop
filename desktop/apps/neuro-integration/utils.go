@@ -11,6 +11,9 @@ func (n *NDIntegration) markDone() {
 	n.doneOnce.Do(func() {
 		close(n.done)
 	})
+	n.contextStopOnce.Do(func() {
+		close(n.contextStopChan)
+	})
 }
 
 func (n *NDIntegration) sendToRust(cmd IPCCommand) (*IPCResponse, error) {

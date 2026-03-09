@@ -1,6 +1,7 @@
 use anyhow::Result;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
+use serde_json::Value;
 use std::env;
 
 use rust_core::paths::get_python_packages_path;
@@ -202,9 +203,79 @@ impl Controller {
         .map_err(Into::into)
     }
 
-    /// Expose the DesktopMonitor Python object  
-    pub fn get_monitor(&self) -> &Py<PyAny> {
-        &self.monitor
+    pub fn action_history_json(&self) -> Result<Value> {
+        Python::with_gil(|py| {
+            let history = self
+                .monitor
+                .bind(py)
+                .getattr("get_action_history")?
+                .call0()?;
+
+            let json = py.import_bound("json")?;
+            let history_json = json.getattr("dumps")?.call1((history,))?;
+            let history_str = history_json.extract::<String>()?;
+
+            Ok::<Value, PyErr>(serde_json::from_str(&history_str).unwrap_or(Value::Null))
+        })
+        .map_err(Into::into)
+    }
+
+    pub fn get_active_window(&self) -> Result<Option<String>> {
+        Python::with_gil(|py| {
+            let result = self
+                .monitor
+                .bind(py)
+                .getattr("get_active_window")?
+                .call0()?;
+            if result.is_none() {
+                return Ok(None);
+            }
+            Ok::<Option<String>, PyErr>(Some(result.extract::<String>()?))
+        })
+        .map_err(Into::into)
+    }
+
+    pub fn get_open_windows(&self) -> Result<Vec<String>> {
+        Python::with_gil(|py| {
+            let result = self.monitor.bind(py).getattr("get_open_windows")?.call0()?;
+            Ok::<Vec<String>, PyErr>(result.extract::<Vec<String>>()?)
+        })
+        .map_err(Into::into)
+    }
+
+    pub fn get_screen_size(&self) -> Result<(i32, i32)> {
+        Python::with_gil(|py| {
+            let result = self.monitor.bind(py).getattr("get_screen_size")?.call0()?;
+            let tuple = result.downcast::<PyTuple>()?;
+            let width = tuple.get_item(0)?.extract::<i32>()?;
+            let height = tuple.get_item(1)?.extract::<i32>()?;
+            Ok::<(i32, i32), PyErr>((width, height))
+        })
+        .map_err(Into::into)
+    }
+
+    pub fn get_running_processes(&self) -> Result<Vec<String>> {
+        Python::with_gil(|py| {
+            let result = self
+                .monitor
+                .bind(py)
+                .getattr("get_running_processes")?
+                .call0()?;
+            Ok::<Vec<String>, PyErr>(result.extract::<Vec<String>>()?)
+        })
+        .map_err(Into::into)
+    }
+
+    pub fn capture_screen_to_file(&self, path: &str) -> Result<String> {
+        Python::with_gil(|py| {
+            let result = self
+                .monitor
+                .bind(py)
+                .getattr("capture_screen_to_file")?
+                .call1((path,))?;
+            Ok::<String, PyErr>(result.extract::<String>()?)
+        })
+        .map_err(Into::into)
     }
 
     pub fn shutdown(&self) -> Result<()> {

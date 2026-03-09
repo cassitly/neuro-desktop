@@ -1,7 +1,6 @@
-FROM golang:1.22 AS test
+FROM golang:1.22
 
 WORKDIR /workspace
 
 COPY . .
-
-RUN go test ./...
+CMD ["go", "test", "./..."]

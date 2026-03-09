@@ -36,6 +36,19 @@
       "launch_hints": [
         "Run as an external process and expose HTTP endpoint before ND startup"
       ]
+    },
+    {
+      "id": "mcp-bridge",
+      "name": "MCP Bridge",
+      "description": "Model Context Protocol bridge plugin for external tool servers",
+      "type": "mcp-plugin",
+      "repository": "https://github.com/modelcontextprotocol/servers",
+      "tags": ["mcp", "plugin", "tools", "optional"],
+      "launch_hints": [
+        "Not installed by default",
+        "Install from the Extensions page or use install_extension action",
+        "Set NEURO_EXTENSION_INSTALL_MODE=git_clone to clone plugin repositories"
+      ]
     }
   ]
 }

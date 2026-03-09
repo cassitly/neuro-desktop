@@ -1,6 +1,7 @@
 import time
 import threading
 from typing import List, Tuple, Optional, Dict, Any
+import os
 
 import pyautogui
 import psutil
@@ -144,6 +145,14 @@ class DesktopMonitor:
             monitor = sct.monitors[1]
             screenshot = sct.grab(monitor)
             return Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+
+    def capture_screen_to_file(self, path: str) -> str:
+        image = self.capture_screen()
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        image.save(path)
+        return path
 
     # =================================================
     # System info

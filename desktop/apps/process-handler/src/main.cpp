@@ -6,6 +6,7 @@
 #include <iostream>
 #include <csignal>
 #include <atomic>
+#include <filesystem>
 
 using namespace neuro;
 
@@ -57,6 +58,7 @@ int main(int argc, char* argv[]) {
     rust_config.type = ProcessType::RUST_MAIN;
     rust_config.name = "rust_main";
     rust_config.executable_path = "./neuro-desktop.exe";
+    rust_config.args = {"--supervised"};
     rust_config.comm_methods = {CommMethod::FILE_IPC, CommMethod::STDIO};
     rust_config.auto_restart = true;
     rust_config.max_restart_attempts = 3;
@@ -76,9 +78,36 @@ int main(int argc, char* argv[]) {
     go_config.max_restart_attempts = 5;
     go_config.enable_heartbeat = true;
     go_config.heartbeat_interval = std::chrono::seconds(10);
-    go_config.env_vars["NEURO_SDK_WS_URL"] = "ws://localhost:8000";
-    go_config.env_vars["NEURO_IPC_FILE"] = "./neuro-integration-code-ipc.json";
+    go_config.args = {
+        "--ws-url", "ws://localhost:8000",
+        "--ipc-file", "./neuro-integration-code-ipc.json",
+        "--permissions-file", "./permissions.json"
+    };
     go_config.depends_on = {"rust_main"};  // Start after Rust
+
+    const bool relay_exists = std::filesystem::exists("./neuro-relay.exe");
+    ProcessConfig relay_config;
+    if (relay_exists) {
+        relay_config.type = ProcessType::CUSTOM;
+        relay_config.name = "neuro_relay";
+        relay_config.executable_path = "./neuro-relay.exe";
+        relay_config.args = {
+            "-name", "NeuroDesktopHub",
+            "-neuro-url", "ws://localhost:8000",
+            "-emulated-addr", "127.0.0.1:8001"
+        };
+        relay_config.comm_methods = {CommMethod::FILE_IPC};
+        relay_config.auto_restart = true;
+        relay_config.max_restart_attempts = 5;
+        relay_config.enable_heartbeat = false;
+        relay_config.depends_on = {"rust_main"};
+
+        go_config.args = {
+            "--ws-url", "ws://127.0.0.1:8001",
+            "--ipc-file", "./neuro-integration-code-ipc.json",
+            "--permissions-file", "./permissions.json"
+        };
+    }
     
     // ============================================================
     // Register Processes
@@ -93,6 +122,13 @@ int main(int argc, char* argv[]) {
     if (!manager.register_process(go_config)) {
         std::cerr << "Failed to register Go process" << std::endl;
         return 1;
+    }
+
+    if (relay_exists) {
+        if (!manager.register_process(relay_config)) {
+            std::cerr << "Failed to register relay process" << std::endl;
+            return 1;
+        }
     }
     
     std::cout << "      ✓ All processes registered" << std::endl;

@@ -52,6 +52,19 @@ Copy-Item `
 
 Write-Host "      ??? Neuro Integration binary built"
 
+# ---------- Copy Process Handler ----------
+$processHandlerCandidates = @(
+  "apps/process-handler/build/Release/process-handler.exe",
+  "apps/process-handler/build/process-handler.exe"
+)
+$processHandlerSource = $processHandlerCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($processHandlerSource) {
+    Copy-Item $processHandlerSource "$DIST/process-handler.exe"
+    Write-Host "      [ok] Process Handler binary bundled"
+} else {
+    Write-Host "      [..] Process Handler binary not bundled (build apps/process-handler first)"
+}
+
 $relayBinarySource = $env:NEURO_RELAY_BINARY_SOURCE
 if ($relayBinarySource -and (Test-Path $relayBinarySource)) {
     Copy-Item $relayBinarySource "$DIST/neuro-relay.exe"
@@ -105,6 +118,7 @@ Contents:
   - neuro-desktop.exe         Main application (Rust)
   - neuro-integration.exe     Neuro API connector (Go)
   - neuro-relay.exe           Optional relay binary (if bundled)
+  - process-handler.exe       Optional process supervisor
   - python/                   Python runtime and drivers
   - frontend/                 Web UI assets
 
@@ -135,13 +149,21 @@ https://github.com/Nakashireyumi/neuro-desktop
 "@ | Out-File "$DIST/README.txt"
 
 # ---------- Create launcher script ----------
-@"
+@" 
 @echo off
 echo Starting Neuro Desktop...
 echo.
 neuro-desktop.exe
 pause
 "@ | Out-File "$DIST/start.bat" -Encoding ASCII
+
+@"
+@echo off
+echo Starting Neuro Desktop (supervised mode)...
+echo.
+process-handler.exe
+pause
+"@ | Out-File "$DIST/start-supervised.bat" -Encoding ASCII
 
 Write-Host ""
 Write-Host "=== Bundle complete ==="

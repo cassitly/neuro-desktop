@@ -165,12 +165,18 @@ Last verified: 2026-03-09
 - [x] Add optional Neuro Relay process supervision and relay-backed integration routing.
 - [x] Migrate Go integration module to `neuro-integration-sdk` (with local compatibility patch for command hooks/action acknowledgments).
 - [x] Add catalog metadata and catalog actions (`list_catalog_items`, `find_catalog_items`, `get_catalog_item`) with tests.
+- [x] Connect process-handler supervised runtime mode (`neuro-desktop --supervised`) and bundle `process-handler.exe`.
+- [x] Implement desktop context pipeline: Rust `get_status` desktop snapshot + Go periodic `context` sender (`NEURO_CONTEXT_POLL_SECONDS`).
+- [x] Add optional vision bridge (`NEURO_VISION_SERVER_URL`) for screenshot summarization into Neuro context.
+- [x] Add extension management actions (`install/enable/disable/uninstall/list`) with persistent state file and MCP plugin catalog entry.
+- [x] Replace placeholder frontend with startup splash + management UI for ND/relay/extensions (React + Vite).
 
 ## Remaining Production Work
 
 - [ ] Permission model and runtime enforcement (#12/#20).
 - [ ] UI token synchronization and relay-first onboarding (#16).
-- [ ] Integration manager and marketplace/app-store flow (#11/#14/#15).
-- [ ] Vision pipeline integration and confidence-driven action loop.
+- [ ] Integration manager and marketplace/app-store flow (#11/#14/#15), including signed plugin distribution.
+- [ ] Vision pipeline confidence loop and formalized server contract.
 - [ ] Security hardening: signed bundles, config integrity, least-privilege defaults.
+- [ ] Native tray/minimize-to-notification-area shell (current UI is browser-launched).
 - [ ] Release quality gates: coverage target, smoke E2E, installer validation, changelog discipline.
