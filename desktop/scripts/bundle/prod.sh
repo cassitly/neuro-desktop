@@ -40,7 +40,7 @@ GO_BIN="neuro-integration$BIN_EXT"
 # CLEAN
 # --------------------------------------------------
 rm -rf dist
-mkdir -p "$DIST"
+mkdir -p "$DIST/"
 
 # --------------------------------------------------
 # BUILD RUST
