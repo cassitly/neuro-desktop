@@ -77,6 +77,7 @@ echo "      ✓ Neuro Integration binary built"
 # --------------------------------------------------
 echo "[3/4] Building frontend..."
 pushd frontend > /dev/null
+npm install # install the npm dependencies before building.
 npm run build
 popd > /dev/null
 
@@ -98,6 +99,17 @@ echo "[4/4] Bundling Python runtime..."
 mkdir -p "$PY_DIST"
 
 VENV_BASE="backend/python/.venv"
+REQ_FILE="backend/python/requirements.txt"
+python -m venv "$VENV_BASE"
+source "$VENV_BASE/bin/activate"
+
+if [ -f "$REQ_FILE" ]; then
+    echo "Installing/updating dependencies from $REQ_FILE..."
+    pip install --upgrade pip
+    pip install -r "$REQ_FILE"
+else
+    echo "Warning: $REQ_FILE not found. Skipping installation."
+fi
 
 if [[ -d "$VENV_BASE/Lib" ]]; then
   # Windows venv
