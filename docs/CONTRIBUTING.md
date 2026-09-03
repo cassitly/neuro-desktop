@@ -52,7 +52,7 @@ Before contributing, ensure you have:
 # Click "Fork" button on https://github.com/Nakashireyumi/neuro-desktop
 
 # 2. Clone your fork
-git clone https://github.com/YOUR_USERNAME/neuro-desktop.git
+git clone https://github.com/cassitly/neuro-desktop.git
 cd neuro-desktop
 
 # 3. Add upstream remote
