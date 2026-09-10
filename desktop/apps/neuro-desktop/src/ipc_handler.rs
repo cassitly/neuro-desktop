@@ -421,7 +421,7 @@ impl IPCHandler {
         Ok(())
     }
 
-    fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse {
+    pub fn execute_command(controller: &Controller, command: IPCCommand) -> IPCResponse {
         fn execute_and_maybe_clear(
             execute_now: bool,
             clear_after: bool,

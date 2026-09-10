@@ -7,8 +7,17 @@
 #include <csignal>
 #include <atomic>
 #include <filesystem>
+#include <string>
 
 using namespace neuro;
+
+static std::string native_binary(const char* base_name) {
+#ifdef _WIN32
+    return std::string("./") + base_name + ".exe";
+#else
+    return std::string("./") + base_name;
+#endif
+}
 
 std::atomic<bool> g_shutdown_requested{false};
 ProcessManager* g_manager = nullptr;
@@ -51,13 +60,17 @@ int main(int argc, char* argv[]) {
     ProcessManager manager;
     g_manager = &manager;
     
+    const std::string rust_bin = native_binary("neuro-desktop");
+    const std::string go_bin = native_binary("neuro-integration");
+    const std::string relay_bin = native_binary("neuro-relay");
+
     // ============================================================
-    // Configure Rust Main Process
+    // Configure Rust Main Process (executor / client)
     // ============================================================
     ProcessConfig rust_config;
     rust_config.type = ProcessType::RUST_MAIN;
     rust_config.name = "rust_main";
-    rust_config.executable_path = "./neuro-desktop.exe";
+    rust_config.executable_path = rust_bin;
     rust_config.args = {"--supervised"};
     rust_config.comm_methods = {CommMethod::FILE_IPC, CommMethod::STDIO};
     rust_config.auto_restart = true;
@@ -73,7 +86,7 @@ int main(int argc, char* argv[]) {
     ProcessConfig go_config;
     go_config.type = ProcessType::GO_INTEGRATION;
     go_config.name = "go_integration";
-    go_config.executable_path = "./neuro-integration.exe";
+    go_config.executable_path = go_bin;
     go_config.comm_methods = {CommMethod::FILE_IPC};
     go_config.auto_restart = true;
     go_config.max_restart_attempts = 5;
@@ -86,12 +99,12 @@ int main(int argc, char* argv[]) {
     };
     go_config.depends_on = {"rust_main"};  // Start after Rust
 
-    const bool relay_exists = std::filesystem::exists("./neuro-relay.exe");
+    const bool relay_exists = std::filesystem::exists(relay_bin);
     ProcessConfig relay_config;
     if (relay_exists) {
         relay_config.type = ProcessType::CUSTOM;
         relay_config.name = "neuro_relay";
-        relay_config.executable_path = "./neuro-relay.exe";
+        relay_config.executable_path = relay_bin;
         relay_config.args = {
             "-name", "NeuroDesktopHub",
             "-neuro-url", "ws://localhost:8000",
@@ -132,7 +145,7 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    std::cout << "      ✓ All processes registered" << std::endl;
+    std::cout << "      All processes registered" << std::endl;
     std::cout << std::endl;
     
     // ============================================================
@@ -167,7 +180,7 @@ int main(int argc, char* argv[]) {
         g_shutdown_requested = true;
     });
     
-    std::cout << "      ✓ Message handlers configured" << std::endl;
+    std::cout << "      Message handlers configured" << std::endl;
     std::cout << std::endl;
     
     // ============================================================

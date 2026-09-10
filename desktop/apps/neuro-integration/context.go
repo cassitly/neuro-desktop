@@ -130,7 +130,7 @@ func buildDesktopContextMessage(status map[string]interface{}, visionSummary str
 	}
 
 	var lines []string
-	lines = append(lines, "Neuro Desktop context snapshot:")
+	lines = append(lines, "## Desktop context snapshot")
 	if strings.TrimSpace(activeWindow) == "" {
 		lines = append(lines, "- Active window: unavailable")
 	} else {

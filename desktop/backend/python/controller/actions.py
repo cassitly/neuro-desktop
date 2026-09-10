@@ -1,5 +1,7 @@
 import shlex
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+from .platform_intents import apply_intent, supported_intents
 
 if TYPE_CHECKING:
     from .controls.keyboard import KeyboardController
@@ -7,6 +9,11 @@ if TYPE_CHECKING:
     from .desktop import DesktopMonitor
 
 Point = Tuple[int, int]
+
+# High-level desktop intents resolved via platform_intents (OS-specific shortcuts).
+_DESKTOP_INTENTS = frozenset(supported_intents("windows")) | frozenset(
+    supported_intents("linux")
+) | frozenset(supported_intents("macos"))
 
 
 class ActionParseError(Exception):
@@ -23,10 +30,12 @@ class ActionParser:
         keyboard: "KeyboardController",
         mouse: "MouseController",
         monitor: "DesktopMonitor",
+        platform: Optional[str] = None,
     ):
         self.kbd = keyboard
         self.mouse = mouse
         self.monitor = monitor
+        self.platform = platform
 
     # ------------------------
     # Public API
@@ -84,65 +93,12 @@ class ActionParser:
         elif cmd == "SHORTCUT":
             self._kbd_shortcut(tokens)
 
-        # -------- High-level desktop intents --------
-        elif cmd == "OPEN_WINDOWS_MENU" or cmd == "OPEN_START_MENU":
-            self.kbd.press("win")
-
-        elif cmd == "SHOW_DESKTOP":
-            self.kbd.shortcut("win", "d")
-
-        elif cmd == "MINIMIZE_ALL_WINDOWS":
-            self.kbd.shortcut("win", "m")
-
-        elif cmd == "CLOSE_FOREGROUND_APP":
-            self.kbd.shortcut("alt", "f4")
-
-        elif cmd == "OPEN_TASK_MANAGER":
-            self.kbd.shortcut("ctrl", "shift", "esc")
-
-        elif cmd == "CLOSE_ALL_APPS":
-            # Windows has no universal "close everything safely" action.
-            # Use SHOW_DESKTOP behavior as a non-destructive fallback.
-            self.kbd.shortcut("win", "d")
-
-        elif cmd == "OPEN_FILE_EXPLORER":
-            self.kbd.shortcut("win", "e")
-
-        elif cmd == "OPEN_RUN_DIALOG":
-            self.kbd.shortcut("win", "r")
-
-        elif cmd == "OPEN_SEARCH":
-            self.kbd.shortcut("win", "s")
-
-        elif cmd == "SNAP_WINDOW_LEFT":
-            self.kbd.shortcut("win", "left")
-
-        elif cmd == "SNAP_WINDOW_RIGHT":
-            self.kbd.shortcut("win", "right")
-
-        elif cmd == "OPEN_WINDOWS_SETTINGS":
-            self.kbd.shortcut("win", "i")
-
-        elif cmd == "OPEN_NOTIFICATION_CENTER":
-            self.kbd.shortcut("win", "a")
-
-        elif cmd == "OPEN_CLIPBOARD_HISTORY":
-            self.kbd.shortcut("win", "v")
-
-        elif cmd == "LOCK_WORKSTATION":
-            self.kbd.shortcut("win", "l")
-
-        elif cmd == "SWITCH_APP_NEXT":
-            self.kbd.shortcut("alt", "tab")
-
-        elif cmd == "SWITCH_APP_PREVIOUS":
-            self.kbd.shortcut("alt", "shift", "tab")
-
-        elif cmd == "OPEN_POWER_USER_MENU":
-            self.kbd.shortcut("win", "x")
-
-        elif cmd == "TAKE_SCREEN_SNIP":
-            self.kbd.shortcut("win", "shift", "s")
+        # -------- High-level desktop intents (cross-platform) --------
+        elif cmd in _DESKTOP_INTENTS or cmd == "OPEN_SETTINGS":
+            try:
+                apply_intent(self.kbd, cmd, platform=self.platform)
+            except (KeyError, ValueError) as exc:
+                raise ActionParseError(str(exc)) from exc
 
         # -------- Mouse --------
         elif cmd == "MOVE":

@@ -20,6 +20,11 @@ func (n *NDIntegration) sendToRust(cmd IPCCommand) (*IPCResponse, error) {
 	n.ipcMu.Lock()
 	defer n.ipcMu.Unlock()
 
+	// Prefer remote/local TCP executor client when connected.
+	if n.executorHub != nil && n.executorHub.HasClient() {
+		return n.executorHub.SendCommand(cmd, 25*time.Second)
+	}
+
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, err
@@ -42,5 +47,5 @@ func (n *NDIntegration) sendToRust(cmd IPCCommand) (*IPCResponse, error) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	return nil, fmt.Errorf("timeout waiting for Rust response")
+	return nil, fmt.Errorf("timeout waiting for executor response (no TCP client; file IPC timed out)")
 }

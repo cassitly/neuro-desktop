@@ -15,7 +15,17 @@
 
 ## Overview
 
-Neuro Desktop employs a **multi-language, multi-process architecture** that leverages the strengths of different programming languages for optimal performance, safety, and maintainability.
+Neuro Desktop is a **bridge + executor** architecture:
+
+- **Bridge (`neuro-integration`, Go)** — WebSocket client of the
+  [Neuro API](https://github.com/VedalAI/neuro-sdk). Registers actions, enforces
+  Vedal's permission policy, and returns `action/result` promptly (SDK requires
+  results within ~20s; long work happens on the executor).
+- **Executor (`neuro-desktop` + Python)** — Runs on the controlled machine.
+  Receives validated IPC commands and drives mouse/keyboard/scripts.
+
+Both usually co-locate today (file IPC). The split is the seam for a future
+remote executor under a managed bridge.
 
 ### Design Philosophy
 
@@ -23,7 +33,8 @@ Neuro Desktop employs a **multi-language, multi-process architecture** that leve
 2. **Fault Isolation**: Process boundaries prevent cascading failures
 3. **Simple Communication**: JSON-based IPC for easy debugging and extensibility
 4. **Graceful Degradation**: Automatic recovery from component failures
-5. **Safety First**: Multiple validation layers and bounded execution
+5. **Safety First**: Permission scopes + allow/deny lists before execution
+6. **Cross-Platform Intents**: High-level actions map to OS-specific shortcuts
 
 ## System Design
 

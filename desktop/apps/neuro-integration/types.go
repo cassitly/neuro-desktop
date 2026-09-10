@@ -12,7 +12,9 @@ type CommandType string
 type NDIntegration struct {
 	client          *neuro.Client
 	ipcFilePath     string
+	permissionsPath string
 	permissions     *PermissionPolicy
+	executorHub     *ExecutorHub
 	done            chan struct{}
 	doneOnce        sync.Once
 	ipcMu           sync.Mutex

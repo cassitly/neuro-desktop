@@ -67,19 +67,19 @@ const DEFAULT_POLICY: PermissionPolicy = {
   version: "1.0.0",
   default_allow: false,
   metadata: {
-    description: "Neuro Desktop Permission Policy",
+    description: "Neuro Desktop Permission Policy — place exported permissions.json next to neuro-integration",
     environment: "development",
   },
   scopes: {
     input: { allowed: true, limits: { max_actions_per_minute: 120, max_concurrent_actions: 3 } },
-    filesystem: { allowed: true, limits: { allowed_paths: ["./plugins", "./catalog", "./config"] } },
+    filesystem: { allowed: false, limits: { allowed_paths: ["./plugins", "./catalog", "./config"] } },
     process: { allowed: true, limits: {} },
     network: { allowed: true, limits: { allowed_hosts: ["localhost", "127.0.0.1"] } },
     system: { allowed: false, limits: {} },
     vision: { allowed: true, limits: { max_actions_per_minute: 10 } },
   },
   allowed_actions: [],
-  denied_actions: ["shutdown_immediately", "lock_workstation"],
+  denied_actions: ["shutdown_immediately", "lock_workstation", "install_extension"],
 };
 
 const STORAGE_KEY = "nd_permission_policy_v1";
@@ -173,7 +173,17 @@ export default function PermissionsPage() {
   }
 
   function exportPolicy() {
-    const json = JSON.stringify(policy, null, 2);
+    // Export Go-compatible runtime policy (scopes + allow/deny lists).
+    const runtimePolicy = {
+      version: policy.version,
+      default_allow: policy.default_allow,
+      allowed_actions: policy.allowed_actions,
+      denied_actions: policy.denied_actions,
+      scopes: Object.fromEntries(
+        Object.entries(policy.scopes).map(([k, v]) => [k, { allowed: v.allowed }])
+      ),
+    };
+    const json = JSON.stringify(runtimePolicy, null, 2);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");

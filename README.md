@@ -3,7 +3,7 @@
 > **An AI-powered desktop control system that gives Neuro-sama the ability to control a computer through natural language commands.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
+[![CI](https://github.com/Nakashireyumi/neuro-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/Nakashireyumi/neuro-desktop/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-0.0.3b--dev-blue.svg)]()
 
 ## Table of Contents
@@ -29,7 +29,8 @@ Neuro Desktop is a multi-language integration system that enables [Neuro-sama](h
 - **Human-Like Mouse Movement**: Advanced algorithmic pathfinding that mimics natural human mouse movements with Bézier curves and Perlin noise
 - **Powerful Script Language**: Simple yet expressive action scripting for complex automation tasks
 - **Automatic Recovery**: Built-in crash detection and automatic process restart capabilities
-- **Cross-Platform**: Works on Windows, Linux, and macOS with platform-specific optimizations
+- **Cross-Platform**: Windows, Linux, and macOS — high-level intents resolve to OS-native shortcuts
+- **Operator Controls**: Vedal can gate capabilities via scoped permission policies
 
 ## Features
 
@@ -56,49 +57,49 @@ Neuro Desktop is a multi-language integration system that enables [Neuro-sama](h
 
 ## Architecture
 
+Neuro Desktop is a **bridge + executor** stack. Per the
+[Neuro SDK](https://github.com/VedalAI/neuro-sdk), this app is a WebSocket
+**client** of Neuro's API server. Internally:
+
+- **Bridge (server)** — `neuro-integration` talks to Neuro, enforces permissions,
+  listens for executor clients on TCP `:9876`, and serves operator admin HTTP on `:8300`.
+- **Executor (client)** — `neuro-desktop` + Python run on the machine being controlled
+  (`--executor --server host:9876`). Can be a different PC than the bridge.
+
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Neuro API                            │
-│                 (WebSocket Server)                      │
-└────────────────────────┬────────────────────────────────┘
-                         │
-                         │ WebSocket (ws://localhost:8000)
-                         │
-┌────────────────────────▼────────────────────────────────┐
-│              Go Integration Layer                       │
-│  • Connects to Neuro API                               │
-│  • Registers available actions                         │
-│  • Translates Neuro commands → IPC                     │
-└────────────────────────┬────────────────────────────────┘
-                         │
-                         │ File IPC (JSON)
-                         │
-┌────────────────────────▼────────────────────────────────┐
-│              Rust Main Process                          │
-│  • IPC Command Processor                               │
-│  • Python FFI Bridge (PyO3)                            │
-│  • Process Lifecycle Management                        │
-└────────────────────────┬────────────────────────────────┘
-                         │
-                         │ PyO3 FFI
-                         │
-┌────────────────────────▼────────────────────────────────┐
-│            Python Controller Layer                      │
-│  • Cross-platform input control (pyautogui)            │
-│  • Action script parser                                │
-│  • Mouse pathfinding algorithms                        │
-│  • Desktop telemetry                                   │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────┐     Neuro WS      ┌─────────────────────────────┐
+│  Neuro API       │◄─────────────────►│  Bridge (Go)                │
+│  (Vedal)         │                   │  + admin :8300              │
+└──────────────────┘                   │  + executor hub :9876       │
+                                       └──────────────┬──────────────┘
+                                                      │ TCP JSON-lines
+                                       ┌──────────────▼──────────────┐
+                                       │  Executor (Rust + Python)   │
+                                       │  mouse / keyboard / scripts │
+                                       └─────────────────────────────┘
 ```
+
+### Split-machine quick start
+
+```bash
+# PC with Neuro / Vedal (bridge)
+./neuro-integration --ws-url ws://localhost:8000 --executor-listen 0.0.0.0:9876
+
+# PC Neuro should control (executor) — Omarchy/Linux graphical session, NO sudo
+./neuro-desktop --executor --server <bridge-lan-ip>:9876
+```
+
+Co-located (default): `./neuro-desktop` still spawns the bridge beside itself.
 
 ### Component Breakdown
 
-| Component | Language | Purpose |
-|-----------|----------|---------|
-| **neuro-integration** | Go | WebSocket client, action registry, IPC communication |
-| **neuro-desktop** | Rust | Main orchestrator, IPC handler, Python FFI bridge |
-| **controller** | Python | Cross-platform input control, script parsing |
-| **frontend** | TypeScript | Web-based UI (planned feature) |
+| Component | Language | Role |
+|-----------|----------|------|
+| **neuro-integration** | Go | Bridge: Neuro API, permissions, action registry |
+| **neuro-desktop** | Rust | Executor orchestrator, IPC, process lifecycle |
+| **controller** | Python | Input control, script parsing, platform intents |
+| **frontend** | TypeScript | Operator UI (permissions export → `permissions.json`) |
+| **process-handler** | C++ | Optional multi-process supervisor |
 
 ## Quick Start
 
@@ -267,6 +268,23 @@ Set `NEURO_RELAY_BINARY` to an explicit relay executable path if the binary is n
 Use `NEURO_EXTENSION_INSTALL_MODE=git_clone` if you want extension installation to clone repositories from GitHub.
 
 ## Development
+
+### Local Neuro API tester (Ollama + RWKV7)
+
+In-repo stand-in for [Randy](https://github.com/VedalAI/neuro-sdk/tree/main/Randy) that
+can also pick actions with [heredos/rwkv7:2.9b](https://ollama.com/heredos/rwkv7):
+
+```bash
+cd desktop/tools/ollama-neuro
+./setup.sh
+./run.sh --mode ollama --warm    # ws://127.0.0.1:8000 + http://127.0.0.1:1337/
+# Instant IPC debugging without waiting on the LLM:
+./run.sh --mode manual
+```
+
+On CPU laptops (e.g. Dell Latitude E7490), cold model load can take minutes —
+use `--warm` / `--keep-alive -1`, or stay on `manual`/`random` while wiring IPC.
+Details: [`desktop/tools/ollama-neuro/README.md`](desktop/tools/ollama-neuro/README.md).
 
 ### Docker Modular Tests
 

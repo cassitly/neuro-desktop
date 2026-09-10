@@ -53,6 +53,8 @@ impl GoProcessManager {
             .env("NEURO_SDK_WS_URL", ws_url)
             .env("NEURO_IPC_FILE", ipc_file)
             .env("NEURO_PERMISSIONS_FILE", permissions_file)
+            .env("NEURO_EXECUTOR_LISTEN", "127.0.0.1:9876")
+            .env("NEURO_ADMIN_LISTEN", "127.0.0.1:8300")
             .spawn()
             .context("Failed to start Neuro integration")?;
 

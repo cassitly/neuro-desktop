@@ -36,6 +36,7 @@ func NewNDIntegration(
 	integration := &NDIntegration{
 		client:          client,
 		ipcFilePath:     ipcPath,
+		permissionsPath: permissionsPath,
 		permissions:     policy,
 		done:            make(chan struct{}),
 		contextStopChan: make(chan struct{}),
@@ -87,7 +88,7 @@ func (n *NDIntegration) Start() error {
 	}()
 
 	if err := n.client.SendContext(
-		"Neuro Desktop is ready. You can control the mouse, keyboard, and run scripts.",
+		"## Neuro Desktop ready\n\nYou can control the mouse, keyboard, and run scripts on the connected executor.",
 		true,
 	); err != nil {
 		log.Printf("Warning: failed to send initial context: %v", err)
@@ -128,8 +129,10 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	wsURLFlag := flag.String("ws-url", "", "Neuro API websocket URL")
-	ipcPathFlag := flag.String("ipc-file", "", "IPC command file path")
+	ipcPathFlag := flag.String("ipc-file", "", "Legacy file-IPC path (fallback when no TCP executor)")
 	permissionsPathFlag := flag.String("permissions-file", "", "Permissions policy file path")
+	executorListenFlag := flag.String("executor-listen", "", "TCP listen addr for executor clients (default 0.0.0.0:9876)")
+	adminListenFlag := flag.String("admin-listen", "", "HTTP admin dashboard addr (default 127.0.0.1:8300)")
 	flag.Parse()
 
 	wsURL := *wsURLFlag
@@ -156,22 +159,50 @@ func main() {
 		permissionsPath = "./permissions.json"
 	}
 
-	log.Printf("Starting Neuro Desktop integration")
-	log.Printf("- WebSocket URL: %s", wsURL)
-	log.Printf("- IPC file: %s", ipcPath)
-	log.Printf("- Permissions file: %s", permissionsPath)
+	executorListen := *executorListenFlag
+	if executorListen == "" {
+		executorListen = os.Getenv("NEURO_EXECUTOR_LISTEN")
+	}
+	if executorListen == "" {
+		executorListen = "0.0.0.0:9876"
+	}
+
+	adminListen := *adminListenFlag
+	if adminListen == "" {
+		adminListen = os.Getenv("NEURO_ADMIN_LISTEN")
+	}
+	if adminListen == "" {
+		adminListen = "127.0.0.1:8300"
+	}
+
+	log.Printf("Starting Neuro Desktop bridge (server)")
+	log.Printf("- Neuro WebSocket: %s", wsURL)
+	log.Printf("- Executor listen: %s", executorListen)
+	log.Printf("- Admin HTTP:      http://%s/", adminListen)
+	log.Printf("- File IPC fallback: %s", ipcPath)
+	log.Printf("- Permissions file:  %s", permissionsPath)
 
 	integration, err := NewNDIntegration(wsURL, "Neuro Desktop", ipcPath, permissionsPath)
 	if err != nil {
 		log.Fatalf("Failed to create integration: %v", err)
 	}
 
+	hub := NewExecutorHub(executorListen)
+	if err := hub.Start(); err != nil {
+		log.Fatalf("Failed to start executor hub: %v", err)
+	}
+	integration.executorHub = hub
+	defer hub.Close()
+
+	admin := NewAdminServer(integration, adminListen)
+	_ = admin.Start()
+
 	if err := integration.Start(); err != nil {
 		log.Fatalf("Failed to start integration: %v", err)
 	}
 	defer integration.Close()
 
-	log.Println("Neuro Desktop integration running")
+	log.Println("Bridge running — wait for an executor client, or use co-located file IPC")
 	log.Println("Press Ctrl+C to stop")
 
 	sigChan := make(chan os.Signal, 1)

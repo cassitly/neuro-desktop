@@ -78,97 +78,97 @@ var HLActionSpecs = []actionSpec{
 	},
 	{
 		Name:        CmdOpenWindowsMenu,
-		Description: "Open the Windows start menu",
+		Description: "Open the OS start menu / launcher (Windows Start, macOS Spotlight, Linux Activities)",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdShowDesktop,
-		Description: "Show desktop (win + d)",
+		Description: "Show the desktop by minimizing or hiding windows",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdMinimizeAll,
-		Description: "Minimize all windows",
+		Description: "Minimize or hide all windows",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdCloseForeground,
-		Description: "Close foreground application (alt + f4)",
+		Description: "Close the foreground application",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdOpenTaskManager,
-		Description: "Open Task Manager (ctrl + shift + esc)",
+		Description: "Open the system task/process manager (or Force Quit on macOS)",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdCloseAllApps,
-		Description: "Close all apps fallback (show desktop)",
+		Description: "Non-destructive fallback that shows the desktop",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdOpenExplorer,
-		Description: "Open File Explorer (win + e)",
+		Description: "Open the file manager (Explorer / Finder / Files)",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdOpenRunDialog,
-		Description: "Open Run dialog (win + r)",
+		Description: "Open the run/command launcher dialog",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdOpenSearch,
-		Description: "Open Windows search (win + s)",
+		Description: "Open system search / spotlight",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdSnapWindowLeft,
-		Description: "Snap active window to the left half (win + left)",
+		Description: "Snap or tile the active window to the left half of the screen",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdSnapWindowRight,
-		Description: "Snap active window to the right half (win + right)",
+		Description: "Snap or tile the active window to the right half of the screen",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdOpenSettings,
-		Description: "Open Windows Settings (win + i)",
+		Description: "Open system or app settings",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdOpenNotification,
-		Description: "Open Windows notification center (win + a)",
+		Description: "Open the notification / quick settings panel",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdOpenClipboard,
-		Description: "Open clipboard history (win + v)",
+		Description: "Open clipboard history if supported on this OS",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdLockWorkstation,
-		Description: "Lock the current Windows workstation (win + l)",
+		Description: "Lock the current workstation / session",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdSwitchAppNext,
-		Description: "Switch to the next app (alt + tab)",
+		Description: "Switch to the next application",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdSwitchAppPrevious,
-		Description: "Switch to the previous app (alt + shift + tab)",
+		Description: "Switch to the previous application",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdOpenPowerUserMenu,
-		Description: "Open power user menu (win + x)",
+		Description: "Open the power-user / quick system menu when available",
 		Schema:      nil,
 	},
 	{
 		Name:        CmdTakeScreenSnip,
-		Description: "Open snipping overlay for screenshot selection (win + shift + s)",
+		Description: "Open the screenshot / snipping overlay",
 		Schema:      nil,
 	},
 	{
@@ -430,6 +430,7 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 	executeNow := getBoolParam(params, "execute_now", true)
 	clearAfter := getBoolParam(params, "clear_after", true)
 
+	// Fast in-process actions: answer Neuro immediately (API best practice).
 	switch a.spec.Name {
 	case EnableLLControls:
 		if err := a.integration.switchActionMode(false, true); err != nil {
@@ -443,44 +444,6 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 		}
 		return nil, neuro.NewSuccessResult("Enabled high-level controls")
 
-	case CmdOpenWindowsMenu:
-		return nil, a.integration.executeScriptIntent("OPEN_WINDOWS_MENU")
-	case CmdShowDesktop:
-		return nil, a.integration.executeScriptIntent("SHOW_DESKTOP")
-	case CmdMinimizeAll:
-		return nil, a.integration.executeScriptIntent("MINIMIZE_ALL_WINDOWS")
-	case CmdCloseForeground:
-		return nil, a.integration.executeScriptIntent("CLOSE_FOREGROUND_APP")
-	case CmdOpenTaskManager:
-		return nil, a.integration.executeScriptIntent("OPEN_TASK_MANAGER")
-	case CmdCloseAllApps:
-		return nil, a.integration.executeScriptIntent("CLOSE_ALL_APPS")
-	case CmdOpenExplorer:
-		return nil, a.integration.executeScriptIntent("OPEN_FILE_EXPLORER")
-	case CmdOpenRunDialog:
-		return nil, a.integration.executeScriptIntent("OPEN_RUN_DIALOG")
-	case CmdOpenSearch:
-		return nil, a.integration.executeScriptIntent("OPEN_SEARCH")
-	case CmdSnapWindowLeft:
-		return nil, a.integration.executeScriptIntent("SNAP_WINDOW_LEFT")
-	case CmdSnapWindowRight:
-		return nil, a.integration.executeScriptIntent("SNAP_WINDOW_RIGHT")
-	case CmdOpenSettings:
-		return nil, a.integration.executeScriptIntent("OPEN_WINDOWS_SETTINGS")
-	case CmdOpenNotification:
-		return nil, a.integration.executeScriptIntent("OPEN_NOTIFICATION_CENTER")
-	case CmdOpenClipboard:
-		return nil, a.integration.executeScriptIntent("OPEN_CLIPBOARD_HISTORY")
-	case CmdLockWorkstation:
-		return nil, a.integration.executeScriptIntent("LOCK_WORKSTATION")
-	case CmdSwitchAppNext:
-		return nil, a.integration.executeScriptIntent("SWITCH_APP_NEXT")
-	case CmdSwitchAppPrevious:
-		return nil, a.integration.executeScriptIntent("SWITCH_APP_PREVIOUS")
-	case CmdOpenPowerUserMenu:
-		return nil, a.integration.executeScriptIntent("OPEN_POWER_USER_MENU")
-	case CmdTakeScreenSnip:
-		return nil, a.integration.executeScriptIntent("TAKE_SCREEN_SNIP")
 	case CmdListCatalogItems:
 		return nil, a.integration.listCatalogItems()
 	case CmdFindCatalogItems:
@@ -489,7 +452,6 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 		if query == "" {
 			return nil, neuro.NewFailureResult("query is required")
 		}
-
 		limit := 5
 		if rawLimit, ok := params["limit"].(float64); ok {
 			limit = int(rawLimit)
@@ -545,31 +507,104 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 		return nil, a.integration.setExtensionEnabled(itemID, false)
 	}
 
+	// Desktop intents → validated now, executed after action/result (best practice).
+	scriptIntent := scriptIntentFor(a.spec.Name)
+	if scriptIntent != "" {
+		return pendingWork{scriptIntent: scriptIntent}, neuro.NewSuccessResult("accepted")
+	}
+
 	cmd, err := buildIPCCommand(a.spec.Name, params, executeNow, clearAfter)
 	if err != nil {
 		return nil, neuro.NewFailureResult(err.Error())
 	}
 
-	resp, err := a.integration.sendToRust(cmd)
-	if err != nil {
-		return nil, neuro.NewFailureResult(fmt.Sprintf("IPC error: %v", err))
-	}
-	if !resp.Success {
-		message := resp.Error
-		if message == "" {
-			message = "Command failed"
-		}
-		return nil, neuro.NewFailureResult(message)
-	}
+	return pendingWork{cmd: &cmd}, neuro.NewSuccessResult("accepted")
+}
 
-	return nil, neuro.NewSuccessResult("ok")
+type pendingWork struct {
+	cmd          *IPCCommand
+	scriptIntent string
+}
+
+func scriptIntentFor(name CommandType) string {
+	switch name {
+	case CmdOpenWindowsMenu:
+		return "OPEN_WINDOWS_MENU"
+	case CmdShowDesktop:
+		return "SHOW_DESKTOP"
+	case CmdMinimizeAll:
+		return "MINIMIZE_ALL_WINDOWS"
+	case CmdCloseForeground:
+		return "CLOSE_FOREGROUND_APP"
+	case CmdOpenTaskManager:
+		return "OPEN_TASK_MANAGER"
+	case CmdCloseAllApps:
+		return "CLOSE_ALL_APPS"
+	case CmdOpenExplorer:
+		return "OPEN_FILE_EXPLORER"
+	case CmdOpenRunDialog:
+		return "OPEN_RUN_DIALOG"
+	case CmdOpenSearch:
+		return "OPEN_SEARCH"
+	case CmdSnapWindowLeft:
+		return "SNAP_WINDOW_LEFT"
+	case CmdSnapWindowRight:
+		return "SNAP_WINDOW_RIGHT"
+	case CmdOpenSettings:
+		return "OPEN_WINDOWS_SETTINGS"
+	case CmdOpenNotification:
+		return "OPEN_NOTIFICATION_CENTER"
+	case CmdOpenClipboard:
+		return "OPEN_CLIPBOARD_HISTORY"
+	case CmdLockWorkstation:
+		return "LOCK_WORKSTATION"
+	case CmdSwitchAppNext:
+		return "SWITCH_APP_NEXT"
+	case CmdSwitchAppPrevious:
+		return "SWITCH_APP_PREVIOUS"
+	case CmdOpenPowerUserMenu:
+		return "OPEN_POWER_USER_MENU"
+	case CmdTakeScreenSnip:
+		return "TAKE_SCREEN_SNIP"
+	default:
+		return ""
+	}
 }
 
 func (a *IPCProxyAction) Execute(state interface{}) {
-	// Execution is handled synchronously during validation so we can return
-	// IPC status in action/result immediately.
-}
+	work, ok := state.(pendingWork)
+	if !ok {
+		return
+	}
 
+	var result neuro.ExecutionResult
+	if work.scriptIntent != "" {
+		result = a.integration.executeScriptIntent(work.scriptIntent)
+	} else if work.cmd != nil {
+		resp, err := a.integration.sendToRust(*work.cmd)
+		if err != nil {
+			result = neuro.NewFailureResult(fmt.Sprintf("executor error: %v", err))
+		} else if !resp.Success {
+			message := resp.Error
+			if message == "" {
+				message = "Command failed"
+			}
+			result = neuro.NewFailureResult(message)
+		} else {
+			return
+		}
+	} else {
+		return
+	}
+
+	// Execution finished after action/result was already sent. Tell Neuro via context.
+	if !result.Successful {
+		_ = a.integration.client.SendContext(
+			fmt.Sprintf("## Action execution failed\n\n- action: `%s`\n- error: %s", a.GetName(), result.Message),
+			true,
+		)
+	}
+}
 func getBoolParam(params map[string]interface{}, key string, defaultValue bool) bool {
 	val, ok := params[key]
 	if !ok {

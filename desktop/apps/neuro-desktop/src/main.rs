@@ -1,4 +1,5 @@
 mod controller;
+mod executor_client;
 mod go_manager;
 mod ipc_handler;
 mod relay_manager;
@@ -75,6 +76,34 @@ fn arg_present(target: &str) -> bool {
     env::args().any(|arg| arg == target)
 }
 
+fn arg_value(flag: &str) -> Option<String> {
+    let mut args = env::args().peekable();
+    while let Some(arg) = args.next() {
+        if arg == flag {
+            return args.next();
+        }
+        if let Some(rest) = arg.strip_prefix(&format!("{}=", flag)) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+fn display_help_hint(err: &anyhow::Error) {
+    eprintln!();
+    eprintln!("Failed to initialize the desktop executor:");
+    eprintln!("  {}", err);
+    eprintln!();
+    eprintln!("Common fixes (Omarchy / Wayland / Hyprland):");
+    eprintln!("  • Run from your graphical session — do NOT use sudo");
+    eprintln!("  • Ensure DISPLAY/WAYLAND_DISPLAY are set (normal desktop login)");
+    eprintln!("  • If files under target/release are root-owned from a prior sudo run:");
+    eprintln!("      sudo chown -R \"$USER:$USER\" apps/neuro-desktop/target");
+    eprintln!("  • For bridge-only / headless CI smoke (no mouse):");
+    eprintln!("      NEURO_HEADLESS=1 ./neuro-desktop --executor --server 127.0.0.1:9876");
+    eprintln!();
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("=======================================================");
@@ -82,15 +111,44 @@ async fn main() -> anyhow::Result<()> {
     println!("=======================================================");
     println!();
 
-    let config = load_config().unwrap_or_else(|e| {
-        eprintln!("Warning: Could not load config file: {}", e);
-        eprintln!("Using default values...");
-        IntegrationConfig {
-            connection: ConnectionConfig {
-                neuro_backend: "ws://localhost:8000".to_string(),
-            },
+    let executor_only = arg_present("--executor")
+        || arg_present("--client")
+        || env_bool("NEURO_EXECUTOR_ONLY", false);
+    let server_addr = arg_value("--server")
+        .or_else(|| env::var("NEURO_SERVER_ADDR").ok())
+        .unwrap_or_else(|| "127.0.0.1:9876".to_string());
+
+    // --- Executor-only mode: connect to a remote/local bridge ---
+    if executor_only {
+        println!("Mode: EXECUTOR CLIENT");
+        println!("  Bridge: {}", server_addr);
+        println!();
+        println!("[1/1] Initializing Python controller drivers...");
+        let controller = match Controller::initialize_drivers() {
+            Ok(c) => c,
+            Err(e) => {
+                display_help_hint(&e);
+                return Err(e);
+            }
+        };
+        println!("      [ok] Python drivers loaded");
+        println!();
+        return executor_client::run_executor_client(&server_addr, controller);
+    }
+
+    // --- Co-located / legacy mode: spawn bridge + file IPC ---
+    let config = match load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[warn] Could not load config ({e}); using defaults");
+            IntegrationConfig {
+                connection: ConnectionConfig {
+                    neuro_backend: env::var("NEURO_SDK_WS_URL")
+                        .unwrap_or_else(|_| "ws://localhost:8000".to_string()),
+                },
+            }
         }
-    });
+    };
 
     let backend_ws_url =
         env::var("NEURO_SDK_WS_URL").unwrap_or_else(|_| config.connection.neuro_backend.clone());
@@ -111,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
         backend_ws_url.clone()
     };
 
+    println!("Mode: CO-LOCATED (bridge + executor on this machine)");
     println!("Configuration:");
     println!("  - Neuro Backend WS: {}", backend_ws_url);
     println!("  - Integration WS:   {}", integration_ws_url);
@@ -123,16 +182,30 @@ async fn main() -> anyhow::Result<()> {
         println!("  - Relay Addr:       {}", relay_emulated_addr);
     }
     println!();
+    println!("Tip: for split machines, run the Go bridge on the Neuro PC and:");
+    println!("  ./neuro-desktop --executor --server <bridge-host>:9876");
+    println!();
 
     println!("[1/5] Initializing Python controller drivers...");
-    let controller =
-        Controller::initialize_drivers().expect("Failed to initialize controller drivers");
+    let controller = match Controller::initialize_drivers() {
+        Ok(c) => c,
+        Err(e) => {
+            display_help_hint(&e);
+            return Err(e);
+        }
+    };
     println!("      [ok] Python drivers loaded");
     println!();
 
     println!("[2/5] Initializing optional relay process...");
     let mut relay_manager = if !supervised_mode && relay_enabled {
-        Some(RelayProcessManager::new().expect("Failed to create relay manager"))
+        match RelayProcessManager::new() {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("[err] Failed to create relay manager: {}", e);
+                return Err(e);
+            }
+        }
     } else {
         None
     };
@@ -141,7 +214,14 @@ async fn main() -> anyhow::Result<()> {
 
     println!("[3/5] Initializing Neuro integration process...");
     let mut go_manager = if !supervised_mode {
-        Some(GoProcessManager::new().expect("Failed to create Go manager"))
+        match GoProcessManager::new() {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("[err] Failed to create Go manager: {}", e);
+                eprintln!("      Build/copy neuro-integration next to this binary, or run --executor against a remote bridge.");
+                return Err(e);
+            }
+        }
     } else {
         None
     };
@@ -156,18 +236,20 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(relay) = relay_manager.as_mut() {
         println!("[5/5] Starting Neuro relay...");
-        relay
-            .start(&relay_name, &backend_ws_url, &relay_emulated_addr)
-            .expect("Failed to start Neuro relay");
+        if let Err(e) = relay.start(&relay_name, &backend_ws_url, &relay_emulated_addr) {
+            eprintln!("[err] Failed to start Neuro relay: {}", e);
+            return Err(e);
+        }
         println!("      [ok] Relay process started");
         println!();
     }
 
     if let Some(manager) = go_manager.as_mut() {
-        println!("[5/5] Starting Neuro integration...");
-        manager
-            .start(&integration_ws_url, &ipc_path, &permissions_path)
-            .expect("Failed to start Go integration");
+        println!("[5/5] Starting Neuro integration (bridge)...");
+        if let Err(e) = manager.start(&integration_ws_url, &ipc_path, &permissions_path) {
+            eprintln!("[err] Failed to start Go integration: {}", e);
+            return Err(e);
+        }
         println!("      [ok] Integration process started");
     } else {
         println!("[5/5] Integration launch delegated to process-handler (--supervised)");

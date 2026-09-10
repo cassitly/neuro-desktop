@@ -1,6 +1,6 @@
 import pyautogui
 import time
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 from ..desktop import DesktopMonitor
 
 Point = Tuple[int, int]
@@ -62,10 +62,43 @@ class MouseController:
     High-level, AI-friendly mouse control abstraction.
     """
 
-    def __init__(self, monitor: DesktopMonitor):
-        self.screen_width, self.screen_height = pyautogui.size()
-        self.instruction_queue: List[MouseInstruction] = []
+    def __init__(self, monitor: DesktopMonitor, headless: bool = False):
         self.monitor = monitor
+        self.headless = headless
+        self.instruction_queue: List[MouseInstruction] = []
+        self._screen_size: Optional[Point] = None
+        if not headless:
+            try:
+                self._screen_size = pyautogui.size()
+            except Exception:
+                # Display may be unavailable at import time (Wayland auth, SSH, CI).
+                self._screen_size = None
+
+    @property
+    def screen_width(self) -> int:
+        w, _ = self._ensure_screen_size()
+        return w
+
+    @property
+    def screen_height(self) -> int:
+        _, h = self._ensure_screen_size()
+        return h
+
+    def _ensure_screen_size(self) -> Point:
+        if self._screen_size is not None:
+            return self._screen_size
+        if self.headless:
+            self._screen_size = (1920, 1080)
+            return self._screen_size
+        try:
+            self._screen_size = pyautogui.size()
+        except Exception as exc:
+            raise RuntimeError(
+                "Cannot query display size. On Wayland/Omarchy ensure the app "
+                "runs in your graphical session (not via sudo/SSH without XAUTHORITY). "
+                f"Underlying error: {exc}"
+            ) from exc
+        return self._screen_size
 
     # ------------------------
     # Coordinate mapping

@@ -8,6 +8,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from controller.actions import ActionParseError, ActionParser  # noqa: E402
+from controller.platform_intents import apply_intent, resolve_intent  # noqa: E402
 
 
 class FakeMonitor:
@@ -23,6 +24,7 @@ class FakeKeyboard:
         self.calls = []
         self.valid_keys = {
             "win",
+            "command",
             "d",
             "m",
             "i",
@@ -30,7 +32,11 @@ class FakeKeyboard:
             "v",
             "l",
             "x",
+            "n",
+            "q",
             "alt",
+            "f2",
+            "f3",
             "f4",
             "tab",
             "ctrl",
@@ -42,6 +48,10 @@ class FakeKeyboard:
             "right",
             "left",
             "middle",
+            "space",
+            "4",
+            ",",
+            "h",
         }
 
     def _validate_key(self, key):
@@ -106,9 +116,11 @@ class ActionParserTests(unittest.TestCase):
         self.monitor = FakeMonitor()
         self.kbd = FakeKeyboard()
         self.mouse = FakeMouse()
-        self.parser = ActionParser(self.kbd, self.mouse, self.monitor)
+        self.parser = ActionParser(
+            self.kbd, self.mouse, self.monitor, platform="windows"
+        )
 
-    def test_high_level_commands(self):
+    def test_high_level_commands_windows(self):
         self.parser.parse(
             "\n".join(
                 [
@@ -160,6 +172,21 @@ class ActionParserTests(unittest.TestCase):
             ],
         )
 
+    def test_linux_run_dialog_uses_alt_f2(self):
+        parser = ActionParser(self.kbd, self.mouse, self.monitor, platform="linux")
+        parser.parse("OPEN_RUN_DIALOG")
+        self.assertEqual(self.kbd.calls, [("shortcut", ("alt", "f2"))])
+
+    def test_macos_close_app_uses_cmd_q(self):
+        parser = ActionParser(self.kbd, self.mouse, self.monitor, platform="macos")
+        parser.parse("CLOSE_FOREGROUND_APP")
+        self.assertEqual(self.kbd.calls, [("shortcut", ("command", "q"))])
+
+    def test_macos_clipboard_history_unsupported(self):
+        parser = ActionParser(self.kbd, self.mouse, self.monitor, platform="macos")
+        with self.assertRaises(ActionParseError):
+            parser.parse("OPEN_CLIPBOARD_HISTORY")
+
     def test_click_syntax(self):
         self.parser.parse("CLICK")
         self.parser.parse("CLICK right")
@@ -179,6 +206,17 @@ class ActionParserTests(unittest.TestCase):
     def test_invalid_key_reports_error(self):
         with self.assertRaises(ActionParseError):
             self.parser.parse("PRESS definitely_not_a_key")
+
+
+class PlatformIntentUnitTests(unittest.TestCase):
+    def test_resolve_windows_show_desktop(self):
+        intent = resolve_intent("SHOW_DESKTOP", platform="windows")
+        self.assertEqual(intent.keys, ("win", "d"))
+
+    def test_apply_unsupported_raises(self):
+        kbd = FakeKeyboard()
+        with self.assertRaises(ValueError):
+            apply_intent(kbd, "OPEN_CLIPBOARD_HISTORY", platform="macos")
 
 
 if __name__ == "__main__":
