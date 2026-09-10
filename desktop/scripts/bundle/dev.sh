@@ -7,11 +7,22 @@ echo "=== Development Bundle ==="
 # and strips X11/Wayland auth so the executor cannot open the display.
 if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   echo "ERROR: do not run this script with sudo."
-  echo "  Past sudo runs leave root-owned files under apps/neuro-desktop/target/"
+  echo "  Past sudo runs leave root-owned files under apps/neuro-desktop/target/,"
+  echo "  frontend/dist/, and dist/ — which breaks non-sudo builds."
   echo "  Fix ownership, then re-run as your user:"
-  echo "    sudo chown -R \"\$USER:\$USER\" apps/neuro-desktop/target backend/python/.venv"
+  echo "    sudo chown -R \"\$USER:\$USER\" apps/neuro-desktop/target backend/python/.venv frontend/dist dist"
   exit 1
 fi
+
+# Detect leftover root-owned dirs early (common after a sudo experiment)
+for sticky in frontend/dist dist apps/neuro-desktop/target/release/frontend apps/neuro-desktop/target/release/config; do
+  if [[ -e "$sticky" ]] && [[ ! -w "$sticky" ]]; then
+    echo "ERROR: $sticky is not writable (often root-owned from a prior sudo run)."
+    echo "  Fix with:"
+    echo "    sudo chown -R \"\$USER:\$USER\" frontend/dist dist apps/neuro-desktop/target"
+    exit 1
+  fi
+done
 
 # --------------------------------------------------
 # OS DETECTION

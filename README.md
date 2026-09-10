@@ -34,26 +34,17 @@ Neuro Desktop is a multi-language integration system that enables [Neuro-sama](h
 
 ## Features
 
+See **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)** for an honest “what works today” list
+(bridge/executor, actions, permissions, platforms, and what’s still stubbed).
+
 ### Core Capabilities
 
-- 🖱️ **Mouse Control**: Precise cursor movement with human-like motion algorithms
-- ⌨️ **Keyboard Control**: Text typing, key presses, shortcuts, and complex key combinations
-- 📝 **Script Execution**: Multi-command action scripts for complex workflows
-- 🔄 **Action Queuing**: Build and execute macro-like action sequences
-- 📊 **Telemetry**: Comprehensive action history and desktop monitoring
-- 🛡️ **Safety First**: Validation, rate limiting, and bounded execution
-
-### Action Types
-
-#### High-Level Actions
-- **Mouse**: Move, click, drag, path drawing
-- **Keyboard**: Type text, press keys, shortcuts
-- **Scripts**: Multi-line automation sequences
-
-#### Low-Level Controls
-- **Direct API**: Fine-grained control over individual actions
-- **Queue Management**: Build complex macros programmatically
-- **Execution Control**: Execute now or queue for later
+- Mouse / keyboard control with human-like pathfinding
+- Action script language for multi-step workflows
+- Bridge ↔ executor over TCP (same PC or remote controlled machine)
+- Scoped permission policies for Vedal / operators
+- Cross-platform intents (Windows-solid; Linux/macOS best-effort)
+- Local Ollama+RWKV7 Neuro API mock for integration testing
 
 ## Architecture
 
@@ -445,11 +436,12 @@ Randy will send random actions to test your integration.
 
 ## Documentation
 
+- ✅ [Current Capabilities](docs/CAPABILITIES.md) — what works today (honest)
 - 📖 [Action Script Language Reference](docs/action_script/LANGUAGE_REFERENCE.md)
 - 🏗️ [Architecture Deep Dive](docs/ARCHITECTURE.md)
 - 🔧 [API Specification](desktop/apps/neuro-integration/integration-docs/Action Script Documentation.md)
 - 🚀 [Deployment Guide](docs/DEPLOYMENT.md)
-- 🧪 [Testing Guide](tests/README.md)
+- 🧪 [Ollama Neuro Tester](desktop/tools/ollama-neuro/README.md)
 - 🤝 [Contributing Guidelines](CONTRIBUTING.md)
 - 🧭 [Project Vision](VISION.md)
 - 🗺️ [Production TODO](docs/PRODUCTION_TODO.md)
@@ -460,6 +452,16 @@ Randy will send random actions to test your integration.
 ## Troubleshooting
 
 ### Common Issues
+
+**`EACCES` / Permission denied on `frontend/dist`**
+
+Leftover from a `sudo` bundle. Fix ownership, never rebuild as root:
+
+```bash
+cd desktop
+sudo chown -R "$USER:$USER" frontend/dist dist apps/neuro-desktop/target backend/python/.venv
+./scripts/bundle/dev.sh
+```
 
 **"Go integration binary not found"**
 ```bash
