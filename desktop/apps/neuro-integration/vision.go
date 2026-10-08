@@ -19,7 +19,12 @@ type visionRequest struct {
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 }
 
-func summarizeWithVisionServer(serverURL string, screenshotPath string) (string, error) {
+// visionServerURL returns the configured vision endpoint, if any.
+func visionServerURL() string {
+	return strings.TrimSpace(os.Getenv("NEURO_VISION_SERVER_URL"))
+}
+
+func summarizeWithVisionServer(serverURL string, screenshotPath string, prompt string) (string, error) {
 	fileBytes, err := os.ReadFile(screenshotPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read screenshot: %w", err)
@@ -30,10 +35,14 @@ func summarizeWithVisionServer(serverURL string, screenshotPath string) (string,
 		encodedImage = base64.StdEncoding.EncodeToString(fileBytes)
 	}
 
+	if strings.TrimSpace(prompt) == "" {
+		prompt = "Summarize what is happening on this desktop for Neuro. Keep it concise."
+	}
+
 	requestPayload := visionRequest{
 		ImagePath:   screenshotPath,
 		ImageBase64: encodedImage,
-		Prompt:      "Summarize what is happening on this Windows desktop for Neuro. Keep it concise.",
+		Prompt:      prompt,
 		Metadata: map[string]interface{}{
 			"source": "neuro-desktop",
 		},

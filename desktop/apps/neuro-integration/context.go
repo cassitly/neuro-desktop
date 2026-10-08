@@ -89,10 +89,7 @@ func (n *NDIntegration) fetchDesktopStatus(captureScreenshot bool) (map[string]i
 		return nil, fmt.Errorf("ipc error: %w", err)
 	}
 	if !resp.Success {
-		if resp.Error != "" {
-			return nil, fmt.Errorf(resp.Error)
-		}
-		return nil, fmt.Errorf("get_status failed")
+		return nil, fmt.Errorf("get_status failed: %s", nonEmptyOr(resp.Error, "executor returned no detail"))
 	}
 
 	if resp.Data == nil {
@@ -165,9 +162,9 @@ func (n *NDIntegration) getDesktopContext(captureScreenshot bool) (string, error
 	}
 
 	visionSummary := ""
-	if visionServerURL := strings.TrimSpace(os.Getenv("NEURO_VISION_SERVER_URL")); visionServerURL != "" {
+	if serverURL := visionServerURL(); serverURL != "" {
 		if screenshotPath, ok := status["screenshot_path"].(string); ok && strings.TrimSpace(screenshotPath) != "" {
-			summary, visionErr := summarizeWithVisionServer(visionServerURL, screenshotPath)
+			summary, visionErr := summarizeWithVisionServer(serverURL, screenshotPath, "")
 			if visionErr != nil {
 				log.Printf("Vision summarize failed: %v", visionErr)
 			} else {

@@ -2,13 +2,11 @@ mod controller;
 mod executor_client;
 mod go_manager;
 mod ipc_handler;
-mod relay_manager;
 mod ui_launcher;
 
 use controller::Controller;
 use go_manager::GoProcessManager;
 use ipc_handler::IPCHandler;
-use relay_manager::RelayProcessManager;
 use serde::Deserialize;
 use std::env;
 use std::fs;
@@ -158,16 +156,21 @@ async fn main() -> anyhow::Result<()> {
 
     let relay_enabled = env_bool("NEURO_RELAY_ENABLED", false);
     let supervised_mode = env_bool("NEURO_SUPERVISED", false) || arg_present("--supervised");
-    let relay_name =
-        env::var("NEURO_RELAY_NAME").unwrap_or_else(|_| "Neuro Desktop Hub".to_string());
-    let relay_emulated_addr =
-        env::var("NEURO_RELAY_EMULATED_ADDR").unwrap_or_else(|_| "127.0.0.1:8001".to_string());
+    let relay_url = env::var("NEURO_RELAY_URL").unwrap_or_else(|_| {
+        let addr = env::var("NEURO_RELAY_EMULATED_ADDR")
+            .unwrap_or_else(|_| "127.0.0.1:8765".to_string());
+        format!("ws://{addr}")
+    });
 
-    let integration_ws_url = if relay_enabled {
-        format!("ws://{}", relay_emulated_addr)
-    } else {
-        backend_ws_url.clone()
-    };
+    let admin_listen = env::var("NEURO_ADMIN_LISTEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "127.0.0.1:8300".to_string());
+
+    // Relay mode means Neuro Desktop is one integration among several: the
+    // bridge registers on the relay's intermediary socket (NEURO_RELAY_*) and
+    // still talks to Neuro through whatever --ws-url points at.
+    let integration_ws_url = backend_ws_url.clone();
 
     println!("Mode: CO-LOCATED (bridge + executor on this machine)");
     println!("Configuration:");
@@ -175,11 +178,11 @@ async fn main() -> anyhow::Result<()> {
     println!("  - Integration WS:   {}", integration_ws_url);
     println!("  - IPC File:         {}", ipc_path);
     println!("  - Permissions File: {}", permissions_path);
+    println!("  - Admin Dashboard:  http://{}/ui/", admin_listen);
     println!("  - Relay Enabled:    {}", relay_enabled);
     println!("  - Supervised Mode:  {}", supervised_mode);
     if relay_enabled {
-        println!("  - Relay Name:       {}", relay_name);
-        println!("  - Relay Addr:       {}", relay_emulated_addr);
+        println!("  - Relay Endpoint:   {}", relay_url);
     }
     println!();
     println!("Tip: for split machines, run the Go bridge on the Neuro PC and:");
@@ -197,19 +200,12 @@ async fn main() -> anyhow::Result<()> {
     println!("      [ok] Python drivers loaded");
     println!();
 
-    println!("[2/5] Initializing optional relay process...");
-    let mut relay_manager = if !supervised_mode && relay_enabled {
-        match RelayProcessManager::new() {
-            Ok(m) => Some(m),
-            Err(e) => {
-                eprintln!("[err] Failed to create relay manager: {}", e);
-                return Err(e);
-            }
-        }
+    println!("[2/5] Relay configuration...");
+    if relay_enabled {
+        println!("      [ok] The bridge will register with {}", relay_url);
     } else {
-        None
-    };
-    println!("      [ok] Relay initialization complete");
+        println!("      [ok] Relay disabled (direct Neuro connection)");
+    }
     println!();
 
     println!("[3/5] Initializing Neuro integration process...");
@@ -218,7 +214,8 @@ async fn main() -> anyhow::Result<()> {
             Ok(m) => Some(m),
             Err(e) => {
                 eprintln!("[err] Failed to create Go manager: {}", e);
-                eprintln!("      Build/copy neuro-integration next to this binary, or run --executor against a remote bridge.");
+                eprintln!("      Build/copy neuro-integration next to this binary,");
+                eprintln!("      or run --executor against a remote bridge.");
                 return Err(e);
             }
         }
@@ -234,16 +231,6 @@ async fn main() -> anyhow::Result<()> {
     println!("      [ok] IPC handler running on: {}", ipc_path);
     println!();
 
-    if let Some(relay) = relay_manager.as_mut() {
-        println!("[5/5] Starting Neuro relay...");
-        if let Err(e) = relay.start(&relay_name, &backend_ws_url, &relay_emulated_addr) {
-            eprintln!("[err] Failed to start Neuro relay: {}", e);
-            return Err(e);
-        }
-        println!("      [ok] Relay process started");
-        println!();
-    }
-
     if let Some(manager) = go_manager.as_mut() {
         println!("[5/5] Starting Neuro integration (bridge)...");
         if let Err(e) = manager.start(&integration_ws_url, &ipc_path, &permissions_path) {
@@ -256,7 +243,7 @@ async fn main() -> anyhow::Result<()> {
     }
     println!();
 
-    ui_launcher::launch_ui_if_enabled();
+    ui_launcher::launch_ui_if_enabled(&admin_listen);
 
     println!("=======================================================");
     println!("Neuro Desktop is ready.");
@@ -275,27 +262,18 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(manager) = go_manager.as_mut() {
                         manager.stop();
                     }
-                    if let Some(relay) = relay_manager.as_mut() {
-                        relay.stop();
-                    }
                     break;
-                }
-
-                if let Some(relay) = relay_manager.as_mut() {
-                    if !relay.is_running() {
-                        eprintln!("[warn] Neuro relay crashed, restarting...");
-                        if let Err(e) = relay.restart(&relay_name, &backend_ws_url, &relay_emulated_addr) {
-                            eprintln!("[err] Failed to restart Neuro relay: {}", e);
-                            break;
-                        }
-                        println!("[ok] Neuro relay restarted");
-                    }
                 }
 
                 if let Some(manager) = go_manager.as_mut() {
                     if !manager.is_running() {
                         eprintln!("[warn] Neuro integration crashed, restarting...");
-                        if let Err(e) = manager.restart(&integration_ws_url, &ipc_path, &permissions_path) {
+                        let restarted = manager.restart(
+                            &integration_ws_url,
+                            &ipc_path,
+                            &permissions_path,
+                        );
+                        if let Err(e) = restarted {
                             eprintln!("[err] Failed to restart Neuro integration: {}", e);
                             break;
                         }
@@ -309,9 +287,6 @@ async fn main() -> anyhow::Result<()> {
                 println!("Shutting down...");
                 if let Some(manager) = go_manager.as_mut() {
                     manager.stop();
-                }
-                if let Some(relay) = relay_manager.as_mut() {
-                    relay.stop();
                 }
                 break;
             }

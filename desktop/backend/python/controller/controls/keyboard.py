@@ -1,6 +1,6 @@
 import time
 import pyautogui
-from typing import List, Union
+from typing import List, Optional, Union
 from ..desktop import DesktopMonitor
 
 
@@ -28,19 +28,49 @@ class KeyTap(KeyboardInstruction):
 
 
 class KeyDown(KeyboardInstruction):
-    def __init__(self, key: str):
+    def __init__(self, key: str, tracker: Optional[set] = None):
         self.key = key
+        self.tracker = tracker
 
     def execute(self):
-        pyautogui.keyDown(self.key)
+        pyautogui.keyDown(self.key, _pause=False)
+        if self.tracker is not None:
+            self.tracker.add(self.key)
 
 
 class KeyUp(KeyboardInstruction):
-    def __init__(self, key: str):
+    def __init__(self, key: str, tracker: Optional[set] = None):
         self.key = key
+        self.tracker = tracker
 
     def execute(self):
-        pyautogui.keyUp(self.key)
+        pyautogui.keyUp(self.key, _pause=False)
+        if self.tracker is not None:
+            self.tracker.discard(self.key)
+
+
+class HoldForInstruction(KeyboardInstruction):
+    """Press a key, hold it for a bounded time, then release it.
+
+    Game movement ("walk forward for a second") arrives as a single
+    hold-for command so a dropped connection cannot leave a key down.
+    """
+
+    def __init__(self, key: str, seconds: float, tracker: Optional[set] = None):
+        self.key = key
+        self.seconds = max(0.0, min(float(seconds), 30.0))
+        self.tracker = tracker
+
+    def execute(self):
+        pyautogui.keyDown(self.key, _pause=False)
+        if self.tracker is not None:
+            self.tracker.add(self.key)
+        try:
+            time.sleep(self.seconds)
+        finally:
+            pyautogui.keyUp(self.key, _pause=False)
+            if self.tracker is not None:
+                self.tracker.discard(self.key)
 
 
 class TypeText(KeyboardInstruction):
@@ -81,6 +111,8 @@ class KeyboardController:
         self.queue: List[KeyboardInstruction] = []
         self.monitor = monitor
         self._valid_keys = set(pyautogui.KEYBOARD_KEYS)
+        # Keys currently held down, so they can always be released.
+        self.held_keys: set = set()
 
     def _normalize_key(self, key: str) -> str:
         normalized = key.strip().lower()
@@ -129,7 +161,7 @@ class KeyboardController:
             action_type="HOLD",
             data={"key": validated_key}
         )
-        self.queue.append(KeyDown(validated_key))
+        self.queue.append(KeyDown(validated_key, self.held_keys))
 
     def release(self, key: str):
         validated_key = self._validate_key(key)
@@ -138,7 +170,30 @@ class KeyboardController:
             action_type="RELEASE",
             data={"key": validated_key}
         )
-        self.queue.append(KeyUp(validated_key))
+        self.queue.append(KeyUp(validated_key, self.held_keys))
+
+    def hold_for(self, key: str, seconds: float):
+        """Hold a key for a bounded time (game movement)."""
+        validated_key = self._validate_key(key)
+        self.monitor.record_action(
+            source="keyboard",
+            action_type="HOLD_FOR",
+            data={"key": validated_key, "seconds": seconds},
+        )
+        self.queue.append(HoldForInstruction(validated_key, seconds, self.held_keys))
+
+    def combo(self, *keys: str):
+        """Press several keys together (alias of shortcut, kept for game input)."""
+        self.shortcut(*keys)
+
+    def release_all(self):
+        """Release every key we believe is held down."""
+        for key in list(self.held_keys):
+            try:
+                pyautogui.keyUp(key, _pause=False)
+            except Exception:
+                pass
+            self.held_keys.discard(key)
 
     def wait(self, seconds: float):
         self.monitor.record_action(

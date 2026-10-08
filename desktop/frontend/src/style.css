@@ -893,3 +893,80 @@ button.danger {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================
+   Live dashboard additions (Games tab, status strip, notices)
+   ============================================================ */
+
+.status-indicator.online {
+  color: var(--ok);
+}
+
+.status-indicator.offline {
+  color: var(--danger);
+}
+
+.save-notice {
+  margin: 0.75rem 1.25rem;
+  padding: 0.6rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #97ddb0;
+  background: #e6f8ed;
+  color: #14532d;
+  font-size: 0.9rem;
+}
+
+.games-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.session-card {
+  margin: 0.5rem 1.25rem;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.session-card h3 {
+  margin: 0 0 0.25rem;
+}
+
+.session-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin: 0.5rem 0 0;
+}
+
+.observation {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 0.85rem;
+  font-size: 0.82rem;
+  margin: 0.5rem 0 0;
+}
+
+.list-items .allowed {
+  color: var(--ok);
+}
+
+.list-items .denied {
+  color: var(--danger);
+}

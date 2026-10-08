@@ -15,4 +15,3 @@ desktop/dist/**/*.exe
 desktop/apps/process-handler/build-*/
 desktop/apps/process-handler/build-ci/
 desktop/apps/process-handler/build-ci-tests/
-desktop/frontend/package-lock.json

@@ -57,6 +57,35 @@ pub enum IPCCommand {
         #[serde(default = "default_true")]
         clear_after: bool,
     },
+    MoveMouseRelative {
+        params: MoveMouseRelativeParams,
+        #[serde(default = "default_true")]
+        execute_now: bool,
+        #[serde(default = "default_true")]
+        clear_after: bool,
+    },
+    KeyHoldFor {
+        params: KeyHoldForParams,
+        #[serde(default = "default_true")]
+        execute_now: bool,
+        #[serde(default = "default_true")]
+        clear_after: bool,
+    },
+    KeyCombo {
+        params: KeyComboParams,
+        #[serde(default = "default_true")]
+        execute_now: bool,
+        #[serde(default = "default_true")]
+        clear_after: bool,
+    },
+    MouseHoldFor {
+        params: MouseHoldForParams,
+        #[serde(default = "default_true")]
+        execute_now: bool,
+        #[serde(default = "default_true")]
+        clear_after: bool,
+    },
+    KeyReleaseAll,
     ExecuteQueue,
     ClearActionQueue,
     GetStatus {
@@ -106,6 +135,35 @@ impl IPCCommand {
                     anyhow::bail!("Script too long (max 50000 characters)");
                 }
             }
+            Self::MoveMouseRelative { params, .. } => {
+                if params.dx.abs() > 4000 || params.dy.abs() > 4000 {
+                    anyhow::bail!("Relative mouse movement is limited to 4000 pixels per step");
+                }
+                if !(0.0..=2.0).contains(&params.duration) {
+                    anyhow::bail!("Move duration must be between 0 and 2 seconds");
+                }
+            }
+            Self::KeyHoldFor { params, .. } => {
+                if params.key.trim().is_empty() {
+                    anyhow::bail!("key is required");
+                }
+                if !(0.0..=30.0).contains(&params.seconds) || params.seconds <= 0.0 {
+                    anyhow::bail!("Hold duration must be between 0 and 30 seconds");
+                }
+            }
+            Self::KeyCombo { params, .. } => {
+                if params.keys.is_empty() || params.keys.len() > 6 {
+                    anyhow::bail!("A key combination needs between 1 and 6 keys");
+                }
+                if params.keys.iter().any(|key| key.trim().is_empty()) {
+                    anyhow::bail!("Empty key in combination");
+                }
+            }
+            Self::MouseHoldFor { params, .. } => {
+                if !(0.0..=30.0).contains(&params.seconds) || params.seconds <= 0.0 {
+                    anyhow::bail!("Hold duration must be between 0 and 30 seconds");
+                }
+            }
             Self::GetStatus { params } => {
                 if params.max_open_windows == 0 || params.max_open_windows > 200 {
                     anyhow::bail!("max_open_windows must be between 1 and 200");
@@ -147,6 +205,32 @@ pub struct TypeTextParams {
 #[derive(Debug, Deserialize, Clone)]
 pub struct RunScriptParams {
     pub script: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MoveMouseRelativeParams {
+    pub dx: i32,
+    pub dy: i32,
+    #[serde(default)]
+    pub duration: f64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct KeyHoldForParams {
+    pub key: String,
+    pub seconds: f64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct KeyComboParams {
+    pub keys: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MouseHoldForParams {
+    #[serde(default)]
+    pub button: Option<String>,
+    pub seconds: f64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -350,8 +434,13 @@ impl IPCHandler {
 
         let execution_start = Instant::now();
 
-        // Read command
-        let data = fs::read_to_string(&ipc_file).context("Failed to read IPC file")?;
+        // Read command. The writer publishes atomically, but the file can still
+        // be removed between the existence check and the read.
+        let data = match fs::read_to_string(&ipc_file) {
+            Ok(data) => data,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => return Err(err).context("Failed to read IPC file"),
+        };
 
         // Parse command
         let command: IPCCommand =
@@ -416,7 +505,11 @@ impl IPCHandler {
     fn write_response(path: &PathBuf, response: &IPCResponse) -> Result<()> {
         let json = serde_json::to_string(response).context("Failed to serialize response")?;
 
-        fs::write(path, json).context("Failed to write response file")?;
+        // Publish atomically: the bridge polls this file, and a partially
+        // written response used to be read as invalid JSON and dropped.
+        let tmp_path = path.with_extension("tmp");
+        fs::write(&tmp_path, json).context("Failed to write response file")?;
+        fs::rename(&tmp_path, path).context("Failed to publish response file")?;
 
         Ok(())
     }
@@ -481,6 +574,44 @@ impl IPCHandler {
             } => controller
                 .run_script(&params.script)
                 .and_then(|_| execute_and_maybe_clear(execute_now, clear_after, controller)),
+
+            IPCCommand::MoveMouseRelative {
+                params,
+                execute_now,
+                clear_after,
+            } => controller
+                .mouse_move_relative(params.dx, params.dy, params.duration)
+                .and_then(|_| execute_and_maybe_clear(execute_now, clear_after, controller)),
+
+            IPCCommand::KeyHoldFor {
+                params,
+                execute_now,
+                clear_after,
+            } => controller
+                .key_hold_for(&params.key, params.seconds)
+                .and_then(|_| execute_and_maybe_clear(execute_now, clear_after, controller)),
+
+            IPCCommand::KeyCombo {
+                params,
+                execute_now,
+                clear_after,
+            } => controller
+                .key_combo(&params.keys)
+                .and_then(|_| execute_and_maybe_clear(execute_now, clear_after, controller)),
+
+            IPCCommand::MouseHoldFor {
+                params,
+                execute_now,
+                clear_after,
+            } => {
+                let button = params.button.as_deref().unwrap_or("left");
+
+                controller
+                    .mouse_hold_for(button, params.seconds)
+                    .and_then(|_| execute_and_maybe_clear(execute_now, clear_after, controller))
+            }
+
+            IPCCommand::KeyReleaseAll => controller.release_all_input(),
 
             IPCCommand::ExecuteQueue => controller.execute_instructions(),
 

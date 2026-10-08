@@ -18,10 +18,76 @@ const (
 	ScopeNetwork    PermissionScope = "network"
 	ScopeSystem     PermissionScope = "system"
 	ScopeVision     PermissionScope = "vision"
+	// ScopeGame covers the high-level game interface (playing a game that has
+	// no dedicated integration).
+	ScopeGame PermissionScope = "game"
 )
 
+// ScopeLimits are the per-scope knobs the dashboard exposes. Only the rate
+// limit is enforced today; it is persisted so a policy survives a round trip
+// through the UI unchanged.
+type ScopeLimits struct {
+	MaxActionsPerMinute int `json:"max_actions_per_minute,omitempty"`
+}
+
 type ScopeConfig struct {
-	Allowed bool `json:"allowed"`
+	Allowed bool        `json:"allowed"`
+	Limits  ScopeLimits `json:"limits,omitempty"`
+}
+
+// UnmarshalJSON accepts both the documented shape ({"allowed": true}) and the
+// shorthand people reach for when hand-editing a policy ("game": true).
+func (s *ScopeConfig) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "true" {
+		s.Allowed = true
+		return nil
+	}
+	if trimmed == "false" {
+		s.Allowed = false
+		return nil
+	}
+
+	var raw struct {
+		Allowed *flexibleBool `json:"allowed"`
+		Limits  ScopeLimits   `json:"limits"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("a scope must be true/false or {\"allowed\": true/false}")
+	}
+	if raw.Allowed != nil {
+		s.Allowed = bool(*raw.Allowed)
+	}
+	if raw.Limits.MaxActionsPerMinute < 0 {
+		return fmt.Errorf("max_actions_per_minute must not be negative")
+	}
+	s.Limits = raw.Limits
+	return nil
+}
+
+// flexibleBool accepts true/false and the string spellings people use in configs.
+type flexibleBool bool
+
+func (b *flexibleBool) UnmarshalJSON(data []byte) error {
+	var asBool bool
+	if err := json.Unmarshal(data, &asBool); err == nil {
+		*b = flexibleBool(asBool)
+		return nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		switch strings.ToLower(strings.TrimSpace(asString)) {
+		case "true", "yes", "1", "on", "allow", "allowed":
+			*b = true
+			return nil
+		case "false", "no", "0", "off", "deny", "denied":
+			*b = false
+			return nil
+		}
+	}
+
+	return fmt.Errorf("expected true/false (or a boolean-like string)")
 }
 
 type PermissionPolicy struct {
@@ -32,8 +98,10 @@ type PermissionPolicy struct {
 }
 
 type permissionPolicyFile struct {
-	Version        string                          `json:"version"`
-	DefaultAllow   *bool                           `json:"default_allow"`
+	// Version is accepted but never parsed: it is documentation for humans, and
+	// a policy using "1" as well as "1.0.0" must both load.
+	Version        json.RawMessage                 `json:"version"`
+	DefaultAllow   *flexibleBool                   `json:"default_allow"`
 	AllowedActions []string                        `json:"allowed_actions"`
 	DeniedActions  []string                        `json:"denied_actions"`
 	Scopes         map[PermissionScope]ScopeConfig `json:"scopes"`
@@ -82,6 +150,21 @@ var actionScope = map[string]PermissionScope{
 	string(CmdGetStatus):           ScopeVision,
 	string(CmdShutdownGracefully):  ScopeSystem,
 	string(CmdShutdownImmediately): ScopeSystem,
+
+	// Game interface. Observing is read-only (vision); driving the game is
+	// input; launching a game is system (denied by default).
+	string(CmdGameListProfiles): ScopeGame,
+	string(CmdGameDetect):       ScopeVision,
+	string(CmdGameStartSession): ScopeGame,
+	string(CmdGameEndSession):   ScopeGame,
+	string(CmdGameStatus):       ScopeVision,
+	string(CmdGameMove):         ScopeGame,
+	string(CmdGameLook):         ScopeGame,
+	string(CmdGameAction):       ScopeGame,
+	string(CmdGamePress):        ScopeGame,
+	string(CmdGameReleaseAll):   ScopeGame,
+	string(CmdGameObserve):      ScopeVision,
+	string(CmdGameLaunch):       ScopeSystem,
 }
 
 func defaultPermissionPolicy() *PermissionPolicy {
@@ -98,6 +181,7 @@ func defaultPermissionPolicy() *PermissionPolicy {
 			ScopeNetwork:    {Allowed: true},
 			ScopeSystem:     {Allowed: false},
 			ScopeVision:     {Allowed: true},
+			ScopeGame:       {Allowed: true},
 		},
 	}
 }
@@ -122,7 +206,7 @@ func loadPermissionPolicy(path string) (*PermissionPolicy, error) {
 
 	policy := defaultPermissionPolicy()
 	if parsed.DefaultAllow != nil {
-		policy.DefaultAllow = *parsed.DefaultAllow
+		policy.DefaultAllow = bool(*parsed.DefaultAllow)
 	}
 
 	for _, action := range parsed.AllowedActions {
@@ -132,10 +216,62 @@ func loadPermissionPolicy(path string) (*PermissionPolicy, error) {
 		policy.denied[strings.TrimSpace(action)] = struct{}{}
 	}
 	for scope, cfg := range parsed.Scopes {
+		if !knownScope(scope) {
+			// A typo ("games" instead of "game") would otherwise silently grant
+			// or drop a capability; say so instead.
+			fmt.Fprintf(os.Stderr, "[warn] permissions file %s: unknown scope %q ignored\n", path, scope)
+			continue
+		}
 		policy.scopes[scope] = cfg
 	}
 
 	return policy, nil
+}
+
+// ScopeAllowed answers the scope question directly, which is what script-level
+// checks need (a script is one action but may contain several capabilities).
+func (p *PermissionPolicy) ScopeAllowed(scope PermissionScope) bool {
+	if p == nil {
+		return false
+	}
+	if cfg, ok := p.scopes[scope]; ok {
+		return cfg.Allowed
+	}
+	return p.DefaultAllow
+}
+
+// ScopeRateLimit returns the scope's actions-per-minute budget, or 0 when the
+// scope is unlimited.
+func (p *PermissionPolicy) ScopeRateLimit(scope PermissionScope) int {
+	if p == nil || scope == "" {
+		return 0
+	}
+	if cfg, ok := p.scopes[scope]; ok {
+		return cfg.Limits.MaxActionsPerMinute
+	}
+	return 0
+}
+
+// ScopeConfigs exposes the per-scope configuration for the dashboard.
+func (p *PermissionPolicy) ScopeConfigs() map[PermissionScope]ScopeConfig {
+	out := map[PermissionScope]ScopeConfig{}
+	if p == nil {
+		return out
+	}
+	for _, scope := range []PermissionScope{
+		ScopeInput, ScopeGame, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision,
+	} {
+		out[scope] = p.scopes[scope]
+	}
+	return out
+}
+
+func knownScope(scope PermissionScope) bool {
+	switch scope {
+	case ScopeInput, ScopeGame, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision:
+		return true
+	}
+	return false
 }
 
 func (p *PermissionPolicy) IsAllowed(action string) bool {

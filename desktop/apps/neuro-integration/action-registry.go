@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	neuro "github.com/cassitly/neuro-integration-sdk"
 )
@@ -53,11 +54,39 @@ const (
 	CmdClearActionQueue    CommandType = "clear_action_queue"
 	CmdShutdownGracefully  CommandType = "shutdown_gracefully"
 	CmdShutdownImmediately CommandType = "shutdown_immediately"
+
+	// Raw input primitives the game layer needs (relative look, held keys,
+	// key combinations, held mouse buttons, and a safety release-everything).
+	CmdMoveMouseRelative CommandType = "move_mouse_relative"
+	CmdKeyHoldFor        CommandType = "key_hold_for"
+	CmdKeyReleaseAll     CommandType = "key_release_all"
+	CmdKeyCombo          CommandType = "key_combo"
+	CmdMouseHoldFor      CommandType = "mouse_hold_for"
+
+	// High-level game interface: Neuro plays a game that has no dedicated
+	// integration, or observes one that does.
+	CmdGameListProfiles CommandType = "game_list_profiles"
+	CmdGameDetect       CommandType = "game_detect"
+	CmdGameStartSession CommandType = "game_start_session"
+	CmdGameEndSession   CommandType = "game_end_session"
+	CmdGameStatus       CommandType = "game_status"
+	CmdGameMove         CommandType = "game_move"
+	CmdGameLook         CommandType = "game_look"
+	CmdGameAction       CommandType = "game_action"
+	CmdGamePress        CommandType = "game_press"
+	CmdGameReleaseAll   CommandType = "game_release_all"
+	CmdGameObserve      CommandType = "game_observe"
+	CmdGameLaunch       CommandType = "game_launch"
 )
 
+// actionKindGame marks the high-level game interface actions so they can be
+// registered (or withheld) as a group.
+const actionKindGame = "game"
+
 var (
-	RegisterHLActionsOnStartup bool = false
-	RegisterLLActionsOnStartup bool = true
+	RegisterHLActionsOnStartup   bool = false
+	RegisterLLActionsOnStartup   bool = true
+	RegisterGameActionsOnStartup bool = getEnvBool("NEURO_GAME_ACTIONS", true)
 
 	currentActionList   = map[string]neuro.ActionHandler{}
 	currentActionListMu sync.Mutex
@@ -68,6 +97,9 @@ type actionSpec struct {
 	Name        CommandType
 	Description string
 	Schema      *neuro.ActionSchema
+	// Kind groups actions: "" for desktop actions, actionKindGame for the game
+	// interface. The registration list is filtered by kind.
+	Kind string
 }
 
 var HLActionSpecs = []actionSpec{
@@ -418,8 +450,24 @@ func (a *IPCProxyAction) GetSchema() *neuro.ActionSchema {
 }
 
 func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.ExecutionResult) {
-	if a.integration.permissions != nil && !a.integration.permissions.IsAllowed(a.GetName()) {
-		return nil, neuro.NewFailureResult(fmt.Sprintf("Action denied by policy: %s", a.GetName()))
+	name := a.GetName()
+	a.integration.stats.noteAction(name)
+
+	policy := a.integration.policy()
+	if policy != nil && !policy.IsAllowed(name) {
+		a.integration.stats.noteDenied(name)
+		return nil, neuro.NewFailureResult(fmt.Sprintf("Action denied by policy: %s", name))
+	}
+
+	// Per-scope rate limit, before any work is queued.
+	if policy != nil {
+		scope := actionScope[name]
+		if limit := policy.ScopeRateLimit(scope); limit > 0 {
+			if allowed, retryAfter := a.integration.rate.allow(scope, limit, time.Now()); !allowed {
+				a.integration.stats.noteDenied(name)
+				return nil, neuro.NewFailureResult(rateLimitDenial(scope, limit, retryAfter))
+			}
+		}
 	}
 
 	params := map[string]interface{}{}
@@ -429,6 +477,10 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 
 	executeNow := getBoolParam(params, "execute_now", true)
 	clearAfter := getBoolParam(params, "clear_after", true)
+
+	if a.spec.Kind == actionKindGame {
+		return a.handleGameAction(params)
+	}
 
 	// Fast in-process actions: answer Neuro immediately (API best practice).
 	switch a.spec.Name {
@@ -507,6 +559,19 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 		return nil, a.integration.setExtensionEnabled(itemID, false)
 	}
 
+	// run_script is one action that can contain many capabilities, so the
+	// script body is checked against the scope it needs: LAUNCH opens programs,
+	// which is a system-scope operation and denied by default.
+	if a.spec.Name == CmdRunScript {
+		if script, ok := params["script"].(string); ok && scriptContainsLaunch(script) {
+			if policy := a.integration.policy(); policy != nil && !policy.ScopeAllowed(ScopeSystem) {
+				return nil, neuro.NewFailureResult(
+					"This script contains LAUNCH, which needs the `system` permission scope (currently denied). " +
+						"Vedal can allow it in the dashboard under Permissions.")
+			}
+		}
+	}
+
 	// Desktop intents → validated now, executed after action/result (best practice).
 	scriptIntent := scriptIntentFor(a.spec.Name)
 	if scriptIntent != "" {
@@ -524,6 +589,13 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 type pendingWork struct {
 	cmd          *IPCCommand
 	scriptIntent string
+	// gameCommands is a batch of input primitives produced by one game action
+	// (e.g. game_move with steps=3 holds a key three times, in order).
+	gameCommands []IPCCommand
+	// gameObserve is the slow screenshot + vision path for game_observe.
+	gameObserve *gameObserveRequest
+	// gameActionName is the Neuro action that produced this work.
+	gameActionName string
 }
 
 func scriptIntentFor(name CommandType) string {
@@ -578,9 +650,17 @@ func (a *IPCProxyAction) Execute(state interface{}) {
 	}
 
 	var result neuro.ExecutionResult
-	if work.scriptIntent != "" {
+	switch {
+	case work.gameObserve != nil:
+		// Slow path: the action was already acknowledged, the observation is
+		// delivered to Neuro as context when it is ready.
+		a.integration.runGameObserve(work.gameObserve)
+		return
+	case len(work.gameCommands) > 0:
+		result = a.executeGameCommands(work)
+	case work.scriptIntent != "":
 		result = a.integration.executeScriptIntent(work.scriptIntent)
-	} else if work.cmd != nil {
+	case work.cmd != nil:
 		resp, err := a.integration.sendToRust(*work.cmd)
 		if err != nil {
 			result = neuro.NewFailureResult(fmt.Sprintf("executor error: %v", err))
@@ -593,18 +673,56 @@ func (a *IPCProxyAction) Execute(state interface{}) {
 		} else {
 			return
 		}
-	} else {
+	default:
 		return
 	}
 
 	// Execution finished after action/result was already sent. Tell Neuro via context.
 	if !result.Successful {
+		a.integration.stats.noteFailure(a.GetName())
 		_ = a.integration.client.SendContext(
 			fmt.Sprintf("## Action execution failed\n\n- action: `%s`\n- error: %s", a.GetName(), result.Message),
 			true,
 		)
 	}
 }
+
+// executeGameCommands runs the input primitives of one game action in order and
+// releases everything if any of them fails, so a half-applied input cannot
+// leave a key stuck down.
+func (a *IPCProxyAction) executeGameCommands(work pendingWork) neuro.ExecutionResult {
+	for _, cmd := range work.gameCommands {
+		resp, err := a.integration.sendToRust(cmd)
+		if err != nil {
+			a.integration.releaseAllInput()
+			return neuro.NewFailureResult(fmt.Sprintf("executor error: %v", err))
+		}
+		if !resp.Success {
+			a.integration.releaseAllInput()
+			return neuro.NewFailureResult(nonEmptyOr(resp.Error, "Command failed"))
+		}
+	}
+
+	if work.gameActionName != "" {
+		a.integration.games.recordAction(work.gameActionName)
+	}
+	return neuro.NewSuccessResult("ok")
+}
+
+// scriptContainsLaunch reports whether an action script opens a program.
+func scriptContainsLaunch(script string) bool {
+	for _, rawLine := range strings.Split(script, "\n") {
+		line := strings.ToUpper(strings.TrimSpace(rawLine))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if line == "LAUNCH" || strings.HasPrefix(line, "LAUNCH ") || strings.HasPrefix(line, "LAUNCH\t") {
+			return true
+		}
+	}
+	return false
+}
+
 func getBoolParam(params map[string]interface{}, key string, defaultValue bool) bool {
 	val, ok := params[key]
 	if !ok {

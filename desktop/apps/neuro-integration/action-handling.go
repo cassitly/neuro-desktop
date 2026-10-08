@@ -5,35 +5,85 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 
 	neuro "github.com/cassitly/neuro-integration-sdk"
 )
 
+// reservedActionNames lists action names owned by another integration (for
+// example a dedicated Minecraft integration running beside Neuro Desktop
+// through the relay). Neuro Desktop must not register those, or the two
+// integrations would shadow each other.
+func (n *NDIntegration) reservedActionNames() map[string]bool {
+	reserved := map[string]bool{}
+	for _, name := range n.reservedActionList() {
+		reserved[strings.ToLower(name)] = true
+	}
+	return reserved
+}
+
+// registeredActionNames returns the action names currently registered with
+// Neuro (empty when Neuro has not connected yet).
+func (n *NDIntegration) registeredActionNames() []string {
+	currentActionListMu.Lock()
+	out := make([]string, 0, len(currentActionList))
+	for name := range currentActionList {
+		out = append(out, name)
+	}
+	currentActionListMu.Unlock()
+	sort.Strings(out)
+	return out
+}
+
+func (n *NDIntegration) reservedActionList() []string {
+	if n.relay == nil {
+		return nil
+	}
+	return n.relay.ReservedActionNames()
+}
+
+func specAllowed(spec actionSpec, reserved map[string]bool) bool {
+	return !reserved[strings.ToLower(string(spec.Name))]
+}
+
 func (n *NDIntegration) registerActions() error {
 	handlers := make([]neuro.ActionHandler, 0)
+	reserved := n.reservedActionNames()
+	skipped := make([]string, 0)
 
 	actionModeMu.Lock()
 	registerHL := RegisterHLActionsOnStartup
 	registerLL := RegisterLLActionsOnStartup
+	registerGame := RegisterGameActionsOnStartup
 	actionModeMu.Unlock()
 
+	var specs []actionSpec
 	if registerHL {
-		for _, spec := range HLActionSpecs {
-			handlers = append(handlers, &IPCProxyAction{
-				integration: n,
-				spec:        spec,
-			})
-		}
+		specs = append(specs, HLActionSpecs...)
+	}
+	if registerLL {
+		specs = append(specs, LLActionSpecs...)
+	}
+	// The game interface stays registered in both high- and low-level modes:
+	// it is how Neuro plays a game that has no integration of its own.
+	if registerGame {
+		specs = append(specs, gameActionSpecs()...)
 	}
 
-	if registerLL {
-		for _, spec := range LLActionSpecs {
-			handlers = append(handlers, &IPCProxyAction{
-				integration: n,
-				spec:        spec,
-			})
+	for _, spec := range specs {
+		if !specAllowed(spec, reserved) {
+			skipped = append(skipped, string(spec.Name))
+			continue
 		}
+		handlers = append(handlers, &IPCProxyAction{
+			integration: n,
+			spec:        spec,
+		})
+	}
+
+	if len(skipped) > 0 {
+		log.Printf("Left %d action(s) to other integrations: %s", len(skipped), strings.Join(skipped, ", "))
 	}
 
 	currentActionListMu.Lock()

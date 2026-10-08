@@ -139,9 +139,66 @@ impl Controller {
         .map_err(Into::into)
     }
 
-    pub fn keyboard_shortcut(&self, keys: &str) -> Result<()> {
+    /// Press several keys together.
+    ///
+    /// The previous implementation passed one whitespace-joined string to the
+    /// variadic Python `shortcut(*keys)`, which iterated over single characters
+    /// ("ctrl s" became c, t, r, l, space, s). Keys are now passed as a real
+    /// tuple, and the single-string entry point joins them explicitly.
+    pub fn keyboard_shortcut(&self, keys: &[String]) -> Result<()> {
+        self.key_combo(keys)
+    }
+
+    pub fn key_combo(&self, keys: &[String]) -> Result<()> {
         Python::with_gil(|py| {
-            self.keyboard.bind(py).getattr("shortcut")?.call1((keys,))?;
+            let args = PyTuple::new_bound(py, keys.iter());
+            self.keyboard.bind(py).getattr("combo")?.call1(args)?;
+            Ok::<(), PyErr>(())
+        })
+        .map_err(Into::into)
+    }
+
+    /// Hold a key for a bounded time (game movement).
+    pub fn key_hold_for(&self, key: &str, seconds: f64) -> Result<()> {
+        Python::with_gil(|py| {
+            self.keyboard
+                .bind(py)
+                .getattr("hold_for")?
+                .call1((key, seconds))?;
+            Ok::<(), PyErr>(())
+        })
+        .map_err(Into::into)
+    }
+
+    /// Release every key and mouse button the executor is holding.
+    pub fn release_all_input(&self) -> Result<()> {
+        Python::with_gil(|py| {
+            self.keyboard.bind(py).getattr("release_all")?.call0()?;
+            self.mouse.bind(py).getattr("release_all")?.call0()?;
+            Ok::<(), PyErr>(())
+        })
+        .map_err(Into::into)
+    }
+
+    /// Relative pointer movement for in-game mouse-look.
+    pub fn mouse_move_relative(&self, dx: i32, dy: i32, duration: f64) -> Result<()> {
+        Python::with_gil(|py| {
+            self.mouse
+                .bind(py)
+                .getattr("queue_move_rel")?
+                .call1((dx, dy, duration))?;
+            Ok::<(), PyErr>(())
+        })
+        .map_err(Into::into)
+    }
+
+    /// Hold a mouse button for a bounded time (sustained fire / aim).
+    pub fn mouse_hold_for(&self, button: &str, seconds: f64) -> Result<()> {
+        Python::with_gil(|py| {
+            self.mouse
+                .bind(py)
+                .getattr("queue_hold")?
+                .call1((button, seconds))?;
             Ok::<(), PyErr>(())
         })
         .map_err(Into::into)

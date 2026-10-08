@@ -2,10 +2,17 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
+
+// bridgeProtocolVersion is exchanged during the executor hello handshake so
+// that a stale executor binary is detected instead of silently misbehaving.
+const bridgeProtocolVersion = "2"
 
 func (n *NDIntegration) markDone() {
 	n.doneOnce.Do(func() {
@@ -16,26 +23,86 @@ func (n *NDIntegration) markDone() {
 	})
 }
 
+// atomicWriteFile writes data to path via a temp file + rename so that readers
+// never observe a half-written file. The executor polls this path, so a
+// truncated read used to surface as intermittent "Failed to parse IPC command".
+func atomicWriteFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
+
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+func ipcTimeout() time.Duration {
+	seconds := getEnvInt("NEURO_IPC_TIMEOUT_SECONDS", 30)
+	if seconds <= 0 {
+		seconds = 30
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// sendToRust forwards a command to the executor. It prefers a connected TCP
+// executor (local or remote machine) and falls back to the same-machine file
+// IPC bridge used by the co-located runtime.
 func (n *NDIntegration) sendToRust(cmd IPCCommand) (*IPCResponse, error) {
 	n.ipcMu.Lock()
 	defer n.ipcMu.Unlock()
 
-	// Prefer remote/local TCP executor client when connected.
 	if n.executorHub != nil && n.executorHub.HasClient() {
-		return n.executorHub.SendCommand(cmd, 25*time.Second)
+		return n.executorHub.SendCommand(cmd, ipcTimeout())
 	}
 
+	return n.sendToFileIPC(cmd)
+}
+
+func (n *NDIntegration) sendToFileIPC(cmd IPCCommand) (*IPCResponse, error) {
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := os.WriteFile(n.ipcFilePath, cmdBytes, 0644); err != nil {
-		return nil, err
+	responseFile := n.ipcFilePath + ".response"
+
+	// Drop any previous response first: otherwise a slow command could return
+	// the *previous* action's result, which is how "the action silently did
+	// nothing" reports happened.
+	_ = os.Remove(responseFile)
+
+	if err := atomicWriteFile(n.ipcFilePath, cmdBytes); err != nil {
+		return nil, fmt.Errorf("failed to write IPC command file: %w", err)
 	}
 
-	responseFile := n.ipcFilePath + ".response"
-	for i := 0; i < 500; i++ {
+	deadline := time.Now().Add(ipcTimeout())
+	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(responseFile)
 		if err == nil {
 			var resp IPCResponse
@@ -43,9 +110,23 @@ func (n *NDIntegration) sendToRust(cmd IPCCommand) (*IPCResponse, error) {
 				_ = os.Remove(responseFile)
 				return &resp, nil
 			}
+			// Another writer may have been mid-write; keep polling briefly.
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("failed to read IPC response file: %w", err)
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 
+	// The command was never picked up. Remove it so it cannot execute later
+	// out of order (e.g. after the operator grants/denies a permission).
+	_ = os.Remove(n.ipcFilePath)
+	_ = os.Remove(responseFile)
 	return nil, fmt.Errorf("timeout waiting for executor response (no TCP client; file IPC timed out)")
+}
+
+func nonEmptyOr(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }

@@ -1,6 +1,7 @@
 import shlex
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
+from .launcher import LaunchError, launch_target
 from .platform_intents import apply_intent, supported_intents
 
 if TYPE_CHECKING:
@@ -93,6 +94,16 @@ class ActionParser:
         elif cmd == "SHORTCUT":
             self._kbd_shortcut(tokens)
 
+        # -------- Keyboard: game-style held input --------
+        elif cmd == "HOLD_FOR":
+            self._kbd_hold_for(tokens)
+
+        elif cmd == "COMBO":
+            self._kbd_combo(tokens)
+
+        elif cmd == "RELEASE_ALL":
+            self.release_all()
+
         # -------- High-level desktop intents (cross-platform) --------
         elif cmd in _DESKTOP_INTENTS or cmd == "OPEN_SETTINGS":
             try:
@@ -103,6 +114,9 @@ class ActionParser:
         # -------- Mouse --------
         elif cmd == "MOVE":
             self._mouse_move(tokens)
+
+        elif cmd == "MOVE_REL":
+            self._mouse_move_relative(tokens)
 
         elif cmd == "MOVE_N":
             self._mouse_move_normalized(tokens)
@@ -118,6 +132,10 @@ class ActionParser:
 
         elif cmd == "PATH":
             self._mouse_path(tokens)
+
+        # -------- System --------
+        elif cmd == "LAUNCH":
+            self._launch(tokens)
 
         # -------- Shared --------
         elif cmd == "WAIT":
@@ -156,6 +174,22 @@ class ActionParser:
             raise ActionParseError("SHORTCUT key1 key2 ...")
         self.kbd.shortcut(*tokens[1:])
 
+    def _kbd_combo(self, tokens: List[str]):
+        if len(tokens) < 2:
+            raise ActionParseError("COMBO key1 key2 ...")
+        self.kbd.combo(*tokens[1:])
+
+    def _kbd_hold_for(self, tokens: List[str]):
+        if len(tokens) != 3:
+            raise ActionParseError("HOLD_FOR key seconds")
+        try:
+            seconds = float(tokens[2])
+        except ValueError as exc:
+            raise ActionParseError("HOLD_FOR seconds must be a number") from exc
+        if seconds <= 0 or seconds > 30:
+            raise ActionParseError("HOLD_FOR seconds must be between 0 and 30")
+        self.kbd.hold_for(tokens[1], seconds)
+
     # ========================
     # Mouse commands
     # ========================
@@ -180,6 +214,15 @@ class ActionParser:
         nx, ny = float(tokens[1]), float(tokens[2])
         x, y = self.mouse.map_normalized(nx, ny)
         self.mouse.queue_move(x, y)
+
+    def _mouse_move_relative(self, tokens: List[str]):
+        if len(tokens) not in (3, 4):
+            raise ActionParseError("MOVE_REL dx dy [duration]")
+        dx, dy = int(tokens[1]), int(tokens[2])
+        duration = float(tokens[3]) if len(tokens) == 4 else 0.0
+        if duration < 0 or duration > 2:
+            raise ActionParseError("MOVE_REL duration must be between 0 and 2")
+        self.mouse.queue_move_rel(dx, dy, duration)
 
     def _mouse_click(self, tokens: List[str]):
         if len(tokens) > 2:
@@ -226,6 +269,24 @@ class ActionParser:
 
         path = self.mouse.draw_polyline(points)
         self.mouse.queue_path(path)
+
+    # ========================
+    # System
+    # ========================
+
+    def _launch(self, tokens: List[str]):
+        if len(tokens) < 2:
+            raise ActionParseError("LAUNCH path-or-url")
+        target = " ".join(tokens[1:])
+        try:
+            launch_target(target, platform=self.platform)
+        except LaunchError as exc:
+            raise ActionParseError(str(exc)) from exc
+
+    def release_all(self):
+        """Safety hatch: release every key and mouse button we hold."""
+        self.kbd.release_all()
+        self.mouse.release_all()
 
     # ========================
     # Shared
