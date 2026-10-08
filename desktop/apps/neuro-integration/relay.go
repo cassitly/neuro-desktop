@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -537,27 +538,12 @@ func (r *RelayState) runSession() error {
 		return fmt.Errorf("relay registration failed: %w", err)
 	}
 
-	// The relay validates the first message and either answers with an error
-	// frame and closes, or stays quiet / sends an event. Reading it here is what
-	// turns a wrong token from an unexplained drop into a clear log line.
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	_, first, err := conn.ReadMessage()
-	_ = conn.SetReadDeadline(time.Time{})
-	if err == nil {
-		var reply map[string]interface{}
-		if json.Unmarshal(first, &reply) == nil {
-			if raw, ok := reply["error"]; ok {
-				return fmt.Errorf("relay rejected the registration: %v "+
-					"(check NEURO_RELAY_TOKEN against intermediary.auth_token in the relay's authentication.yaml)", raw)
-			}
-			_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-			r.handleRelayMessage(reply)
-			_ = conn.SetReadDeadline(time.Time{})
-		}
-	} else if !isTimeout(err) {
-		return fmt.Errorf("relay closed the connection during registration: %w", err)
-	}
-
+	// NOTE: do not probe the registration answer with a short read deadline
+	// here. gorilla keeps the first read error on the connection and fails every
+	// later read with it, so a timeout on an idle relay would leave a poisoned
+	// socket that reconnects forever. The relay's validation answer (if any) is
+	// handled in the read loop below instead, which is also where an
+	// "invalid auth token" frame turns into a clear error.
 	r.setConnectionState(true, true)
 	r.noteEvent("registered", nil)
 	log.Printf("Registered with Neuro Relay as %q at %s", r.cfg.Name, r.cfg.endpoint())
@@ -570,36 +556,96 @@ func (r *RelayState) runSession() error {
 	// Note: the relay only forwards registrations made by Neuro-SDK clients on
 	// its backend socket to the real Neuro; this registration is what watchers
 	// (Neuro-OS) see, and it also stops a peer from reusing our names.
+	// Writes after the registration are not fatal on their own: when the relay
+	// rejects the registration it answers with an error frame and closes, so a
+	// broken write usually means "read the error frame first". The failure is
+	// kept and used only if the read loop has nothing better to report.
+	var writeErr error
+
 	if actions := r.actionSchemas(); len(actions) > 0 {
-		_ = conn.WriteJSON(map[string]interface{}{
+		if err := conn.WriteJSON(map[string]interface{}{
 			"event":   "register_actions",
 			"actions": actions,
 			"count":   len(actions),
+		}); err != nil {
+			writeErr = err
+		}
+	}
+
+	if writeErr == nil {
+		writeErr = conn.WriteJSON(map[string]interface{}{
+			"event": "status",
+			"payload": map[string]interface{}{
+				"executor_connected": r.hasExecutor(),
+				"game_profiles":      r.gameProfileCount(),
+				"platform":           platformKey(),
+			},
 		})
 	}
 
-	if err := conn.WriteJSON(map[string]interface{}{
-		"event": "status",
-		"payload": map[string]interface{}{
-			"executor_connected": r.hasExecutor(),
-			"game_profiles":      r.gameProfileCount(),
-			"platform":           platformKey(),
-		},
-	}); err != nil {
-		return err
-	}
+	// The relay is a mostly-silent peer: an idle integration socket only ever
+	// carries control frames. A gorilla read deadline cannot be used as an
+	// idle timeout, because the deadline is absolute per read and expires even
+	// while pings keep arriving — that is what used to reconnect the link every
+	// 90 seconds. Instead the bridge sends its own websocket pings and drops the
+	// connection only when the peer stops answering them.
+	var lastPong atomic.Int64
+	lastPong.Store(time.Now().UnixNano())
+	conn.SetPongHandler(func(string) error {
+		lastPong.Store(time.Now().UnixNano())
+		return nil
+	})
+
+	stopHeartbeat := make(chan struct{})
+	defer close(stopHeartbeat)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopHeartbeat:
+				return
+			case <-r.stop:
+				return
+			case <-ticker.C:
+				silentFor := time.Since(time.Unix(0, lastPong.Load()))
+				if silentFor > 90*time.Second {
+					// No pong for three intervals: treat the link as dead so the
+					// client loop reconnects and re-registers.
+					_ = conn.WriteControl(websocket.CloseMessage,
+						websocket.FormatCloseMessage(websocket.CloseAbnormalClosure, "relay heartbeat missed"),
+						time.Now().Add(2*time.Second))
+					_ = conn.Close()
+					return
+				}
+				_ = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+			}
+		}
+	}()
 
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		_, message, err := conn.ReadMessage()
 		if err != nil {
+			if writeErr != nil {
+				return fmt.Errorf(
+					"relay connection failed right after the registration (%v); the relay may have "+
+						"rejected it — check NEURO_RELAY_TOKEN against intermediary.auth_token in the "+
+						"relay's authentication.yaml", writeErr)
+			}
 			return err
 		}
-		_ = conn.SetReadDeadline(time.Time{})
+		writeErr = nil
 
 		var envelope map[string]interface{}
 		if err := json.Unmarshal(message, &envelope); err != nil {
 			continue
+		}
+
+		// The relay answers a bad registration with {"error": ...} and closes.
+		// Report that instead of an unexplained disconnect.
+		if raw, ok := envelope["error"]; ok {
+			return fmt.Errorf("relay rejected the registration: %v "+
+				"(check NEURO_RELAY_TOKEN against intermediary.auth_token in the relay's authentication.yaml)", raw)
 		}
 
 		r.handleRelayMessage(envelope)

@@ -144,6 +144,22 @@ def check_catalog() -> None:
     ok(f"catalog has {len(items)} items and {len(profiles)} game profiles")
 
 
+def check_python_syntax() -> None:
+    """Every Python file in the repo must at least compile."""
+    count = 0
+    for path in walk(REPO_ROOT):
+        if not path.endswith(".py"):
+            continue
+        count += 1
+        with open(path, "rb") as handle:
+            source = handle.read()
+        try:
+            compile(source, path, "exec")
+        except SyntaxError as exc:
+            fail(f"{os.path.relpath(path, REPO_ROOT)} does not compile: {exc}")
+    ok(f"{count} Python files compile")
+
+
 def check_headless_docs() -> None:
     """The headless story must be documented, since it is a supported mode."""
     readme = os.path.join(REPO_ROOT, "README.md")
@@ -178,6 +194,7 @@ def main() -> int:
     check_json()
     check_example_policies_match()
     check_catalog()
+    check_python_syntax()
     check_headless_docs()
     check_file_sizes()
 

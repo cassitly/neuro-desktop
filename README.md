@@ -483,6 +483,38 @@ There are two ways to coexist, and they are complementary:
    intermediary keeps registrations for watchers; it does not forward them to
    Neuro, which is exactly why mode 1 exists.
 
+### Upstream relay compatibility (it does not start as-is)
+
+Worth knowing before you debug your setup: **Nakashireyumi/neuro-relay cannot
+start with any published `neuro-api` release.** `src/dev/nakurity/server.py`
+subclasses three abstract server classes but implements only part of the
+interface, so Python refuses to instantiate it:
+
+```text
+TypeError: Can't instantiate abstract class NakurityBackend with abstract methods
+get_character_id, get_websocket_session_id
+```
+
+Checked against every release on PyPI: 0.x/1.x have no `neuro_api.server` module
+at all, and 2.x/3.x/4.x leave `get_next_id`, `handle_actions_register`,
+`handle_actions_unregister`, `handle_actions_force`, `handle_action_result` (plus
+the two above in 4.x) abstract. This is upstream's bug, not a configuration
+problem — the relay's own protocol code is fine.
+
+`desktop/tools/relay-compat/run_relay.py` starts the relay unchanged by filling
+in exactly those methods before `dev.nakurity.__main__` runs:
+
+```bash
+pip install "websockets==13.1" neuro-api pyyaml
+python3 desktop/tools/relay-compat/run_relay.py /path/to/neuro-relay/src
+# [relay-compat] filled in 2 abstract method(s): get_character_id, get_websocket_session_id
+# [Intermediary] listening on ws://127.0.0.1:8765
+# [Nakurity Backend] Starting websocket server on ws://127.0.0.1:8001
+```
+
+Nothing on disk is patched and no fork is maintained: it is a shim for a broken
+upstream entry point, and it disappears the day upstream fixes their class.
+
 Reserved names are neither registered with Neuro nor accepted from the dashboard
 (the dashboard refuses to add them to the allow list): they belong to another
 integration, and shadowing them is how two integrations end up fighting over the

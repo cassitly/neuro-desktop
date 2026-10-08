@@ -134,6 +134,18 @@ Unsupported intents on an OS fail with a clear error (e.g. macOS clipboard histo
 - Registrations are verified against the upstream sources; a bad
   `NEURO_RELAY_TOKEN` is reported as "invalid auth token" instead of an
   unexplained disconnect, and the bridge no longer lists itself as a peer
+- The relay link survives an idle relay: liveness is checked with websocket
+  pings (a gorilla read deadline used to reconnect the link every 90 seconds),
+  and writes racing the relay's rejection frame are reported as such
+- Verified against a live upstream relay (`python3
+  desktop/tools/relay-compat/run_relay.py <neuro-relay>/src`): the intermediary
+  logs `Registered actions from Neuro Desktop: [... 51 actions]` and the link
+  stays connected
+- Upstream caveat, found while verifying: the relay cannot start with any
+  published `neuro-api` release because `NakurityBackend` does not implement all
+  abstract methods (0.x/1.x have no `neuro_api.server` at all; 2.x+ leave five to
+  seven methods abstract). `desktop/tools/relay-compat/run_relay.py` fills them
+  in at runtime so the relay runs unchanged
 - `NEURO_RESERVED_ACTIONS` keeps another integration's action names out of the
   registry so the two cannot shadow each other
 - `control.mode: auto` delegates a game to its dedicated integration when that
@@ -235,6 +247,12 @@ python3 desktop/tools/ci/repo_checks.py
 
 # Relay protocol contract (fake intermediary speaking the upstream shapes)
 cd desktop/apps/neuro-integration && go test -run TestRelay -v ./...
+
+# Relay end-to-end (real upstream relay + this bridge)
+python3 desktop/tools/relay-compat/run_relay.py /path/to/neuro-relay/src
+# then, with NEURO_RELAY_ENABLED=true NEURO_RELAY_URL=ws://127.0.0.1:8765
+# and NEURO_RELAY_TOKEN matching intermediary.auth_token:
+curl -s http://127.0.0.1:8300/api/relay     # connected/registered true
 ```
 
 For a fake Neuro backend: see [desktop/tools/ollama-neuro/README.md](../desktop/tools/ollama-neuro/README.md).

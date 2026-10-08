@@ -47,6 +47,8 @@ This project aims to follow semantic versioning once stable releases begin.
 - `relay_protocol_test.go`: a fake intermediary that speaks what upstream
   `intermediary.py` speaks, pinning registration, action announcement, watcher
   commands, peer tracking and bad-token handling.
+- `desktop/tools/relay-compat/run_relay.py`: starts the upstream relay despite its
+  abstract-method bug (it cannot be instantiated with any published `neuro-api`).
 - CI: repository checks (JSON/catalog/example-policy/doc consistency) and a
   stdlib-only Python job that proves the CLI-only install; the main workflow now
   also runs `go build`, `go vet` and `go test -race` on Linux.
@@ -90,3 +92,10 @@ This project aims to follow semantic versioning once stable releases begin.
   the new shell capability; `shell` and `system` now require explicit scope consent.
 - `shell_command` parameters that are missing, empty, or sent as the wrong type
   are answered with the expected shape instead of a generic refusal.
+- The relay link reconnected every ~10 seconds: the registration was probed with
+  a short read deadline, and gorilla keeps the first read error forever, so a
+  quiet relay poisoned the socket. Liveness is now checked with websocket
+  pings, and a rejection frame (or a write racing it) is reported as
+  "relay rejected the registration" with the setting to check.
+- `shell_command` output was dropped after the action was acknowledged; the
+  transcript is now delivered to Neuro as context.
