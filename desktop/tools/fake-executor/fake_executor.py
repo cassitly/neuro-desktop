@@ -186,6 +186,7 @@ def main() -> int:
 
     attempt = 0
     while True:
+        started = time.monotonic()
         try:
             if run_session(args.addr, args.token or None, args.quiet):
                 log("shutdown complete")
@@ -206,6 +207,23 @@ def main() -> int:
 
         if args.once:
             return 0
+
+        # A session that ends immediately means we were replaced: the bridge
+        # keeps only one executor and drops the older one. Reconnecting at once
+        # turns that into a hot loop between the two, so back off like a failed
+        # connection instead of spinning.
+        lived = time.monotonic() - started
+        if lived < 10:
+            attempt += 1
+            delay = min(2 ** min(attempt, 5), 30)
+            log(
+                f"was only connected for {lived:.1f}s (another executor may be running); "
+                f"retrying in {delay}s"
+            )
+            time.sleep(delay)
+            continue
+
+        attempt = 0
         time.sleep(2)
 
 

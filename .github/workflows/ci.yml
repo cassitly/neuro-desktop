@@ -139,17 +139,35 @@ jobs:
           npm ci
           npm run build
 
-      # process-handler: compile + unit tests only. Skip spawning GUI/desktop
-      # binaries or any input simulation on headless CI runners.
-      - name: Configure process-handler tests
-        run: cmake -S desktop/apps/process-handler -B desktop/apps/process-handler/build-ci -DBUILD_TESTS=ON
+      # The bridge serves the bundle from /ui/, so every asset URL must stay
+      # relative. An absolute "/assets/..." URL breaks the dashboard there.
+      - name: Frontend bundle uses relative asset URLs
+        shell: bash
+        run: |
+          if ! grep -q 'src="./assets/' desktop/frontend/dist/index.html; then
+            echo "dist/index.html does not reference a relative bundle:"
+            cat desktop/frontend/dist/index.html
+            exit 1
+          fi
 
-      - name: Build process-handler tests
-        run: cmake --build desktop/apps/process-handler/build-ci --config Release --parallel
-
-      - name: Run process-handler unit tests
-        run: ctest --test-dir desktop/apps/process-handler/build-ci -C Release --output-on-failure -E 'FullLifecycle'
-        # FullLifecycle spawns real processes; keep message/validator unit tests.
+      # ---------------------------------------------------------------
+      # process-handler: the *required* coverage is the dependency-free suite
+      # that `repo-checks` compiles and runs (parser, validator, process
+      # lifecycle). The CMake + GoogleTest files in the same directory need a
+      # network FetchContent and are therefore advisory here: they are kept so
+      # the optional suite still builds, but a failure does not red CI.
+      # ---------------------------------------------------------------
+      - name: process-handler CMake + GoogleTest suite (advisory)
+        continue-on-error: true
+        shell: bash
+        run: |
+          if ! command -v cmake >/dev/null 2>&1; then
+            echo "cmake not on PATH; skipping"
+            exit 0
+          fi
+          cmake -S desktop/apps/process-handler -B desktop/apps/process-handler/build-ci -DBUILD_TESTS=ON
+          cmake --build desktop/apps/process-handler/build-ci --config Release --parallel
+          ctest --test-dir desktop/apps/process-handler/build-ci -C Release --output-on-failure
 
   python-cli-only:
     name: Python controller on a CLI-only install (stdlib only)

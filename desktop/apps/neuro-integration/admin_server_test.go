@@ -460,3 +460,86 @@ func TestScopeRequiresExplicitConsent(t *testing.T) {
 		}
 	}
 }
+
+// A weak model cannot guess parameter names. /api/actions must therefore expose
+// the schema and a plain-language rendering of it, and every action must be
+// described well enough to be used without extra prompting.
+func TestActionsExposeLLMFriendlyMetadata(t *testing.T) {
+	integration := testIntegration(t)
+	server := newTestAdmin(t, integration, "")
+
+	status, payload := getJSON(t, server.URL+"/api/actions", nil)
+	if status != http.StatusOK {
+		t.Fatalf("/api/actions = %d, want 200", status)
+	}
+
+	rawActions, _ := payload["actions"].([]interface{})
+	if len(rawActions) < 30 {
+		t.Fatalf("expected the full action catalogue, got %d entries", len(rawActions))
+	}
+
+	seenGameMove := false
+	for _, raw := range rawActions {
+		action, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := action["name"].(string)
+		description, _ := action["description"].(string)
+		params, _ := action["params"].(string)
+		schema, _ := action["schema"].(map[string]interface{})
+		required := stringSlice(action["required"])
+
+		if len(strings.TrimSpace(description)) < 20 {
+			t.Errorf("%s has an unusable description (%q)", name, description)
+		}
+		if strings.TrimSpace(params) == "" {
+			t.Errorf("%s does not describe its parameters", name)
+		}
+		if params == "none" {
+			if len(schema) != 0 {
+				t.Errorf("%s takes no parameters but ships a schema", name)
+			}
+			continue
+		}
+		if len(schema) == 0 {
+			t.Errorf("%s has parameters but no schema", name)
+		}
+		if strings.Contains(params, "required") && len(required) == 0 {
+			t.Errorf("%s mentions a required parameter but lists none", name)
+		}
+
+		if name == "game_move" {
+			seenGameMove = true
+			for _, want := range []string{"direction", "seconds", "steps", "right"} {
+				if !strings.Contains(params, want) {
+					t.Errorf("game_move params should mention %q, got %q", want, params)
+				}
+			}
+			if len(required) != 1 || required[0] != "direction" {
+				t.Errorf("game_move required = %v, want [direction]", required)
+			}
+		}
+	}
+	if !seenGameMove {
+		t.Fatal("game_move is missing from /api/actions")
+	}
+}
+
+// stringSlice reads a JSON array of strings regardless of how it was typed.
+func stringSlice(raw interface{}) []string {
+	switch value := raw.(type) {
+	case []string:
+		return value
+	case []interface{}:
+		out := make([]string, 0, len(value))
+		for _, item := range value {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}

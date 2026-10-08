@@ -239,8 +239,14 @@ func (r *RelayState) noteEvent(event string, err error) {
 	if event != "" {
 		r.lastEvent = event
 	}
-	if err != nil {
+	switch {
+	case err != nil:
 		r.lastError = err.Error()
+	case event == "registered":
+		// A fresh registration means the link is healthy again; keeping the
+		// old failure around made /api/relay read "connected, registered,
+		// last_error: <stale>" which sends operators chasing ghosts.
+		r.lastError = ""
 	}
 }
 
@@ -469,7 +475,7 @@ func (r *RelayState) clientLoop() {
 
 		err := r.runSession()
 		r.setConnectionState(false, false)
-		if err != nil {
+		if err != nil && !r.isStopping() && !isExpectedClose(err) {
 			r.noteEvent("disconnected", err)
 		}
 		if !r.sleep(backoff) {
@@ -489,11 +495,45 @@ func (r *RelayState) sleep(d time.Duration) bool {
 	}
 }
 
-// isTimeout reports whether the error is a read deadline (normal when the relay
-// has nothing to say during registration).
+// isTimeout reports whether the error is a read deadline.
 func isTimeout(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// isExpectedClose reports closes that are ours (shutdown/reconnect) or the
+// relay's normal goodbye. They are not failures and must not be reported as
+// "last error" to the dashboard.
+func isExpectedClose(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	if errors.Is(err, websocket.ErrCloseSent) {
+		// We closed the socket (shutdown or reconnect); not the relay's fault.
+		return true
+	}
+	if websocket.IsCloseError(err,
+		websocket.CloseNormalClosure,
+		websocket.CloseGoingAway,
+		websocket.CloseNoStatusReceived,
+		websocket.CloseAbnormalClosure,
+	) {
+		return true
+	}
+	return strings.Contains(err.Error(), "use of closed network connection")
+}
+
+// isStopping reports whether Stop() has been requested.
+func (r *RelayState) isStopping() bool {
+	select {
+	case <-r.stop:
+		return true
+	default:
+		return false
+	}
 }
 
 func nextBackoff(current, max time.Duration) time.Duration {
@@ -537,13 +577,6 @@ func (r *RelayState) runSession() error {
 	if err := conn.WriteJSON(registration); err != nil {
 		return fmt.Errorf("relay registration failed: %w", err)
 	}
-
-	// NOTE: do not probe the registration answer with a short read deadline
-	// here. gorilla keeps the first read error on the connection and fails every
-	// later read with it, so a timeout on an idle relay would leave a poisoned
-	// socket that reconnects forever. The relay's validation answer (if any) is
-	// handled in the read loop below instead, which is also where an
-	// "invalid auth token" frame turns into a clear error.
 	r.setConnectionState(true, true)
 	r.noteEvent("registered", nil)
 	log.Printf("Registered with Neuro Relay as %q at %s", r.cfg.Name, r.cfg.endpoint())
@@ -583,6 +616,12 @@ func (r *RelayState) runSession() error {
 		})
 	}
 
+	// Do NOT validate the registration with a bounded read. gorilla stores the
+	// first read error on the Conn and returns it from every later read, so a
+	// probe that times out on an idle relay poisons the socket: the link then
+	// reconnects forever. A rejection is reported by the read loop instead,
+	// which is also where the relay's {"error": ...} frame is parsed.
+	//
 	// The relay is a mostly-silent peer: an idle integration socket only ever
 	// carries control frames. A gorilla read deadline cannot be used as an
 	// idle timeout, because the deadline is absolute per read and expires even
@@ -623,9 +662,16 @@ func (r *RelayState) runSession() error {
 		}
 	}()
 
+	var relayRejection string
+
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
+			if relayRejection != "" {
+				return fmt.Errorf(
+					"relay rejected the registration: %s — check NEURO_RELAY_TOKEN against "+
+						"intermediary.auth_token in the relay's authentication.yaml", relayRejection)
+			}
 			if writeErr != nil {
 				return fmt.Errorf(
 					"relay connection failed right after the registration (%v); the relay may have "+
@@ -648,15 +694,20 @@ func (r *RelayState) runSession() error {
 				"(check NEURO_RELAY_TOKEN against intermediary.auth_token in the relay's authentication.yaml)", raw)
 		}
 
-		r.handleRelayMessage(envelope)
+		if relayError := r.handleRelayMessage(envelope); relayError != "" {
+			relayRejection = relayError
+		}
 	}
 }
 
-func (r *RelayState) handleRelayMessage(envelope map[string]interface{}) {
+// handleRelayMessage applies one frame from the relay. It returns the message of
+// an {"error": ...} frame (empty when there was none) so the read loop can
+// report the relay's own explanation instead of a bare socket error.
+func (r *RelayState) handleRelayMessage(envelope map[string]interface{}) string {
 	if err, ok := envelope["error"].(string); ok && err != "" {
 		r.noteEvent("error", fmt.Errorf("%s", err))
 		log.Printf("Relay reported an error: %s", err)
-		return
+		return err
 	}
 
 	if event, ok := envelope["event"].(string); ok {
@@ -664,8 +715,11 @@ func (r *RelayState) handleRelayMessage(envelope map[string]interface{}) {
 		switch event {
 		case "integration_connected":
 			name, _ := envelope["name"].(string)
-			// The relay announces every connection to every watcher, including
-			// our own: never count ourselves as a coexisting integration.
+			// The relay broadcasts every connection, including our own. The
+			// relay's own answer to our registration carries our name, so
+			// without this filter the bridge reported itself as a coexisting
+			// integration in /api/relay and in the "external integration owns
+			// this game" hints.
 			if r.isSelf(name) {
 				break
 			}
@@ -710,6 +764,7 @@ func (r *RelayState) handleRelayMessage(envelope map[string]interface{}) {
 		r.notePeer(nonEmptyOr(from, "watcher"), "neuro-os")
 		go r.executeRelayCommand(from, cmd)
 	}
+	return ""
 }
 
 // executeRelayCommand runs a watcher-issued command, e.g.

@@ -4,8 +4,10 @@
 #include <vector>
 #include <map>
 #include <functional>
+#include <atomic>
 #include <mutex>
 #include <chrono>
+#include <thread>
 
 // ============================================================
 // process_handler.h - Core Process Management System
@@ -61,7 +63,10 @@ struct Message {
     std::string data;  // JSON payload
     uint64_t timestamp;
     std::string message_id;
-    
+    // False when from_json() could not parse the input. Callers must drop those
+    // messages instead of routing an empty one (the old stub did exactly that).
+    bool valid = true;
+
     std::string to_json() const;
     static Message from_json(const std::string& json);
 };
@@ -165,6 +170,10 @@ public:
 
 // Message validator
 class MessageValidator {
+private:
+    // Per-source sliding window for check_rate_limit().
+    static std::map<std::string, std::vector<std::chrono::steady_clock::time_point>>& rate_history();
+
 public:
     static bool validate_message(const Message& msg, std::string& error);
     static bool is_safe_json(const std::string& json);
@@ -191,12 +200,23 @@ private:
     std::map<std::string, std::unique_ptr<ICommChannel>> channels;
     std::unique_ptr<MessageRouter> router;
     std::mutex manager_mutex;
-    bool running = false;
+    std::atomic<bool> running{false};
+    // Set once shutdown() starts; monitor threads watch this rather than
+    // `running` so crash detection also works for managers that are driven
+    // directly (tests, embedded use) without run()'s event loop.
+    std::atomic<bool> shutting_down{false};
+    // Toggled by enable_health_monitoring(); when false the monitor still
+    // reaps dead children but no longer fails them on heartbeat timeouts.
+    std::atomic<bool> health_monitoring{true};
+    // Monitor threads are owned here; shutdown() joins them before the manager
+    // is destroyed. They used to be detached, so a crash loop could touch a
+    // destroyed ProcessManager.
+    std::vector<std::thread> monitor_threads;
     
     // Internal methods
     bool spawn_process(ProcessInfo& info);
     void monitor_process(const std::string& name);
-    void handle_process_crash(const std::string& name);
+    void handle_process_crash(const std::string& name, bool terminate_child = false);
     void send_heartbeat_check(const std::string& name);
     bool check_dependencies_ready(const ProcessConfig& config);
     

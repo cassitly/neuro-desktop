@@ -660,6 +660,8 @@ Randy will send random actions to test your integration.
 ## Documentation
 
 - ✅ [Current Capabilities](docs/CAPABILITIES.md) — what works today (honest)
+- 🐣 [Driving it with a small/weak model](docs/LLM_GUIDE.md) — prompting tactics and parameter shapes
+- 🛡️ [Safety systems and firewalls](docs/SAFETY.md) — every guard, where it lives, how to verify it
 - 📖 [Action Script Language Reference](docs/action_script/LANGUAGE_REFERENCE.md)
 - 🏗️ [Architecture Deep Dive](docs/ARCHITECTURE.md)
 - 🔧 [API Specification](desktop/apps/neuro-integration/integration-docs/Action Script Documentation.md)

@@ -15,7 +15,7 @@ Last updated: 2026-10-08
 | **Local Neuro mock** | `desktop/tools/ollama-neuro` | Randy-like tester using Ollama + `heredos/rwkv7:2.9b` |
 | **Operator dashboard** | `desktop/frontend`, served by the bridge at `/ui/` | Live permissions, extensions, games and status |
 | **Fake executor** | `desktop/tools/fake-executor` | Protocol simulator for the dashboard (never injects input) |
-| **Process supervisor** | `process-handler` | Optional; incomplete messaging, not required for day-to-day use |
+| **Process supervisor** | `process-handler` | Optional; real message parsing + lifecycle now, still not required for day-to-day use |
 
 **Split machines:** bridge on the Neuro/operator PC; executor on the desktop Neuro should control (`--executor --server host:9876`).
 

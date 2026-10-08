@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -241,6 +242,110 @@ func TestRelayRejectsBadTokenWithAClearError(t *testing.T) {
 	_ = relay
 }
 
+// Some relays answer and then close, and some just drop the socket. Both must
+// come back as the same actionable message, and it must not depend on the write
+// failing first.
+func TestRelayRejectionIsReportedWhenTheErrorFrameArrivesFirst(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		// Answer, give the bridge time to read it, then close: the rejection is
+		// known before the socket dies.
+		_ = conn.WriteJSON(map[string]interface{}{"error": "invalid auth token"})
+		time.Sleep(300 * time.Millisecond)
+	}))
+
+	_, state := newRelayTestHarness(t, "ws"+strings.TrimPrefix(server.URL, "http"), "wrong-token")
+	err := state.runSession()
+	if err == nil {
+		t.Fatal("a rejected registration must fail")
+	}
+	if !strings.Contains(err.Error(), "invalid auth token") {
+		t.Fatalf("the error should quote the relay, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "NEURO_RELAY_TOKEN") {
+		t.Fatalf("the error should name the setting to check, got: %v", err)
+	}
+}
+
+// A healthy relay has nothing to say while it sits idle. The bridge must not
+// arm a read deadline to find that out: gorilla stores the first read error on
+// the Conn and replays it for every later read, so a probe that times out turns
+// a perfectly good link into a reconnect loop (that is the bug behind both the
+// old 90 s idle timeout and a short registration probe).
+func TestRelayStaysConnectedWhileTheRelayIsSilent(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	accepted := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		accepted <- conn
+		for { // silent: read and ignore whatever the bridge sends
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	_, state := newRelayTestHarness(t, "ws"+strings.TrimPrefix(server.URL, "http"), "token")
+	go state.clientLoop()
+	defer state.Stop()
+
+	waitFor(t, "the registration", func() bool {
+		st := state.status()
+		return st.Connected && st.Registered
+	})
+	first := state.status()
+
+	// The relay echoes our own connection back to every watcher. Counting that
+	// as a coexisting integration made the bridge think another copy of itself
+	// owned the game.
+	if first.PeerCount != 0 {
+		t.Fatalf("the bridge should not count itself as a peer: %#v", first.Peers)
+	}
+
+	// Sit through several seconds of silence: no deadline may fire.
+	time.Sleep(2 * time.Second)
+	second := state.status()
+	if !second.Connected || !second.Registered {
+		t.Fatalf("the link dropped while the relay was silent: %#v", second)
+	}
+	if second.LastError != "" {
+		t.Fatalf("silence must not be reported as an error, got %q", second.LastError)
+	}
+
+	// And the socket is still usable afterwards.
+	conn := <-accepted
+	accepted <- conn
+	if err := conn.WriteJSON(map[string]interface{}{
+		"event":   "integration_registered_actions",
+		"from":    "minecraft",
+		"actions": []string{"minecraft.move", "minecraft.look"},
+	}); err != nil {
+		t.Fatalf("writing a relay event failed: %v", err)
+	}
+
+	waitFor(t, "the event that arrives after the silence", func() bool {
+		return state.status().PeerCount == 1
+	})
+	if got := state.status().PeerActions["minecraft"]; len(got) != 2 {
+		t.Fatalf("peer actions after the silence = %#v, want 2 entries", got)
+	}
+	if first.LastEvent != "registered" || second.LastEvent != "registered" {
+		t.Fatalf("registration events look wrong: %q / %q", first.LastEvent, second.LastEvent)
+	}
+}
+
 func TestRelayCapturesPeerActionsFromWatcherEvents(t *testing.T) {
 	relay, server := newFakeRelay(t, "token")
 	defer server.Close()
@@ -331,6 +436,72 @@ func TestRelayActionNamesAcceptAllShapes(t *testing.T) {
 
 	if got := actionNamesFrom("nonsense"); got != nil {
 		t.Fatalf("a string should yield nothing, got %v", got)
+	}
+}
+
+// A recovered link must not keep reporting the failure that ended the previous
+// session: /api/relay used to read "connected, registered, last_error: use of
+// closed network connection", which sends operators chasing ghosts.
+type errString string
+
+func (e errString) Error() string { return string(e) }
+
+func TestRelayRegistrationClearsStaleError(t *testing.T) {
+	_, state := newRelayTestHarness(t, "ws://127.0.0.1:9", "token")
+
+	state.noteEvent("disconnected", errString("read tcp 127.0.0.1:1->127.0.0.1:2: use of closed network connection"))
+	if state.status().LastError == "" {
+		t.Fatal("the failure should be recorded while the link is down")
+	}
+
+	state.noteEvent("registered", nil)
+	if got := state.status().LastError; got != "" {
+		t.Fatalf("last_error should be cleared after a successful registration, got %q", got)
+	}
+
+	// A later failure is still reported.
+	state.noteEvent("disconnected", errString("boom"))
+	if got := state.status().LastError; got != "boom" {
+		t.Fatalf("last_error = %q, want %q", got, "boom")
+	}
+}
+
+// Shutting the client down closes our own socket. That is not a relay failure
+// and must not be surfaced as one.
+func TestRelayIgnoresSelfInflictedAndNormalCloses(t *testing.T) {
+	expected := []error{
+		errString("read tcp 127.0.0.1:56500->127.0.0.1:8765: use of closed network connection"),
+		net.ErrClosed,
+		websocket.ErrCloseSent,
+		&websocket.CloseError{Code: websocket.CloseNormalClosure},
+		&websocket.CloseError{Code: websocket.CloseGoingAway},
+		&websocket.CloseError{Code: websocket.CloseNoStatusReceived},
+	}
+	for _, err := range expected {
+		if !isExpectedClose(err) {
+			t.Fatalf("%v should be treated as an expected close", err)
+		}
+	}
+
+	unexpected := []error{
+		nil,
+		errString("relay rejected the registration: invalid auth token"),
+		errString("dial tcp 127.0.0.1:8765: connect: connection refused"),
+		&websocket.CloseError{Code: websocket.ClosePolicyViolation},
+	}
+	for _, err := range unexpected {
+		if isExpectedClose(err) {
+			t.Fatalf("%v should NOT be treated as an expected close", err)
+		}
+	}
+
+	_, state := newRelayTestHarness(t, "ws://127.0.0.1:9", "token")
+	if state.isStopping() {
+		t.Fatal("a fresh state should not be stopping")
+	}
+	state.Stop()
+	if !state.isStopping() {
+		t.Fatal("Stop() should be observable to the reconnect loop")
 	}
 }
 

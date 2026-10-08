@@ -326,4 +326,14 @@ func TestExecutorHubReplacementClosesPreviousClient(t *testing.T) {
 	if len(first.seenCommands()) != 0 {
 		t.Fatal("commands should go to the newest executor only")
 	}
+
+	// The replacement must be visible to the operator: a reconnect storm
+	// between two executors was previously only visible as log spam.
+	info := hub.Info()
+	if info.Replaced != 1 {
+		t.Fatalf("replaced_connections = %d, want 1", info.Replaced)
+	}
+	if info.Connections != 2 {
+		t.Fatalf("total_connections = %d, want 2", info.Connections)
+	}
 }

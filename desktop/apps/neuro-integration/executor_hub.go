@@ -41,6 +41,11 @@ type ExecutorHub struct {
 	lastError  string
 	lastRemote string
 	lastSeen   time.Time
+	// replaced counts clients that were dropped because a newer executor
+	// connected. A hot loop here (two executors running at once) used to be
+	// invisible except in the log; the dashboard can now show the number.
+	replaced       int
+	lastReplaceLog time.Time
 }
 
 type executorEnvelope struct {
@@ -219,6 +224,7 @@ type ExecutorInfo struct {
 	LastError   string `json:"last_error,omitempty"`
 	LastSeen    string `json:"last_seen,omitempty"`
 	Connections int    `json:"total_connections"`
+	Replaced    int    `json:"replaced_connections"`
 }
 
 func (h *ExecutorHub) Info() ExecutorInfo {
@@ -235,6 +241,7 @@ func (h *ExecutorHub) Info() ExecutorInfo {
 		Failed:      h.failed,
 		LastError:   h.lastError,
 		Connections: h.connected,
+		Replaced:    h.replaced,
 	}
 	if client != nil {
 		info.Remote = client.remote
@@ -314,7 +321,22 @@ func (h *ExecutorHub) handleConnection(conn net.Conn) {
 	h.statsMu.Unlock()
 
 	if previous != nil {
-		log.Printf("Replacing previous executor client %s with %s", previous.remote, remote)
+		h.statsMu.Lock()
+		h.replaced++
+		// Rate-limit the log: a reconnect storm between two executors used to
+		// print thousands of identical lines and bury everything else.
+		shouldLog := time.Since(h.lastReplaceLog) > 5*time.Second
+		if shouldLog {
+			h.lastReplaceLog = time.Now()
+		}
+		replaced := h.replaced
+		h.statsMu.Unlock()
+
+		if shouldLog {
+			log.Printf("Replacing previous executor client %s with %s (%d replacement(s) so far; "+
+				"if this keeps happening, another executor is running too)",
+				previous.remote, remote, replaced)
+		}
 		previous.close()
 	}
 

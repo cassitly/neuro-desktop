@@ -26,6 +26,16 @@ This project aims to follow semantic versioning once stable releases begin.
   status page, served by the bridge at `/ui/`.
 - Per-scope actions-per-minute limits, enforced with a sliding window.
 - `desktop/tools/fake-executor` protocol simulator for dashboard development.
+- `/api/actions` now returns each action's JSON schema plus a plain-language
+  `params` rendering and its required list, so the dashboard (and a weak model)
+  can see parameter shapes before a call fails. Guarded by
+  `TestActionsExposeLLMFriendlyMetadata`.
+- `docs/LLM_GUIDE.md`: prompting tactics and parameter shapes for small/weak
+  models, and `docs/SAFETY.md`: every safety system, where it lives and how to
+  verify it. `desktop/tools/ci/repo_checks.py` fails if they disappear or stop
+  being linked from the README.
+- Dependency-free process-handler test suite (`tests/test_standalone.cpp`) that
+  CI compiles and runs, plus an ollama-neuro check that no longer needs `aiohttp`.
 - Go tests for the executor hub, game profiles, permissions/rate limits, the admin
   API and a full bridge end-to-end run against a fake Neuro backend.
 - Python protocol tests for the game input primitives.
@@ -69,6 +79,34 @@ This project aims to follow semantic versioning once stable releases begin.
   path; the intermediary registration is documented as the watcher/visibility path.
 
 ### Fixed
+
+- Process handler: `Message::from_json` was a stub that returned an empty message
+  for every input, so no IPC command could ever be understood. It now parses the
+  wire format strictly (rejecting malformed input instead of routing an empty
+  command), `is_safe_json` validates instead of accepting everything, and
+  `check_rate_limit` enforces a per-source sliding window.
+- Process handler: crash recovery self-deadlocked (`monitor_process` held the
+  manager lock and called `restart_process` → `stop_process`, which re-locks the
+  same non-recursive mutex). Monitoring now reads state under the lock and
+  recovers outside it; `enable_health_monitoring` actually toggles the heartbeat
+  check, heartbeat timeouts terminate the offender instead of leaking it, held
+  keys are released, `env_vars` are applied on Windows and POSIX, a graceful
+  shutdown message is sent before killing a child, and monitor threads are
+  joined in `shutdown()` instead of being detached.
+- Relay: the bridge counted the relay's echo of its own registration as a
+  coexisting integration, so `/api/relay` reported a phantom peer and the
+  "another integration owns this game" hints could point at itself.
+- Relay: a bad `NEURO_RELAY_TOKEN` is now reported deterministically even when
+  the relay's error frame arrives before the follow-up writes fail.
+- Relay: a successful registration clears `last_error`, and closes that we cause
+  ourselves (shutdown/reconnect) are no longer reported as failures.
+- Executor hub: replacements are counted (`replaced_connections`, shown by
+  `/api/status`) and the replacement log is rate-limited — two executors running
+  at once used to produce thousands of identical lines and look like a network
+  problem. The fake executor now backs off when the bridge drops it instead of
+  reconnecting in a hot loop.
+- `ollama-neuro` imports `aiohttp` lazily, so its parser tests run on a CLI-only
+  install with no dependencies.
 
 - Concurrent websocket writes in the vendored Neuro SDK (action results racing the
   read loop); caught by `go test -race`.

@@ -309,6 +309,69 @@ func actionScopeName(action string) string {
 	return "unknown"
 }
 
+// describeSchema renders an action schema as one line, e.g.
+// `direction (string, required: forward|back|left|right), seconds (number)`.
+// It is deliberately plain text: the dashboard shows it, and it is what a
+// small model can be handed without teaching it JSON Schema.
+func describeSchema(schema *neuro.ActionSchema) string {
+	if schema == nil || len(schema.Properties) == 0 {
+		return "none"
+	}
+
+	required := make(map[string]bool, len(schema.Required))
+	for _, key := range schema.Required {
+		required[key] = true
+	}
+
+	keys := make([]string, 0, len(schema.Properties))
+	for key := range schema.Properties {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		property, _ := schema.Properties[key].(map[string]interface{})
+		typeName, _ := property["type"].(string)
+		if typeName == "" {
+			typeName = "value"
+		}
+
+		description, _ := property["description"].(string)
+		piece := key + " (" + typeName
+		if required[key] {
+			piece += ", required"
+		}
+		if values := enumValues(property["enum"]); len(values) > 0 {
+			piece += ": " + strings.Join(values, "|")
+		}
+		if description != "" {
+			piece += " — " + description
+		}
+		piece += ")"
+		parts = append(parts, piece)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// enumValues renders an "enum" entry as strings, ignoring other shapes.
+func enumValues(raw interface{}) []string {
+	items, ok := raw.([]interface{})
+	if !ok {
+		if strings, ok := raw.([]string); ok {
+			return strings
+		}
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
 func (a *AdminServer) handleActions(w http.ResponseWriter, _ *http.Request) {
 	policy := a.integration.policy()
 
@@ -340,6 +403,17 @@ func (a *AdminServer) handleActions(w http.ResponseWriter, _ *http.Request) {
 		}
 		if spec.Kind == actionKindGame {
 			entry["kind"] = "game"
+		}
+		// Expose the parameter shape. A weak model (or the operator writing a
+		// prompt) otherwise has no way to know what "game_move" expects until a
+		// call fails. `params` is the human/LLM-readable rendering of the same
+		// schema that is registered with Neuro.
+		if spec.Schema != nil {
+			entry["schema"] = spec.Schema
+			entry["params"] = describeSchema(spec.Schema)
+			entry["required"] = append([]string{}, spec.Schema.Required...)
+		} else {
+			entry["params"] = "none"
 		}
 		out = append(out, entry)
 	}

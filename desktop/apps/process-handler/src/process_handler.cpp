@@ -3,6 +3,9 @@
 // ============================================================
 
 #include "process_handler.h"
+
+#include <algorithm>
+#include <cstdint>
 #include <fstream>
 #include <sstream>
 #include <thread>
@@ -39,11 +42,359 @@ std::string Message::to_json() const {
     return oss.str();
 }
 
+namespace {
+
+// ---------------------------------------------------------------------------
+// Minimal strict JSON reader for the process-handler wire format.
+//
+// The handler exchanges flat objects produced by Message::to_json() plus the
+// `data` payload, which is itself an arbitrary JSON value and is kept verbatim.
+// The previous implementation returned a default-constructed Message and threw
+// the input away, so no command the supervisor received was ever understood.
+// ---------------------------------------------------------------------------
+
+class JsonReader {
+public:
+    explicit JsonReader(const std::string& text) : text_(text) {}
+
+    bool parse_object(std::map<std::string, std::string>& out) {
+        skip_ws();
+        if (!consume('{')) {
+            return false;
+        }
+        skip_ws();
+        if (consume('}')) {
+            return true;
+        }
+        while (true) {
+            skip_ws();
+            std::string key;
+            if (!parse_string(key)) {
+                return false;
+            }
+            skip_ws();
+            if (!consume(':')) {
+                return false;
+            }
+            skip_ws();
+            std::string value;
+            if (!parse_value(value)) {
+                return false;
+            }
+            out[key] = value;
+            skip_ws();
+            if (consume(',')) {
+                continue;
+            }
+            if (consume('}')) {
+                break;
+            }
+            return false;
+        }
+        skip_ws();
+        return at_end();
+    }
+
+    // True when the whole text is one syntactically valid JSON value. Used by
+    // MessageValidator::is_safe_json(), which sees plain payloads (objects,
+    // arrays, scalars) rather than whole message envelopes.
+    bool parse_document() {
+        skip_ws();
+        std::string ignored;
+        if (!parse_value(ignored)) {
+            return false;
+        }
+        skip_ws();
+        return at_end();
+    }
+
+private:
+    void skip_ws() {
+        while (pos_ < text_.size()) {
+            char c = text_[pos_];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                ++pos_;
+            } else {
+                break;
+            }
+        }
+    }
+
+    bool at_end() const { return pos_ >= text_.size(); }
+
+    bool consume(char expected) {
+        if (pos_ < text_.size() && text_[pos_] == expected) {
+            ++pos_;
+            return true;
+        }
+        return false;
+    }
+
+    bool parse_string(std::string& out) {
+        if (!consume('"')) {
+            return false;
+        }
+        out.clear();
+        while (pos_ < text_.size()) {
+            char c = text_[pos_++];
+            if (c == '"') {
+                return true;
+            }
+            if (c != '\\') {
+                out.push_back(c);
+                continue;
+            }
+            if (pos_ >= text_.size()) {
+                return false;
+            }
+            char esc = text_[pos_++];
+            switch (esc) {
+                case '"': out.push_back('"'); break;
+                case '\\': out.push_back('\\'); break;
+                case '/': out.push_back('/'); break;
+                case 'b': out.push_back('\b'); break;
+                case 'f': out.push_back('\f'); break;
+                case 'n': out.push_back('\n'); break;
+                case 'r': out.push_back('\r'); break;
+                case 't': out.push_back('\t'); break;
+                case 'u': {
+                    unsigned int code = 0;
+                    if (!read_hex4(code)) {
+                        return false;
+                    }
+                    // Encode the BMP code point as UTF-8; surrogate halves are
+                    // replaced rather than emitting invalid UTF-8.
+                    if (code >= 0xD800 && code <= 0xDFFF) {
+                        out.push_back('?');
+                    } else if (code < 0x80) {
+                        out.push_back(static_cast<char>(code));
+                    } else if (code < 0x800) {
+                        out.push_back(static_cast<char>(0xC0 | (code >> 6)));
+                        out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                    } else {
+                        out.push_back(static_cast<char>(0xE0 | (code >> 12)));
+                        out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+                        out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+                    }
+                    break;
+                }
+                default:
+                    return false;
+            }
+        }
+        return false;
+    }
+
+    bool read_hex4(unsigned int& out) {
+        out = 0;
+        for (int i = 0; i < 4; ++i) {
+            if (pos_ >= text_.size()) {
+                return false;
+            }
+            char c = text_[pos_++];
+            out <<= 4;
+            if (c >= '0' && c <= '9') {
+                out |= static_cast<unsigned int>(c - '0');
+            } else if (c >= 'a' && c <= 'f') {
+                out |= static_cast<unsigned int>(c - 'a' + 10);
+            } else if (c >= 'A' && c <= 'F') {
+                out |= static_cast<unsigned int>(c - 'A' + 10);
+            } else {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Scalars come back bare ("42", "true", "\"text\""); containers come back
+    // as their original source text so `data` survives verbatim. Parsing is
+    // recursive and strict, so `{"a":}` or `{"a" 1}` are rejected rather than
+    // merely brace-balanced.
+    bool parse_value(std::string& out) {
+        if (pos_ >= text_.size()) {
+            return false;
+        }
+        char c = text_[pos_];
+        if (c == '"') {
+            std::string decoded;
+            if (!parse_string(decoded)) {
+                return false;
+            }
+            out = decoded;
+            return true;
+        }
+        if (c == '{' || c == '[') {
+            return parse_container(out);
+        }
+        if (c == 't' || c == 'f' || c == 'n') {
+            return capture_literal(out);
+        }
+        if (c == '-' || (c >= '0' && c <= '9')) {
+            return capture_number(out);
+        }
+        return false;
+    }
+
+    bool parse_container(std::string& out) {
+        const std::size_t start = pos_;
+        const char open = text_[pos_];
+        const char close = (open == '{') ? '}' : ']';
+        ++pos_;
+
+        skip_ws();
+        if (consume(close)) {
+            out = text_.substr(start, pos_ - start);
+            return true;
+        }
+
+        while (true) {
+            skip_ws();
+            if (open == '{') {
+                std::string key;
+                if (!parse_string(key)) {
+                    return false;
+                }
+                skip_ws();
+                if (!consume(':')) {
+                    return false;
+                }
+                skip_ws();
+            }
+            std::string value;
+            if (!parse_value(value)) {
+                return false;
+            }
+            skip_ws();
+            if (consume(',')) {
+                continue;
+            }
+            if (consume(close)) {
+                break;
+            }
+            return false;
+        }
+
+        out = text_.substr(start, pos_ - start);
+        return true;
+    }
+
+    bool capture_literal(std::string& out) {
+        for (const char* literal : {"true", "false", "null"}) {
+            const std::string token(literal);
+            if (text_.compare(pos_, token.size(), token) == 0) {
+                out = token;
+                pos_ += token.size();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool capture_number(std::string& out) {
+        const std::size_t start = pos_;
+        consume('-');
+
+        const auto consume_digits = [this]() {
+            bool any = false;
+            while (pos_ < text_.size() && text_[pos_] >= '0' && text_[pos_] <= '9') {
+                ++pos_;
+                any = true;
+            }
+            return any;
+        };
+
+        if (!consume_digits()) {
+            pos_ = start;
+            return false;
+        }
+        if (consume('.')) {
+            if (!consume_digits()) {
+                pos_ = start;
+                return false;
+            }
+        }
+        if (pos_ < text_.size() && (text_[pos_] == 'e' || text_[pos_] == 'E')) {
+            ++pos_;
+            if (!consume('+')) {
+                consume('-');
+            }
+            if (!consume_digits()) {
+                pos_ = start;
+                return false;
+            }
+        }
+
+        out = text_.substr(start, pos_ - start);
+        return true;
+    }
+
+    const std::string& text_;
+    std::size_t pos_ = 0;
+};
+
+bool parse_uint64(const std::string& text, uint64_t& out) {
+    if (text.empty()) {
+        return false;
+    }
+    std::size_t index = 0;
+    uint64_t value = 0;
+    while (index < text.size()) {
+        char c = text[index];
+        if (c < '0' || c > '9') {
+            return false;
+        }
+        value = value * 10 + static_cast<uint64_t>(c - '0');
+        ++index;
+    }
+    out = value;
+    return true;
+}
+
+}  // namespace
+
 Message Message::from_json(const std::string& json) {
-    (void)json;
-    // Simple JSON parsing (use a proper library in production)
     Message msg;
-    // TODO: Implement proper JSON parsing
+    msg.valid = false;
+
+    std::map<std::string, std::string> fields;
+    JsonReader reader(json);
+    if (!reader.parse_object(fields)) {
+        return msg;
+    }
+
+    if (const auto it = fields.find("type"); it != fields.end()) {
+        uint64_t raw = 0;
+        if (parse_uint64(it->second, raw) && raw <= static_cast<uint64_t>(MessageType::ERROR)) {
+            msg.type = static_cast<MessageType>(raw);
+        } else {
+            return msg;
+        }
+    } else {
+        return msg;
+    }
+
+    auto take = [&fields](const char* key, std::string& target) {
+        if (const auto it = fields.find(key); it != fields.end()) {
+            target = it->second;
+        }
+    };
+
+    take("source", msg.source_process);
+    take("target", msg.target_process);
+    take("command", msg.command);
+    take("data", msg.data);
+    take("message_id", msg.message_id);
+
+    uint64_t timestamp = 0;
+    if (const auto it = fields.find("timestamp"); it != fields.end()) {
+        if (parse_uint64(it->second, timestamp)) {
+            msg.timestamp = timestamp;
+        } else {
+            return msg;
+        }
+    }
+
+    msg.valid = true;
     return msg;
 }
 
@@ -86,7 +437,8 @@ bool FileIPCChannel::receive(Message& msg, int timeout_ms) {
             
             if (!json.empty()) {
                 msg = Message::from_json(json);
-                // Delete response file
+                // Delete the response file either way: leaving malformed input
+                // in place made the reader return the same bad bytes forever.
                 std::remove(response_file_path.c_str());
                 return true;
             }
@@ -255,19 +607,45 @@ bool MessageValidator::validate_message(const Message& msg, std::string& error) 
 }
 
 bool MessageValidator::is_safe_json(const std::string& json) {
-    // Basic validation - ensure it's valid JSON and not too large
-    if (json.length() > 1024 * 1024) { // 1MB limit
+    // Reject anything oversized, then require that it actually parses: the
+    // previous implementation accepted every string, including truncated and
+    // hostile payloads that later code would treat as a command.
+    if (json.length() > 1024 * 1024) {  // 1MB limit
         return false;
     }
-    
-    // TODO: Add proper JSON validation
-    return true;
+    JsonReader reader(json);
+    return reader.parse_document();
+}
+
+std::map<std::string, std::vector<std::chrono::steady_clock::time_point>>&
+MessageValidator::rate_history() {
+    static std::map<std::string, std::vector<std::chrono::steady_clock::time_point>> history;
+    return history;
 }
 
 bool MessageValidator::check_rate_limit(const std::string& source, int max_per_second) {
-    (void)source;
-    (void)max_per_second;
-    // TODO: Implement rate limiting per source
+    if (max_per_second <= 0) {
+        return true;  // unlimited, explicitly requested
+    }
+
+    static std::mutex rate_mutex;
+    std::lock_guard<std::mutex> lock(rate_mutex);
+
+    auto& history = rate_history();
+    const auto now = std::chrono::steady_clock::now();
+    auto& stamps = history[source];
+
+    stamps.erase(
+        std::remove_if(stamps.begin(), stamps.end(),
+                       [now](const std::chrono::steady_clock::time_point& stamp) {
+                           return now - stamp > std::chrono::seconds(1);
+                       }),
+        stamps.end());
+
+    if (static_cast<int>(stamps.size()) >= max_per_second) {
+        return false;
+    }
+    stamps.push_back(now);
     return true;
 }
 
@@ -338,7 +716,13 @@ bool ProcessManager::register_process(const ProcessConfig& config) {
             case CommMethod::STDIO:
                 channel = std::make_unique<StdioChannel>();
                 break;
-            // Add other channel types...
+            default:
+                // NAMED_PIPE / SHARED_MEMORY / TCP_SOCKET are declared in the
+                // header but not implemented yet; report them instead of
+                // silently registering no channel at all.
+                std::cerr << "Communication method not implemented for "
+                          << config.name << std::endl;
+                break;
         }
         
         if (channel && channel->initialize()) {
@@ -366,9 +750,19 @@ bool ProcessManager::spawn_process(ProcessInfo& info) {
         cmdline += " " + arg;
     }
     
-    // Set environment variables
-    // TODO: Build environment block
-    
+    // Set environment variables. CreateProcessA needs a double-NUL terminated
+    // "KEY=VALUE\0KEY=VALUE\0\0" block; passing NULL silently dropped every
+    // configured variable (including NEURO_* settings the child needs).
+    std::string env_block;
+    for (const auto& [key, value] : info.config.env_vars) {
+        if (key.empty()) {
+            continue;
+        }
+        env_block += key + "=" + value;
+        env_block.push_back('\0');
+    }
+    env_block.push_back('\0');
+
     if (!CreateProcessA(
         NULL,
         const_cast<char*>(cmdline.c_str()),
@@ -376,7 +770,7 @@ bool ProcessManager::spawn_process(ProcessInfo& info) {
         NULL,
         FALSE,
         0,
-        NULL,
+        info.config.env_vars.empty() ? NULL : const_cast<char*>(env_block.data()),
         NULL,
         &si,
         &pi
@@ -405,6 +799,14 @@ bool ProcessManager::spawn_process(ProcessInfo& info) {
             args.push_back(const_cast<char*>(arg.c_str()));
         }
         args.push_back(nullptr);
+
+        // Apply the configured environment before exec; the old code ignored
+        // env_vars entirely on POSIX and inherited the parent's environment.
+        for (const auto& [key, value] : info.config.env_vars) {
+            if (!key.empty()) {
+                setenv(key.c_str(), value.c_str(), 1);
+            }
+        }
         
         execvp(args[0], args.data());
         exit(1); // If exec fails
@@ -448,10 +850,10 @@ bool ProcessManager::start_process(const std::string& name) {
     
     std::cout << "Started process: " << name << " (PID: " << info.pid << ")" << std::endl;
     
-    // Start monitoring thread
-    std::thread([this, name]() {
+    // Start monitoring thread (owned; joined in shutdown()).
+    monitor_threads.emplace_back([this, name]() {
         monitor_process(name);
-    }).detach();
+    });
     
     return true;
 }
@@ -467,60 +869,126 @@ bool ProcessManager::check_dependencies_ready(const ProcessConfig& config) {
 }
 
 void ProcessManager::monitor_process(const std::string& name) {
-    while (running) {
+    while (!shutting_down) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        
-        std::lock_guard<std::mutex> lock(manager_mutex);
-        auto it = processes.find(name);
-        if (it == processes.end()) break;
-        
-        auto& info = it->second;
-        
-        // Check if process is still alive
-#ifdef _WIN32
-        DWORD exit_code;
-        if (GetExitCodeProcess(info.platform_handle, &exit_code)) {
-            if (exit_code != STILL_ACTIVE) {
-                handle_process_crash(name);
+
+        bool alive = true;
+        bool heartbeat_late = false;
+        bool track_heartbeat = false;
+        std::chrono::seconds heartbeat_timeout{0};
+
+        {
+            // Only read state under the lock; recovery re-acquires it and must
+            // never be called with the lock held (handle_process_crash ->
+            // restart_process -> stop_process/start_process would self-deadlock).
+            std::lock_guard<std::mutex> lock(manager_mutex);
+            auto it = processes.find(name);
+            if (it == processes.end()) {
                 break;
             }
-        }
+
+            auto& info = it->second;
+            if (info.state != ProcessState::RUNNING) {
+                break;  // stopped/restarted elsewhere; this monitor is done
+            }
+
+#ifdef _WIN32
+            DWORD exit_code = STILL_ACTIVE;
+            if (info.platform_handle != nullptr &&
+                GetExitCodeProcess(info.platform_handle, &exit_code)) {
+                alive = (exit_code == STILL_ACTIVE);
+            }
 #else
-        int status;
-        pid_t result = waitpid(info.pid, &status, WNOHANG);
-        if (result != 0) {
+            if (info.pid > 0) {
+                int status = 0;
+                const pid_t result = waitpid(info.pid, &status, WNOHANG);
+                if (result == static_cast<pid_t>(info.pid)) {
+                    alive = false;
+                } else if (result < 0) {
+                    // Already reaped elsewhere (restart/stop) - not a crash.
+                    alive = true;
+                }
+            }
+#endif
+
+            track_heartbeat = info.config.enable_heartbeat && health_monitoring;
+            heartbeat_timeout = info.config.heartbeat_timeout;
+            if (track_heartbeat) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now() - info.last_heartbeat);
+                heartbeat_late = elapsed > heartbeat_timeout;
+            }
+        }
+
+        if (!alive) {
             handle_process_crash(name);
             break;
         }
-#endif
-        
-        // Check heartbeat
-        if (info.config.enable_heartbeat) {
-            auto now = std::chrono::system_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                now - info.last_heartbeat
-            );
-            
-            if (elapsed > info.config.heartbeat_timeout) {
-                std::cerr << "Process " << name << " heartbeat timeout" << std::endl;
-                handle_process_crash(name);
-                break;
-            }
+
+        if (heartbeat_late) {
+            std::cerr << "Process " << name << " heartbeat timeout" << std::endl;
+            // The child is still alive; it just stopped answering. Terminate it
+            // instead of leaking a running process the manager has written off.
+            handle_process_crash(name, /*terminate_child=*/true);
+            break;
         }
     }
 }
 
-void ProcessManager::handle_process_crash(const std::string& name) {
-    auto& info = processes[name];
-    info.state = ProcessState::CRASHED;
-    
-    std::cerr << "Process " << name << " crashed!" << std::endl;
-    
-    if (info.config.auto_restart && info.restart_count < info.config.max_restart_attempts) {
-        std::cout << "Attempting to restart " << name << "..." << std::endl;
-        std::this_thread::sleep_for(info.config.restart_delay);
-        restart_process(name);
+void ProcessManager::handle_process_crash(const std::string& name, bool terminate_child) {
+    bool should_restart = false;
+    std::chrono::seconds restart_delay{0};
+
+    {
+        std::lock_guard<std::mutex> lock(manager_mutex);
+        auto it = processes.find(name);
+        if (it == processes.end()) {
+            return;
+        }
+        auto& info = it->second;
+        info.state = ProcessState::CRASHED;
+        info.last_error = terminate_child ? "Heartbeat timeout"
+                                          : "Process exited unexpectedly";
+
+        if (terminate_child && info.pid > 0) {
+#ifdef _WIN32
+            if (info.platform_handle != nullptr) {
+                TerminateProcess(info.platform_handle, 1);
+                CloseHandle(info.platform_handle);
+            }
+#else
+            kill(info.pid, SIGKILL);
+            waitpid(info.pid, nullptr, 0);  // reap; no zombies
+#endif
+            info.platform_handle = nullptr;
+            info.pid = 0;
+        }
+
+        should_restart = !shutting_down && info.config.auto_restart &&
+                         info.restart_count < info.config.max_restart_attempts;
+        restart_delay = info.config.restart_delay;
     }
+
+    std::cerr << "Process " << name << " crashed!" << std::endl;
+
+    if (!should_restart) {
+        return;
+    }
+
+    std::cout << "Attempting to restart " << name << "..." << std::endl;
+    std::this_thread::sleep_for(restart_delay);
+
+    {
+        std::lock_guard<std::mutex> lock(manager_mutex);
+        auto it = processes.find(name);
+        if (it == processes.end()) {
+            return;
+        }
+        it->second.restart_count += 1;
+    }
+
+    // restart_process() takes the lock itself; safe because we released it.
+    restart_process(name);
 }
 
 bool ProcessManager::stop_process(const std::string& name, bool force) {
@@ -531,13 +999,35 @@ bool ProcessManager::stop_process(const std::string& name, bool force) {
     
     auto& info = it->second;
     info.state = ProcessState::STOPPING;
-    
+
+    // Graceful shutdown first: ask the child to exit over its own channel.
+    // (Previously nothing was ever sent, so every stop was a hard kill.)
+    if (!force && info.config.enable_heartbeat) {
+        Message goodbye;
+        goodbye.type = MessageType::SHUTDOWN;
+        goodbye.source_process = "process_handler";
+        goodbye.target_process = name;
+        goodbye.command = "shutdown";
+        goodbye.data = "{}";
+        goodbye.timestamp = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count()
+        );
+        goodbye.message_id = "shutdown_" + name;
+        for (auto method : info.config.comm_methods) {
+            const std::string channel_key = name + "_" + std::to_string(static_cast<int>(method));
+            auto channel_it = channels.find(channel_key);
+            if (channel_it != channels.end() && channel_it->second->send(goodbye)) {
+                break;
+            }
+        }
+    }
+
 #ifdef _WIN32
     if (force) {
         TerminateProcess(info.platform_handle, 1);
     } else {
-        // Try graceful shutdown first
-        // TODO: Send shutdown message
         WaitForSingleObject(info.platform_handle, 5000);
         TerminateProcess(info.platform_handle, 0);
     }
@@ -638,8 +1128,7 @@ void ProcessManager::send_heartbeat_check(const std::string& name) {
 }
 
 void ProcessManager::enable_health_monitoring(bool enable) {
-    (void)enable;
-    // TODO: add dedicated health monitor thread/toggle when implemented.
+    health_monitoring = enable;
 }
 
 std::string ProcessManager::get_health_report() {
@@ -674,10 +1163,18 @@ void ProcessManager::start_all() {
 }
 
 void ProcessManager::stop_all() {
-    for (auto& [name, info] : processes) {
-        if (info.state == ProcessState::RUNNING) {
-            stop_process(name);
+    std::vector<std::string> names;
+    {
+        std::lock_guard<std::mutex> lock(manager_mutex);
+        for (const auto& [name, info] : processes) {
+            if (info.state == ProcessState::RUNNING) {
+                names.push_back(name);
+            }
         }
+    }
+
+    for (const auto& name : names) {
+        stop_process(name);
     }
 }
 
@@ -687,16 +1184,33 @@ void ProcessManager::run() {
     
     // Main event loop
     while (running) {
-        // Process messages from all channels
-        for (auto& [name, channel] : channels) {
+        // Iterating the channel map directly raced with register_process()
+        // (which inserts into it). Snapshot the raw channel pointers under the
+        // lock instead: entries outlive the loop, only shutdown() clears them.
+        std::vector<ICommChannel*> active;
+        {
+            std::lock_guard<std::mutex> lock(manager_mutex);
+            active.reserve(channels.size());
+            for (auto& [key, channel] : channels) {
+                (void)key;
+                active.push_back(channel.get());
+            }
+        }
+
+        for (ICommChannel* channel : active) {
             Message msg;
-            if (channel->receive(msg, 100)) {
-                std::string error;
-                if (MessageValidator::validate_message(msg, error)) {
-                    router->route_message(msg);
-                } else {
-                    std::cerr << "Invalid message: " << error << std::endl;
-                }
+            if (!channel->receive(msg, 100)) {
+                continue;
+            }
+            if (!msg.valid) {
+                std::cerr << "Dropped unparseable message" << std::endl;
+                continue;
+            }
+            std::string error;
+            if (MessageValidator::validate_message(msg, error)) {
+                router->route_message(msg);
+            } else {
+                std::cerr << "Invalid message: " << error << std::endl;
             }
         }
         
@@ -706,12 +1220,32 @@ void ProcessManager::run() {
 
 void ProcessManager::shutdown() {
     running = false;
+    shutting_down = true;
     stop_all();
-    
+
+    // Wait for every monitor thread (including any spawned by a restart while
+    // we were stopping) so nothing outlives the manager.
+    while (true) {
+        std::thread worker;
+        {
+            std::lock_guard<std::mutex> lock(manager_mutex);
+            if (monitor_threads.empty()) {
+                break;
+            }
+            worker = std::move(monitor_threads.back());
+            monitor_threads.pop_back();
+        }
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(manager_mutex);
     for (auto& [name, channel] : channels) {
+        (void)name;
         channel->close();
     }
-    
+
     channels.clear();
     processes.clear();
 }

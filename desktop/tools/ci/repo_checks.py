@@ -14,7 +14,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -160,16 +163,109 @@ def check_python_syntax() -> None:
     ok(f"{count} Python files compile")
 
 
-def check_headless_docs() -> None:
-    """The headless story must be documented, since it is a supported mode."""
-    readme = os.path.join(REPO_ROOT, "README.md")
-    with open(readme, "r", encoding="utf-8") as handle:
-        content = handle.read()
+def _read(path: str) -> str:
+    with open(path, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def check_docs() -> None:
+    """Headless, weak-model and safety documentation must exist and stay linked.
+
+    These are user-facing promises: a mode nobody documented is a mode that does
+    not work, and the action surface is only usable by a small model if the
+    parameter shapes are written down.
+    """
+    readme_path = os.path.join(REPO_ROOT, "README.md")
+    readme = _read(readme_path)
     for needle in ("NEURO_HEADLESS", "shell_command"):
-        if needle not in content:
+        if needle not in readme:
             fail(f"README.md does not mention {needle}")
             return
-    ok("README documents headless operation")
+
+    for name, needles in (
+        ("docs/LLM_GUIDE.md", ("game_move", "/api/actions", "get_status")),
+        ("docs/SAFETY.md", ("NEURO_SHELL_ALLOWLIST", "kill switch", "default_allow")),
+    ):
+        path = os.path.join(REPO_ROOT, name)
+        if not os.path.exists(path):
+            fail(f"{name} is missing")
+            continue
+        content = _read(path).lower()
+        missing = [needle for needle in needles if needle.lower() not in content]
+        if missing:
+            fail(f"{name} does not mention {', '.join(missing)}")
+            continue
+        if name not in readme:
+            fail(f"README.md does not link to {name}")
+            continue
+
+    ok("README documents headless mode and links the LLM + safety guides")
+
+
+def check_process_handler_standalone() -> None:
+    """Compile and run the dependency-free process-handler test suite.
+
+    This is the suite that actually runs in CI; the GoogleTest files next to it
+    need a network FetchContent of googletest and are advisory only.
+    """
+    app_dir = os.path.join(REPO_ROOT, "desktop", "apps", "process-handler")
+    compiler = shutil.which("g++") or shutil.which("clang++") or shutil.which("c++")
+    if compiler is None:
+        ok("process-handler C++ tests skipped (no C++ compiler on PATH)")
+        return
+
+    test_source = os.path.join(app_dir, "tests", "test_standalone.cpp")
+    if not os.path.exists(test_source):
+        fail("desktop/apps/process-handler/tests/test_standalone.cpp is missing")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        binary = os.path.join(tmp, "process-handler-tests")
+        compile_cmd = [
+            compiler,
+            "-std=c++17",
+            "-pthread",
+            "-Isrc",
+            "-o",
+            binary,
+            os.path.join("src", "process_handler.cpp"),
+            os.path.join("tests", "test_standalone.cpp"),
+        ]
+        compiled = subprocess.run(
+            compile_cmd, cwd=app_dir, capture_output=True, text=True, timeout=300
+        )
+        if compiled.returncode != 0:
+            fail("process-handler does not compile: "
+                 + (compiled.stderr or compiled.stdout).strip().splitlines()[-1])
+            return
+
+        ran = subprocess.run([binary], capture_output=True, text=True, timeout=180)
+        if ran.returncode != 0:
+            tail = (ran.stdout + ran.stderr).strip().splitlines()
+            fail("process-handler tests failed: " + (tail[-1] if tail else "no output"))
+            return
+
+    ok("process-handler C++ tests pass (parser, validator, lifecycle)")
+
+
+def check_ollama_brain_tests() -> None:
+    """The Ollama "brain" parser must pass without optional dependencies."""
+    tool_dir = os.path.join(REPO_ROOT, "desktop", "tools", "ollama-neuro")
+    if not os.path.isdir(tool_dir):
+        fail("desktop/tools/ollama-neuro is missing")
+        return
+    ran = subprocess.run(
+        [sys.executable, "-m", "unittest", "test_brain.py"],
+        cwd=tool_dir,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    if ran.returncode != 0:
+        tail = (ran.stdout + ran.stderr).strip().splitlines()
+        fail("ollama-neuro brain tests failed: " + (tail[-1] if tail else "no output"))
+        return
+    ok("ollama-neuro brain tests pass (no aiohttp required)")
 
 
 def check_file_sizes() -> None:
@@ -195,7 +291,9 @@ def main() -> int:
     check_example_policies_match()
     check_catalog()
     check_python_syntax()
-    check_headless_docs()
+    check_process_handler_standalone()
+    check_ollama_brain_tests()
+    check_docs()
     check_file_sizes()
 
     print()
