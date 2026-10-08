@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from .launcher import LaunchError, launch_target
 from .platform_intents import apply_intent, supported_intents
+from .shell import ShellDeniedError, ShellTimeoutError, run as run_shell_command
 
 if TYPE_CHECKING:
     from .controls.keyboard import KeyboardController
@@ -37,6 +38,9 @@ class ActionParser:
         self.mouse = mouse
         self.monitor = monitor
         self.platform = platform
+        # Populated by SHELL lines so a caller can read the transcript back.
+        self.last_shell_output = ""
+        self.shell_cwd = None
 
     # ------------------------
     # Public API
@@ -136,6 +140,10 @@ class ActionParser:
         # -------- System --------
         elif cmd == "LAUNCH":
             self._launch(tokens)
+
+        # -------- Command line (headless-friendly) --------
+        elif cmd == "SHELL":
+            self._shell(tokens)
 
         # -------- Shared --------
         elif cmd == "WAIT":
@@ -281,6 +289,15 @@ class ActionParser:
         try:
             launch_target(target, platform=self.platform)
         except LaunchError as exc:
+            raise ActionParseError(str(exc)) from exc
+
+    def _shell(self, tokens: List[str]):
+        if len(tokens) < 2:
+            raise ActionParseError('SHELL "command line"')
+        command = " ".join(tokens[1:])
+        try:
+            self.last_shell_output = run_shell_command(command, cwd=self.shell_cwd)
+        except (ShellDeniedError, ShellTimeoutError) as exc:
             raise ActionParseError(str(exc)) from exc
 
     def release_all(self):

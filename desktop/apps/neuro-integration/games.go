@@ -574,7 +574,7 @@ func (g *GameRuntime) cachedDetection() (GameDetected, bool) {
 
 // inputAllowed decides whether Neuro Desktop may inject input for a game
 // action, given the profile's control mode and (in hybrid mode) the action list.
-func inputAllowed(profile *GameProfile, session *GameSession, actionKey string) error {
+func inputAllowed(profile *GameProfile, session *GameSession, actionKey string, relay *RelayState) error {
 	if profile == nil {
 		return fmt.Errorf("no game profile is active; call game_start_session first")
 	}
@@ -588,26 +588,17 @@ func inputAllowed(profile *GameProfile, session *GameSession, actionKey string) 
 	case ControlModeND, ControlModeAuto:
 		return nil
 	case ControlModeExternal:
-		owner := profile.Control.ExternalName
-		if owner == "" {
-			owner = profile.ID
-		}
-		return fmt.Errorf(
-			"this game is controlled by the %q integration, so Neuro Desktop will not inject input (%s). Use that integration's actions, or game_observe to look at the screen",
-			owner, actionKey)
+		return fmt.Errorf("this game is controlled by the %q integration, so Neuro Desktop will not inject input (%s). %s",
+			ownerFor(profile), actionKey, externalDelegationHint(relay, ownerFor(profile)))
 	case ControlModeHybrid:
 		for _, allowed := range profile.Control.NDActions {
 			if strings.EqualFold(allowed, actionKey) {
 				return nil
 			}
 		}
-		owner := profile.Control.ExternalName
-		if owner == "" {
-			owner = profile.ID
-		}
 		return fmt.Errorf(
-			"%s is outside Neuro Desktop's hybrid allow-list for %s (the %q integration owns input)",
-			actionKey, profile.Name, owner)
+			"%s is outside Neuro Desktop's hybrid allow-list for %s (the %q integration owns input). %s",
+			actionKey, profile.Name, ownerFor(profile), externalDelegationHint(relay, ownerFor(profile)))
 	default:
 		return fmt.Errorf("unknown control mode %q for profile %s", mode, profile.ID)
 	}
@@ -668,4 +659,31 @@ func (p *GameProfile) GameControlSummary() string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// ownerFor names the integration that owns a game, falling back to the profile id.
+func ownerFor(profile *GameProfile) string {
+	if profile.Control.ExternalName != "" {
+		return profile.Control.ExternalName
+	}
+	return profile.ID
+}
+
+// externalDelegationHint tells Neuro what to do instead when another
+// integration owns the game. When the Neuro Relay link has seen that
+// integration's action list, the hint names real actions to call; otherwise it
+// says plainly that the operator has to describe them.
+func externalDelegationHint(relay *RelayState, owner string) string {
+	base := "Call that integration's own actions instead (Neuro sees them directly when the relay is running), " +
+		"or use game_observe to look at the screen."
+	if relay == nil {
+		return base
+	}
+	if hint := relay.peerActionHint(owner); hint != "" {
+		return hint + " " + base
+	}
+	if hint := relay.peerActionHint(strings.ToLower(owner)); hint != "" {
+		return hint + " " + base
+	}
+	return base
 }

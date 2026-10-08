@@ -1,7 +1,11 @@
 import time
-import pyautogui
 from typing import List, Optional, Union
 from ..desktop import DesktopMonitor
+from ..gui_stub import NoDisplayError, load_pyautogui
+
+# On a machine with no display this is a stub whose input calls raise a readable
+# NoDisplayError instead of taking the whole controller down at import time.
+pyautogui = load_pyautogui()
 
 
 KEY_ALIASES = {
@@ -194,6 +198,10 @@ class KeyboardController:
             except Exception:
                 pass
             self.held_keys.discard(key)
+
+    @property
+    def headless(self) -> bool:
+        return isinstance(pyautogui, type(None)) or bool(getattr(pyautogui, "_headless_stub", False))
 
     def wait(self, seconds: float):
         self.monitor.record_action(

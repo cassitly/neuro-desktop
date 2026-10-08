@@ -415,3 +415,48 @@ func TestWrapExecutionResult(t *testing.T) {
 		t.Fatalf("failures should not be reported as ok: %+v", wrapped)
 	}
 }
+
+// TestAllActionSpecsCoversEverySurface keeps the dashboard in step with what
+// the bridge actually registers: the shell, the guide and the game interface
+// are all grantable, so all three must be listed.
+func TestAllActionSpecsCoversEverySurface(t *testing.T) {
+	names := map[string]bool{}
+	for _, spec := range allActionSpecs() {
+		names[string(spec.Name)] = true
+	}
+
+	for _, want := range []string{
+		string(CmdShellCommand),
+		string(CmdDesktopGuide),
+		string(CmdGameMove),
+		string(CmdMouseMove),
+		string(CmdSendDesktopContext),
+	} {
+		if !names[want] {
+			t.Fatalf("allActionSpecs() is missing %q (dashboard would hide it)", want)
+		}
+	}
+
+	// Every listed action must map to a known scope, otherwise the dashboard
+	// shows "unknown" and the operator cannot reason about the gate.
+	for _, spec := range allActionSpecs() {
+		scope := actionScopeName(string(spec.Name))
+		if scope == "unknown" {
+			t.Fatalf("action %q has no permission scope", spec.Name)
+		}
+	}
+}
+
+// TestScopeRequiresExplicitConsent pins the dangerous scopes.
+func TestScopeRequiresExplicitConsent(t *testing.T) {
+	for _, scope := range []PermissionScope{ScopeShell, ScopeSystem} {
+		if !scopeRequiresExplicitConsent(scope) {
+			t.Fatalf("%s must require explicit consent", scope)
+		}
+	}
+	for _, scope := range []PermissionScope{ScopeInput, ScopeGame, ScopeVision, ScopeProcess, ScopeNetwork, ScopeFilesystem} {
+		if scopeRequiresExplicitConsent(scope) {
+			t.Fatalf("%s should be toggleable without being named in the policy", scope)
+		}
+	}
+}

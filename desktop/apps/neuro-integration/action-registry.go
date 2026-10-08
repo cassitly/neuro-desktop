@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +58,14 @@ const (
 
 	// Raw input primitives the game layer needs (relative look, held keys,
 	// key combinations, held mouse buttons, and a safety release-everything).
+	// Self-documentation for small models.
+	CmdDesktopGuide CommandType = "desktop_guide"
+
+	// Shell capability (headless-friendly: this is what Neuro can do on a
+	// command-line-only machine). Guarded by the `shell` scope and the shell
+	// firewall, and never enabled by the shipped example policy.
+	CmdShellCommand CommandType = "shell_command"
+
 	CmdMoveMouseRelative CommandType = "move_mouse_relative"
 	CmdKeyHoldFor        CommandType = "key_hold_for"
 	CmdKeyReleaseAll     CommandType = "key_release_all"
@@ -307,6 +316,31 @@ var HLActionSpecs = []actionSpec{
 	},
 }
 
+// ShellActionSpecs is registered independently of the high/low level switch:
+// a headless machine has no high-level intents, but it does have a shell.
+var ShellActionSpecs = []actionSpec{
+	{
+		Name: CmdShellCommand,
+		Description: `Run one command line on the controlled machine and return its exit code and output. ` +
+			`Use this on headless/command-line-only machines, or for terminal work. ` +
+			`The program must be on the shell allowlist. Example: {"command": "ls -la"}`,
+		Schema: neuro.WrapSchema(map[string]interface{}{
+			"command": map[string]interface{}{
+				"type":        "string",
+				"description": "The full command line to run, e.g. \"ls -la\" or \"python3 --version\"",
+			},
+			"cwd": map[string]interface{}{
+				"type":        "string",
+				"description": "Optional working directory; defaults to NEURO_SHELL_CWD or the executor's directory",
+			},
+			"timeout": map[string]interface{}{
+				"type":        "number",
+				"description": "How long to wait, in seconds (default 20, maximum 120)",
+			},
+		}, []string{"command"}),
+	},
+}
+
 var LLActionSpecs = []actionSpec{
 	{
 		Name:        DisableLLControls,
@@ -454,9 +488,23 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 	a.integration.stats.noteAction(name)
 
 	policy := a.integration.policy()
+
+	// Pause flag and kill switch come first: they must hold even if the policy
+	// was just widened from the dashboard.
+	if reason := a.integration.stop.blockReason(name); reason != "" {
+		a.integration.stats.noteDenied(name)
+		a.integration.audit.record("action", map[string]interface{}{
+			"action": name, "decision": "refused", "reason": "stopped",
+		})
+		return nil, neuro.NewFailureResult(reason)
+	}
+
 	if policy != nil && !policy.IsAllowed(name) {
 		a.integration.stats.noteDenied(name)
-		return nil, neuro.NewFailureResult(fmt.Sprintf("Action denied by policy: %s", name))
+		a.integration.audit.record("action", map[string]interface{}{
+			"action": name, "decision": "refused", "reason": "policy",
+		})
+		return nil, neuro.NewFailureResult(policyDenialMessage(name, policy))
 	}
 
 	// Per-scope rate limit, before any work is queued.
@@ -472,7 +520,12 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 
 	params := map[string]interface{}{}
 	if err := neuro.ParseActionData(data, &params); err != nil {
-		return nil, neuro.NewFailureResult("Invalid action parameters")
+		return nil, neuro.NewFailureResult(fmt.Sprintf(
+			"Invalid parameters for %s: the data must be a JSON object like %s. (Underlying error: %v)",
+			name, a.expectedParamsHint(), err))
+	}
+	if reason := a.missingParamsReason(params); reason != "" {
+		return nil, neuro.NewFailureResult(reason)
 	}
 
 	executeNow := getBoolParam(params, "execute_now", true)
@@ -480,6 +533,15 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 
 	if a.spec.Kind == actionKindGame {
 		return a.handleGameAction(params)
+	}
+
+	if a.spec.Name == CmdShellCommand {
+		return a.handleShellCommand(params)
+	}
+
+	if a.spec.Name == CmdDesktopGuide {
+		topic, _ := params["topic"].(string)
+		return nil, a.integration.desktopGuide(topic)
 	}
 
 	// Fast in-process actions: answer Neuro immediately (API best practice).
@@ -583,6 +645,10 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 		return nil, neuro.NewFailureResult(err.Error())
 	}
 
+	a.integration.audit.record("action", map[string]interface{}{
+		"action": name, "decision": "accepted",
+	})
+
 	return pendingWork{cmd: &cmd}, neuro.NewSuccessResult("accepted")
 }
 
@@ -670,6 +736,17 @@ func (a *IPCProxyAction) Execute(state interface{}) {
 				message = "Command failed"
 			}
 			result = neuro.NewFailureResult(message)
+		} else if output, ok := resp.Data["output"].(string); ok && strings.TrimSpace(output) != "" {
+			// Long-running commands (shell_command, taskkill via run_script, ...)
+			// finish after the action result was acknowledged. The transcript is
+			// the whole point of those actions, so send it back as context
+			// instead of dropping it.
+			_ = a.integration.client.SendContext(
+				fmt.Sprintf("## %s output\n\n```text\n%s\n```",
+					a.GetName(), strings.TrimSpace(output)),
+				true,
+			)
+			return
 		} else {
 			return
 		}
@@ -821,6 +898,25 @@ func buildIPCCommand(
 			ClearAfter: clearAfter,
 		}, nil
 
+	case CmdShellCommand:
+		command, ok := params["command"].(string)
+		if !ok || strings.TrimSpace(command) == "" {
+			return IPCCommand{}, fmt.Errorf("command is required")
+		}
+		cmdParams := map[string]interface{}{
+			"command": strings.TrimSpace(command),
+			"timeout": shellTimeoutSeconds(numericParam(params, "timeout")),
+		}
+		if cwd, _ := params["cwd"].(string); strings.TrimSpace(cwd) != "" {
+			cmdParams["cwd"] = strings.TrimSpace(cwd)
+		} else if cwd, err := shellCWD(); err == nil && cwd != "" {
+			cmdParams["cwd"] = cwd
+		}
+		return IPCCommand{
+			Type:   CmdShellCommand,
+			Params: cmdParams,
+		}, nil
+
 	case CmdClearActionQueue:
 		return IPCCommand{
 			Type:       CmdClearActionQueue,
@@ -830,4 +926,79 @@ func buildIPCCommand(
 	}
 
 	return IPCCommand{}, fmt.Errorf("unknown action: %s", action)
+}
+
+// numericParam reads a JSON number (or numeric string) parameter.
+func numericParam(params map[string]interface{}, key string) float64 {
+	switch value := params[key].(type) {
+	case float64:
+		return value
+	case string:
+		var parsed float64
+		if _, err := fmt.Sscanf(strings.TrimSpace(value), "%f", &parsed); err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+// handleShellCommand applies the shell firewall, then queues the command.
+//
+// The Python executor checks the same rules again: a watcher or a hand-written
+// script must not be able to skip this gate.
+func (a *IPCProxyAction) handleShellCommand(params map[string]interface{}) (interface{}, neuro.ExecutionResult) {
+	command, _ := params["command"].(string)
+	if err := checkShellCommand(command); err != nil {
+		return nil, neuro.NewFailureResult(err.Error())
+	}
+
+	cmd, err := buildIPCCommand(CmdShellCommand, params, true, true)
+	if err != nil {
+		return nil, neuro.NewFailureResult(err.Error())
+	}
+
+	// The command line itself is the interesting part of a shell audit entry.
+	a.integration.audit.record("action", map[string]interface{}{
+		"action": string(CmdShellCommand), "decision": "accepted", "command": command,
+	})
+
+	return pendingWork{cmd: &cmd}, neuro.NewSuccessResult("accepted")
+}
+
+// expectedParamsHint renders the action's schema properties so a weak model that
+// sent the wrong shape is told the right one instead of just "invalid".
+func (a *IPCProxyAction) expectedParamsHint() string {
+	if a.spec.Schema != nil && len(a.spec.Schema.Properties) > 0 {
+		keys := make([]string, 0, len(a.spec.Schema.Properties))
+		for key := range a.spec.Schema.Properties {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		hint := "{" + strings.Join(keys, ", ") + "}"
+		if len(a.spec.Schema.Required) > 0 {
+			hint += " (required: " + strings.Join(a.spec.Schema.Required, ", ") + ")"
+		}
+		return hint
+	}
+	return "{} (this action takes no parameters)"
+}
+
+// missingParamsReason reports empty required parameters with their names, which
+// is the single most common way a small model fails a call.
+func (a *IPCProxyAction) missingParamsReason(params map[string]interface{}) string {
+	if a.spec.Schema == nil {
+		return ""
+	}
+	for _, key := range a.spec.Schema.Required {
+		value, present := params[key]
+		if !present || value == nil {
+			return fmt.Sprintf("%s needs the parameter %q. Call it again with %s.",
+				a.spec.Name, key, a.expectedParamsHint())
+		}
+		if text, ok := value.(string); ok && strings.TrimSpace(text) == "" {
+			return fmt.Sprintf("%s received an empty %q. Call it again with a value, e.g. %s.",
+				a.spec.Name, key, a.expectedParamsHint())
+		}
+	}
+	return ""
 }

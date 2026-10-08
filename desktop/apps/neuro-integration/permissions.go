@@ -21,6 +21,8 @@ const (
 	// ScopeGame covers the high-level game interface (playing a game that has
 	// no dedicated integration).
 	ScopeGame PermissionScope = "game"
+	// ScopeShell covers running command lines (headless machines, terminal work).
+	ScopeShell PermissionScope = "shell"
 )
 
 // ScopeLimits are the per-scope knobs the dashboard exposes. Only the rate
@@ -95,6 +97,9 @@ type PermissionPolicy struct {
 	allowed      map[string]struct{}
 	denied       map[string]struct{}
 	scopes       map[PermissionScope]ScopeConfig
+	// hardDeny comes from NEURO_DENY_ACTIONS and outranks both lists: it is the
+	// operator's "not even if the dashboard says so".
+	hardDeny map[string]bool
 }
 
 type permissionPolicyFile struct {
@@ -151,6 +156,14 @@ var actionScope = map[string]PermissionScope{
 	string(CmdShutdownGracefully):  ScopeSystem,
 	string(CmdShutdownImmediately): ScopeSystem,
 
+	// The guide is read-only information, so it rides the vision scope (on by
+	// default) — a weak model must always be able to ask how to use this thing.
+	string(CmdDesktopGuide): ScopeVision,
+
+	// Shell: denied in the shipped example policy, and additionally fenced by
+	// the shell allowlist/denylist firewall.
+	string(CmdShellCommand): ScopeShell,
+
 	// Game interface. Observing is read-only (vision); driving the game is
 	// input; launching a game is system (denied by default).
 	string(CmdGameListProfiles): ScopeGame,
@@ -182,19 +195,25 @@ func defaultPermissionPolicy() *PermissionPolicy {
 			ScopeSystem:     {Allowed: false},
 			ScopeVision:     {Allowed: true},
 			ScopeGame:       {Allowed: true},
+			// A default install must not hand out a shell.
+			ScopeShell: {Allowed: false},
 		},
 	}
 }
 
 func loadPermissionPolicy(path string) (*PermissionPolicy, error) {
 	if path == "" {
-		return defaultPermissionPolicy(), nil
+		policy := defaultPermissionPolicy()
+		policy.applyHardDeny(hardDeniedActions())
+		return policy, nil
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return defaultPermissionPolicy(), nil
+			policy := defaultPermissionPolicy()
+			policy.applyHardDeny(hardDeniedActions())
+			return policy, nil
 		}
 		return nil, fmt.Errorf("failed to read permissions file %s: %w", path, err)
 	}
@@ -205,6 +224,7 @@ func loadPermissionPolicy(path string) (*PermissionPolicy, error) {
 	}
 
 	policy := defaultPermissionPolicy()
+	policy.applyHardDeny(hardDeniedActions())
 	if parsed.DefaultAllow != nil {
 		policy.DefaultAllow = bool(*parsed.DefaultAllow)
 	}
@@ -259,24 +279,50 @@ func (p *PermissionPolicy) ScopeConfigs() map[PermissionScope]ScopeConfig {
 		return out
 	}
 	for _, scope := range []PermissionScope{
-		ScopeInput, ScopeGame, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision,
+		ScopeInput, ScopeGame, ScopeShell, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision,
 	} {
 		out[scope] = p.scopes[scope]
 	}
 	return out
 }
 
+// scopeRequiresExplicitConsent marks the scopes that must be enabled by name.
+// shell and system can wipe a machine or run arbitrary programs, so a policy
+// that merely lists the action (or sets default_allow) does not enable them.
+func scopeRequiresExplicitConsent(scope PermissionScope) bool {
+	switch scope {
+	case ScopeShell, ScopeSystem:
+		return true
+	}
+	return false
+}
+
 func knownScope(scope PermissionScope) bool {
 	switch scope {
-	case ScopeInput, ScopeGame, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision:
+	case ScopeInput, ScopeGame, ScopeShell, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision:
 		return true
 	}
 	return false
 }
 
 func (p *PermissionPolicy) IsAllowed(action string) bool {
+	// The hard deny list outranks everything, including an explicit allow.
+	if p.hardDenied(action) {
+		return false
+	}
+
 	// Deny list always wins.
 	if _, denied := p.denied[action]; denied {
+		return false
+	}
+
+	// The dangerous scopes are checked before the explicit allow list: a bare
+	// allow-list entry (or default_allow) must not hand out a shell or system
+	// control. The operator has to turn those scopes on deliberately.
+	if scope, ok := actionScope[action]; ok && scopeRequiresExplicitConsent(scope) {
+		if cfg, ok := p.scopes[scope]; ok {
+			return cfg.Allowed
+		}
 		return false
 	}
 

@@ -148,7 +148,7 @@ func TestDetectWithoutMatch(t *testing.T) {
 
 func TestInputAllowedArbitration(t *testing.T) {
 	ndProfile := &GameProfile{ID: "game", Control: GameControl{Mode: ControlModeND}}
-	if err := inputAllowed(ndProfile, nil, "game_move"); err != nil {
+	if err := inputAllowed(ndProfile, nil, "game_move", nil); err != nil {
 		t.Fatalf("nd mode should allow input: %v", err)
 	}
 
@@ -156,7 +156,7 @@ func TestInputAllowedArbitration(t *testing.T) {
 		ID:      "stardew",
 		Control: GameControl{Mode: ControlModeExternal, ExternalName: "stardew-integration"},
 	}
-	err := inputAllowed(external, nil, "game_move")
+	err := inputAllowed(external, nil, "game_move", nil)
 	if err == nil {
 		t.Fatal("external mode must refuse input")
 	}
@@ -168,14 +168,14 @@ func TestInputAllowedArbitration(t *testing.T) {
 		ID:      "stardew",
 		Control: GameControl{Mode: ControlModeHybrid, NDActions: []string{"game_observe"}, ExternalName: "stardew-integration"},
 	}
-	if err := inputAllowed(hybrid, nil, "game_observe"); err != nil {
+	if err := inputAllowed(hybrid, nil, "game_observe", nil); err != nil {
 		t.Fatalf("hybrid mode should allow listed actions: %v", err)
 	}
-	if err := inputAllowed(hybrid, nil, "game_move"); err == nil {
+	if err := inputAllowed(hybrid, nil, "game_move", nil); err == nil {
 		t.Fatal("hybrid mode must refuse actions outside the allow-list")
 	}
 
-	if err := inputAllowed(nil, nil, "game_move"); err == nil {
+	if err := inputAllowed(nil, nil, "game_move", nil); err == nil {
 		t.Fatal("input without a profile must be refused")
 	}
 }

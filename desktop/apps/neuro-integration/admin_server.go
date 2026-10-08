@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +31,7 @@ type AdminServer struct {
 	token       string
 
 	mu       sync.Mutex
+	listener net.Listener
 	requests int
 	lastErr  string
 }
@@ -57,9 +61,25 @@ func (a *AdminServer) routes() *http.ServeMux {
 	mux.HandleFunc("/api/games/release", a.guard(a.handleGameRelease))
 	mux.HandleFunc("/api/games/observe", a.guard(a.handleGameObserve))
 	mux.HandleFunc("/api/relay", a.guard(a.handleRelay))
+	// Operator brake: pause/resume and the kill switch, plus the audit tail.
+	mux.HandleFunc("/api/control", a.guard(a.handleControl))
+	mux.HandleFunc("/api/control/pause", a.guard(a.handleControlPause))
+	mux.HandleFunc("/api/control/resume", a.guard(a.handleControlResume))
+	mux.HandleFunc("/api/audit", a.guard(a.handleAudit))
 	mux.HandleFunc("/api/config", a.handleConfig)
 	mux.HandleFunc("/", a.handleUI)
 	return mux
+}
+
+// Addr returns the address the dashboard is actually listening on, which
+// differs from the configured one when port 0 was requested.
+func (a *AdminServer) Addr() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.listener != nil {
+		return a.listener.Addr().String()
+	}
+	return a.addr
 }
 
 func (a *AdminServer) Start() error {
@@ -68,17 +88,22 @@ func (a *AdminServer) Start() error {
 		return err
 	}
 
+	a.mu.Lock()
+	a.listener = listener
+	a.mu.Unlock()
+
 	if !isLoopbackAddr(a.addr) && a.token == "" {
 		log.Printf("WARNING: dashboard is listening on %s without NEURO_ADMIN_TOKEN; destructive API calls are refused until a token is set", a.addr)
 	}
+
+	log.Printf("Operator dashboard on http://%s/ui/", a.Addr())
 
 	go func() {
 		server := &http.Server{
 			Handler:           a.routes(),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
-		log.Printf("Operator dashboard on http://%s/", a.addr)
-		if err := server.Serve(listener); err != nil {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("Admin server stopped: %v", err)
 		}
 	}()
@@ -204,6 +229,9 @@ func (a *AdminServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		},
 		"relay":   integration.relay.status(),
 		"actions": integration.stats.snapshot(),
+		"control": integration.stop.status(),
+		"audit":   integration.audit.status(),
+		"safety":  integration.safetySnapshot(),
 		"admin": map[string]interface{}{
 			"listen":         a.addr,
 			"token_required": a.token != "",
@@ -261,12 +289,16 @@ func allActionSpecs() []actionSpec {
 	specs = append(specs, HLActionSpecs...)
 	specs = append(specs, LLActionSpecs...)
 	specs = append(specs, gameActionSpecs()...)
+	// The shell and the self-documentation guide are part of the surface the
+	// dashboard can grant, so they must show up here too.
+	specs = append(specs, ShellActionSpecs...)
+	specs = append(specs, guideActionSpecs()...)
 	return specs
 }
 
 func allScopes() []PermissionScope {
 	return []PermissionScope{
-		ScopeInput, ScopeGame, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision,
+		ScopeInput, ScopeGame, ScopeShell, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision,
 	}
 }
 
@@ -771,6 +803,15 @@ func (a *AdminServer) dashboardToken(r *http.Request) string {
 func resolveFrontendRoot() (string, error) {
 	candidates := []string{}
 
+	// An explicit override wins: packaging puts the UI somewhere specific, and
+	// it makes the search deterministic for tests and for a custom build.
+	if override := strings.TrimSpace(os.Getenv("NEURO_UI_DIR")); override != "" {
+		if info, err := os.Stat(filepath.Join(override, "index.html")); err == nil && !info.IsDir() {
+			return override, nil
+		}
+		return "", fmt.Errorf("NEURO_UI_DIR=%s does not contain index.html", override)
+	}
+
 	// An explicit override wins: useful for a custom build or a packaged UI
 	// placed outside the executable's directory.
 	if override := strings.TrimSpace(os.Getenv("NEURO_UI_DIR")); override != "" {
@@ -798,4 +839,125 @@ func resolveFrontendRoot() (string, error) {
 	}
 
 	return "", fmt.Errorf("no frontend/dist/index.html in any of: %s", strings.Join(candidates, ", "))
+}
+
+// ---------------------------------------------------------------
+// Operator brake
+// ---------------------------------------------------------------
+
+func (a *AdminServer) handleControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Use GET /api/control.")
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"ok":      true,
+		"control": a.integration.stop.status(),
+		"audit":   a.integration.audit.status(),
+	})
+}
+
+func (a *AdminServer) handleControlPause(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Use POST /api/control/pause.")
+		return
+	}
+	a.integration.stop.setPaused(true)
+	a.integration.audit.record("control", map[string]interface{}{"paused": true, "source": "dashboard"})
+	writeJSON(w, map[string]interface{}{
+		"ok":      true,
+		"paused":  true,
+		"message": "Paused: every action except input release and status is refused until you resume.",
+	})
+}
+
+func (a *AdminServer) handleControlResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Use POST /api/control/resume.")
+		return
+	}
+	a.integration.stop.setPaused(false)
+	a.integration.audit.record("control", map[string]interface{}{"paused": false, "source": "dashboard"})
+	writeJSON(w, map[string]interface{}{
+		"ok":      true,
+		"paused":  false,
+		"message": "Resumed.",
+	})
+}
+
+// handleAudit returns the tail of the audit log so the dashboard can show what
+// happened without shell access to the file.
+func (a *AdminServer) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Use GET /api/audit.")
+		return
+	}
+
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 1000 {
+			limit = parsed
+		}
+	}
+
+	path := strings.TrimSpace(os.Getenv("NEURO_AUDIT_LOG"))
+	if path == "" {
+		writeJSON(w, map[string]interface{}{
+			"ok":      true,
+			"enabled": false,
+			"entries": []interface{}{},
+			"message": "Set NEURO_AUDIT_LOG to record action decisions.",
+		})
+		return
+	}
+
+	entries, truncated, err := tailJSONLines(path, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"ok":        true,
+		"enabled":   true,
+		"path":      path,
+		"truncated": truncated,
+		"entries":   entries,
+	})
+}
+
+// tailJSONLines reads at most the last `limit` lines of a file and parses them
+// as JSON objects, returning the newest last.
+func tailJSONLines(path string, limit int) ([]map[string]interface{}, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []map[string]interface{}{}, false, nil
+		}
+		return nil, false, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	ring := make([]map[string]interface{}, 0, limit)
+	truncated := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		entry := map[string]interface{}{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if len(ring) == limit {
+			ring = ring[1:]
+			truncated = true
+		}
+		ring = append(ring, entry)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, truncated, err
+	}
+	return ring, truncated, nil
 }

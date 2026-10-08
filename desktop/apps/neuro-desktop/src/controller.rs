@@ -130,6 +130,39 @@ impl Controller {
         .map_err(Into::into)
     }
 
+    /// True when the controlled machine has no display session (or the operator
+    /// forced headless mode). Reported by get_status so the bridge, the dashboard
+    /// and Neuro can tell why input actions are unavailable.
+    pub fn is_headless(&self) -> bool {
+        Python::with_gil(|py| {
+            py.import_bound("controller.gui_stub")
+                .and_then(|module| module.getattr("is_headless")?.call0())
+                .and_then(|value| value.extract::<bool>())
+                .unwrap_or(false)
+        })
+    }
+
+    /// Run one command line through the Python shell capability.
+    ///
+    /// The Python side enforces the allowlist/denylist firewall again and
+    /// returns a transcript; both a refusal and a non-zero exit come back as
+    /// text, because the model needs to read the exit status.
+    pub fn run_shell(
+        &self,
+        command: &str,
+        cwd: Option<&str>,
+        timeout: Option<f64>,
+    ) -> Result<String> {
+        Python::with_gil(|py| {
+            let lib = py.import_bound("controller.lib")?;
+            let result = lib
+                .getattr("run_shell")?
+                .call1((command, cwd, timeout))?;
+            Ok::<String, PyErr>(result.extract::<String>()?)
+        })
+        .map_err(Into::into)
+    }
+
     pub fn clear_action_queue(&self) -> Result<()> {
         Python::with_gil(|py| {
             self.mouse.bind(py).getattr("clear")?.call0()?;

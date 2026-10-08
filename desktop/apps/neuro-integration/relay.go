@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -132,38 +133,42 @@ type RelayState struct {
 	lastError  string
 	lastEvent  string
 	lastSeen   time.Time
-	// Peers are integration names the relay told us about.
-	peers map[string]string
-	stop  chan struct{}
-	done  chan struct{}
+	// Peers are integration names the relay told us about, and the action names
+	// each peer registered (namespaced "<peer>.<action>" as the relay does).
+	peers       map[string]string
+	peerActions map[string][]string
+	stop        chan struct{}
+	done        chan struct{}
 	// owner is the integration this relay link belongs to (set during wiring).
 	owner *NDIntegration
 }
 
 func newRelayState(cfg RelayConfig) *RelayState {
 	return &RelayState{
-		cfg:   cfg,
-		peers: map[string]string{},
-		stop:  make(chan struct{}),
-		done:  make(chan struct{}),
+		cfg:         cfg,
+		peers:       map[string]string{},
+		peerActions: map[string][]string{},
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 }
 
 // RelayStatus is the JSON shape used by the dashboard.
 type RelayStatus struct {
-	Enabled      bool              `json:"enabled"`
-	URL          string            `json:"url,omitempty"`
-	Connected    bool              `json:"connected"`
-	Registered   bool              `json:"registered"`
-	PeerCount    int               `json:"peer_count"`
-	Peers        map[string]string `json:"peers,omitempty"`
-	Restarts     int               `json:"process_restarts"`
-	LastError    string            `json:"last_error,omitempty"`
-	LastEvent    string            `json:"last_event,omitempty"`
-	LastSeen     string            `json:"last_seen,omitempty"`
-	ManagedByUs  bool              `json:"process_managed_here"`
-	Reserved     []string          `json:"reserved_actions,omitempty"`
-	SupervisedBy string            `json:"supervised_by,omitempty"`
+	Enabled      bool                `json:"enabled"`
+	URL          string              `json:"url,omitempty"`
+	Connected    bool                `json:"connected"`
+	Registered   bool                `json:"registered"`
+	PeerCount    int                 `json:"peer_count"`
+	Peers        map[string]string   `json:"peers,omitempty"`
+	PeerActions  map[string][]string `json:"peer_actions,omitempty"`
+	Restarts     int                 `json:"process_restarts"`
+	LastError    string              `json:"last_error,omitempty"`
+	LastEvent    string              `json:"last_event,omitempty"`
+	LastSeen     string              `json:"last_seen,omitempty"`
+	ManagedByUs  bool                `json:"process_managed_here"`
+	Reserved     []string            `json:"reserved_actions,omitempty"`
+	SupervisedBy string              `json:"supervised_by,omitempty"`
 }
 
 func (r *RelayState) status() RelayStatus {
@@ -190,6 +195,12 @@ func (r *RelayState) status() RelayStatus {
 		out.Peers = map[string]string{}
 		for name, kind := range r.peers {
 			out.Peers[name] = kind
+		}
+	}
+	if len(r.peerActions) > 0 {
+		out.PeerActions = map[string][]string{}
+		for name, actions := range r.peerActions {
+			out.PeerActions[name] = append([]string{}, actions...)
 		}
 	}
 	if !r.lastSeen.IsZero() {
@@ -249,6 +260,63 @@ func (r *RelayState) dropPeer(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.peers, name)
+	delete(r.peerActions, name)
+}
+
+// notePeerActions records the action names an integration told the relay about.
+// The relay forwards them to watchers; knowing them lets this bridge tell Neuro
+// which peer actions to call instead of trying to move the game itself.
+func (r *RelayState) notePeerActions(name string, actions []string) {
+	if r == nil || name == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.peerActions[name] = append([]string{}, actions...)
+	r.lastSeen = time.Now()
+}
+
+// peerActionHint renders "integration owns actions a, b, c" for a message to
+// Neuro, limited so the text stays short.
+func (r *RelayState) peerActionHint(peer string) string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	own := r.peerActions[peer]
+	if len(own) == 0 {
+		// fall back to any registered peer actions, since integrations often
+		// register before the watcher sees the connection event
+		for _, actions := range r.peerActions {
+			if len(actions) > 0 {
+				own = actions
+				break
+			}
+		}
+	}
+	if len(own) == 0 {
+		return ""
+	}
+
+	const limit = 8
+	shown := own
+	suffix := ""
+	if len(shown) > limit {
+		shown = shown[:limit]
+		suffix = fmt.Sprintf(" (and %d more)", len(own)-limit)
+	}
+	return "Its registered actions are: " + strings.Join(shown, ", ") + suffix + "."
+}
+
+// isSelf reports whether a relay peer name is this bridge's own registration,
+// which the relay echoes back to every watcher.
+func (r *RelayState) isSelf(name string) bool {
+	if r == nil || name == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(r.cfg.Name))
 }
 
 func (r *RelayState) isRunning() bool {
@@ -420,6 +488,13 @@ func (r *RelayState) sleep(d time.Duration) bool {
 	}
 }
 
+// isTimeout reports whether the error is a read deadline (normal when the relay
+// has nothing to say during registration).
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
 func nextBackoff(current, max time.Duration) time.Duration {
 	next := current * 2
 	if next > max {
@@ -435,6 +510,7 @@ func (r *RelayState) setConnectionState(connected bool, registered bool) {
 	r.registered = registered
 	if !connected {
 		r.peers = map[string]string{}
+		r.peerActions = map[string][]string{}
 	}
 }
 
@@ -461,16 +537,44 @@ func (r *RelayState) runSession() error {
 		return fmt.Errorf("relay registration failed: %w", err)
 	}
 
+	// The relay validates the first message and either answers with an error
+	// frame and closes, or stays quiet / sends an event. Reading it here is what
+	// turns a wrong token from an unexplained drop into a clear log line.
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, first, err := conn.ReadMessage()
+	_ = conn.SetReadDeadline(time.Time{})
+	if err == nil {
+		var reply map[string]interface{}
+		if json.Unmarshal(first, &reply) == nil {
+			if raw, ok := reply["error"]; ok {
+				return fmt.Errorf("relay rejected the registration: %v "+
+					"(check NEURO_RELAY_TOKEN against intermediary.auth_token in the relay's authentication.yaml)", raw)
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+			r.handleRelayMessage(reply)
+			_ = conn.SetReadDeadline(time.Time{})
+		}
+	} else if !isTimeout(err) {
+		return fmt.Errorf("relay closed the connection during registration: %w", err)
+	}
+
 	r.setConnectionState(true, true)
 	r.noteEvent("registered", nil)
 	log.Printf("Registered with Neuro Relay as %q at %s", r.cfg.Name, r.cfg.endpoint())
 
-	// Announce which actions Neuro Desktop provides so the relay can build its
-	// unified action context for Neuro.
-	if actions := r.actionSummary(); len(actions) > 0 {
+	// Announce which actions Neuro Desktop provides.
+	//
+	// The relay's intermediary keeps `actions` as a name -> schema mapping
+	// (`for act_name, schema in actions.items()` in intermediary.py) and
+	// namespaces it as "<integration>.<action>", so send exactly that shape.
+	// Note: the relay only forwards registrations made by Neuro-SDK clients on
+	// its backend socket to the real Neuro; this registration is what watchers
+	// (Neuro-OS) see, and it also stops a peer from reusing our names.
+	if actions := r.actionSchemas(); len(actions) > 0 {
 		_ = conn.WriteJSON(map[string]interface{}{
 			"event":   "register_actions",
 			"actions": actions,
+			"count":   len(actions),
 		})
 	}
 
@@ -514,10 +618,18 @@ func (r *RelayState) handleRelayMessage(envelope map[string]interface{}) {
 		switch event {
 		case "integration_connected":
 			name, _ := envelope["name"].(string)
+			// The relay announces every connection to every watcher, including
+			// our own: never count ourselves as a coexisting integration.
+			if r.isSelf(name) {
+				break
+			}
 			r.notePeer(name, "integration")
 			log.Printf("Relay: integration %q connected", name)
 		case "integration_disconnected":
 			name, _ := envelope["name"].(string)
+			if r.isSelf(name) {
+				break
+			}
 			r.dropPeer(name)
 			log.Printf("Relay: integration %q disconnected", name)
 		case "neuroos_connected":
@@ -530,6 +642,17 @@ func (r *RelayState) handleRelayMessage(envelope map[string]interface{}) {
 		case "integration_message":
 			from, _ := envelope["from"].(string)
 			r.notePeer(from, "integration")
+			// An integration's own register_actions message reaches watchers as
+			// an integration_message; keep the action names.
+			if payload, ok := envelope["payload"].(map[string]interface{}); ok {
+				if payload["event"] == "register_actions" {
+					r.notePeerActions(from, actionNamesFrom(payload["actions"]))
+				}
+			}
+		case "integration_registered_actions":
+			from, _ := envelope["from"].(string)
+			r.notePeer(from, "integration")
+			r.notePeerActions(from, actionNamesFrom(envelope["actions"]))
 		}
 		// Events still may carry a command (see below).
 	}
@@ -561,9 +684,23 @@ func (r *RelayState) executeRelayCommand(from string, cmd map[string]interface{}
 		return
 	}
 
+	// The operator brake outranks the policy here too: a watcher must not be
+	// able to drive the desktop while it is paused or killed.
+	if reason := integration.stop.blockReason(name); reason != "" {
+		integration.stats.noteDenied(name)
+		integration.audit.record("relay_command", map[string]interface{}{
+			"action": name, "from": from, "decision": "refused", "reason": "stopped",
+		})
+		log.Printf("Relay: refused %q from %q (%s)", name, from, reason)
+		return
+	}
+
 	policy := integration.policy()
 	if policy != nil && !policy.IsAllowed(name) {
 		integration.stats.noteDenied(name)
+		integration.audit.record("relay_command", map[string]interface{}{
+			"action": name, "from": from, "decision": "refused", "reason": "policy",
+		})
 		log.Printf("Relay: refused %q from %q (denied by policy)", name, from)
 		return
 	}
@@ -616,15 +753,29 @@ func (r *RelayState) gameProfileCount() int {
 }
 
 // actionSummary lists the Neuro-facing actions this build provides.
-func (r *RelayState) actionSummary() map[string]string {
+func (r *RelayState) actionSchemas() map[string]interface{} {
 	integration := r.integration()
 	if integration == nil {
 		return nil
 	}
 
-	out := map[string]string{}
-	for _, spec := range append(append(HLActionSpecs, LLActionSpecs...), gameActionSpecs()...) {
-		out[string(spec.Name)] = spec.Description
+	out := map[string]interface{}{}
+	specs := append(append(append([]actionSpec{}, HLActionSpecs...), LLActionSpecs...), gameActionSpecs()...)
+	specs = append(specs, ShellActionSpecs...)
+	specs = append(specs, guideActionSpecs()...)
+	for _, spec := range specs {
+		if r.reservedSet()[strings.ToLower(string(spec.Name))] {
+			continue
+		}
+		entry := map[string]interface{}{
+			"name":        string(spec.Name),
+			"description": spec.Description,
+			"kind":        string(spec.Kind),
+		}
+		if spec.Schema != nil {
+			entry["schema"] = spec.Schema
+		}
+		out[string(spec.Name)] = entry
 	}
 	return out
 }
@@ -650,4 +801,31 @@ func (r *RelayState) ReservedActionNames() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// actionNamesFrom accepts either a list of names, a list of action objects, or
+// the name -> schema mapping this bridge sends, and returns the names.
+func actionNamesFrom(raw interface{}) []string {
+	var names []string
+
+	switch value := raw.(type) {
+	case []interface{}:
+		for _, item := range value {
+			switch entry := item.(type) {
+			case string:
+				names = append(names, entry)
+			case map[string]interface{}:
+				if name, ok := entry["name"].(string); ok && name != "" {
+					names = append(names, name)
+				}
+			}
+		}
+	case map[string]interface{}:
+		for name := range value {
+			names = append(names, name)
+		}
+	}
+
+	sort.Strings(names)
+	return names
 }

@@ -64,8 +64,8 @@ func gameActionSpecs() []actionSpec {
 				},
 				"mode": map[string]interface{}{
 					"type":        "string",
-					"enum":        []interface{}{"nd", "external", "hybrid"},
-					"description": "Override the profile's control mode for this session",
+					"enum":        []interface{}{"auto", "nd", "external", "hybrid"},
+					"description": "Override the profile's control mode for this session. auto hands the game to the dedicated integration when it is connected, otherwise Neuro Desktop drives it",
 				},
 			}, nil),
 		},
@@ -443,9 +443,13 @@ func (n *NDIntegration) startGameSession(profileID string, launch bool, modeOver
 		switch GameControlMode(modeOverride) {
 		case ControlModeND, ControlModeExternal, ControlModeHybrid:
 			mode = GameControlMode(modeOverride)
+		case ControlModeAuto:
+			// "auto" is a valid operator choice: hand the game to the dedicated
+			// integration when it is connected, otherwise drive it here.
+			mode = n.resolveAutoMode(profile)
 		default:
 			return neuro.NewFailureResult(fmt.Sprintf(
-				"Unknown control mode %q (use nd, external or hybrid)", modeOverride))
+				"Unknown control mode %q (use auto, nd, external or hybrid)", modeOverride))
 		}
 	}
 
@@ -552,7 +556,7 @@ func (n *NDIntegration) currentProfile() *GameProfile {
 func (n *NDIntegration) guardGameInput(actionKey string) (*GameProfile, *GameSession, neuro.ExecutionResult, bool) {
 	profile := n.currentProfile()
 	session := n.games.Session()
-	if err := inputAllowed(profile, session, actionKey); err != nil {
+	if err := inputAllowed(profile, session, actionKey, n.relay); err != nil {
 		return nil, session, neuro.NewFailureResult(err.Error()), false
 	}
 	if n.games.rateLimited(profile.Control.MaxActionsPerMin) {

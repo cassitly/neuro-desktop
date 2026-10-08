@@ -1,7 +1,10 @@
-import pyautogui
 import time
 from typing import List, Optional, Tuple, Union
 from ..desktop import DesktopMonitor
+from ..gui_stub import load_pyautogui
+
+# Real pyautogui when there is a display, a stub that explains itself when not.
+pyautogui = load_pyautogui()
 
 Point = Tuple[int, int]
 

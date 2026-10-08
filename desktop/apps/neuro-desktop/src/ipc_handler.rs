@@ -86,6 +86,11 @@ pub enum IPCCommand {
         clear_after: bool,
     },
     KeyReleaseAll,
+    /// Run one command line through the Python shell capability. Unlike the
+    /// input commands this returns data (the transcript) to the bridge.
+    ShellCommand {
+        params: ShellCommandParams,
+    },
     ExecuteQueue,
     ClearActionQueue,
     GetStatus {
@@ -164,6 +169,24 @@ impl IPCCommand {
                     anyhow::bail!("Hold duration must be between 0 and 30 seconds");
                 }
             }
+            Self::ShellCommand { params } => {
+                if params.command.trim().is_empty() {
+                    anyhow::bail!("command is required");
+                }
+                if params.command.len() > 4000 {
+                    anyhow::bail!("Command too long (max 4000 characters)");
+                }
+                if let Some(timeout) = params.timeout {
+                    if !(0.0..=120.0).contains(&timeout) || timeout <= 0.0 {
+                        anyhow::bail!("Shell timeout must be between 0 and 120 seconds");
+                    }
+                }
+                if let Some(cwd) = params.cwd.as_deref() {
+                    if cwd.trim().is_empty() {
+                        anyhow::bail!("cwd must not be empty when present");
+                    }
+                }
+            }
             Self::GetStatus { params } => {
                 if params.max_open_windows == 0 || params.max_open_windows > 200 {
                     anyhow::bail!("max_open_windows must be between 1 and 200");
@@ -231,6 +254,15 @@ pub struct MouseHoldForParams {
     #[serde(default)]
     pub button: Option<String>,
     pub seconds: f64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ShellCommandParams {
+    pub command: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub timeout: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -613,6 +645,25 @@ impl IPCHandler {
 
             IPCCommand::KeyReleaseAll => controller.release_all_input(),
 
+            IPCCommand::ShellCommand { params } => {
+                // The transcript goes back to the bridge inside `data`, because
+                // this is the one command whose whole purpose is its output.
+                return match controller.run_shell(
+                    &params.command,
+                    params.cwd.as_deref(),
+                    params.timeout,
+                ) {
+                    Ok(output) => IPCResponse::success_with_data(serde_json::json!({
+                        "output": output,
+                        "command": params.command,
+                    })),
+                    Err(e) => IPCResponse::failure(format!(
+                        "Shell command refused or failed: {:#}",
+                        e
+                    )),
+                };
+            }
+
             IPCCommand::ExecuteQueue => controller.execute_instructions(),
 
             IPCCommand::ClearActionQueue => controller.clear_action_queue(),
@@ -670,6 +721,10 @@ impl IPCHandler {
                 return IPCResponse::success_with_data(serde_json::json!({
                     "status": "running",
                     "timestamp": current_timestamp(),
+                    // On a headless machine there is no window, cursor or
+                    // screenshot; saying so here is what lets the bridge and
+                    // Neuro pick shell_command instead of guessing.
+                    "headless": controller.is_headless(),
                     "active_window": active_window,
                     "open_windows": open_windows,
                     "screen": screen,

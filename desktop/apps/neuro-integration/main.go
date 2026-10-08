@@ -57,6 +57,8 @@ func NewNDIntegration(opts IntegrationOptions) (*NDIntegration, error) {
 		contextStopChan: make(chan struct{}),
 		games:           newGameRuntime(loadGameRegistry()),
 		stats:           newBridgeStats(),
+		stop:            newStopSwitch(),
+		audit:           newAuditor(),
 		startedAt:       time.Now(),
 	}
 
@@ -130,7 +132,14 @@ func (n *NDIntegration) Start() error {
 
 	n.startContextLoop()
 
-	return n.registerActions()
+	if err := n.registerActions(); err != nil {
+		return err
+	}
+
+	// Last: a compact how-to-use-me sheet. Weak models rely on it, and it is
+	// silent so it does not disturb the conversation.
+	n.sendStartupGuide()
+	return nil
 }
 
 func (n *NDIntegration) Close() error {

@@ -70,6 +70,11 @@ func (n *NDIntegration) registerActions() error {
 	if registerGame {
 		specs = append(specs, gameActionSpecs()...)
 	}
+	// Same for the shell: on a headless machine it is the main capability.
+	specs = append(specs, ShellActionSpecs...)
+	// The guide is always registered: it is the cheapest way to make a small
+	// model pick the right action.
+	specs = append(specs, guideActionSpecs()...)
 
 	for _, spec := range specs {
 		if !specAllowed(spec, reserved) {

@@ -82,14 +82,141 @@ Neuro Desktop is a **bridge + executor** stack. Per the
 
 Co-located (default): `./neuro-desktop` still spawns the bridge beside itself.
 
+### Operator dashboard
+
+The bridge serves the dashboard itself — no separate server, no `file://` page:
+
+```
+http://127.0.0.1:8300/ui/
+```
+
+- **Extensions** — install / enable / disable / uninstall from the catalog
+  (`desktop/catalog/index.json`), with the install mode (metadata, git clone, MCP).
+- **Games** — profiles found on this machine, the game detected right now, the live
+  session (mode, actions issued), "show me what Neuro sees", and a
+  **release all input** panic button.
+- **Permissions** — scopes (input, game, filesystem, process, network, system,
+  vision), per-scope actions-per-minute limits, and explicit allow/deny lists.
+  `Save` applies the policy to the running bridge immediately.
+- **Status** — version, executor connection, relay peers, reserved actions, paths.
+
+Writes are guarded by `NEURO_ADMIN_TOKEN`. The dashboard pages served to a local
+browser carry the token as `window.__ND_BOOTSTRAP`; from another machine, paste it
+into the Status tab. Reads stay open on loopback so `curl http://127.0.0.1:8300/api/status`
+works while debugging.
+
+Try it without a display, a Windows box, or pyautogui — the repo ships a protocol
+simulator that never touches your real mouse or keyboard:
+
+```bash
+# Terminal 1: pretend to be the executor (reports "Minecraft" as the active window)
+python3 desktop/tools/fake-executor/fake_executor.py --addr 127.0.0.1:9876
+
+# Terminal 2: the bridge + dashboard
+cd desktop/apps/neuro-integration
+NEURO_UI_DIR=../frontend/dist NEURO_ADMIN_TOKEN=demo go run .
+```
+
+### Playing games
+
+Neuro Desktop can play a game two ways, and picks the right one per game:
+
+1. **Alongside a dedicated integration** (Minecraft, osu!, ...). The game keeps its
+   own integration; Neuro Desktop does not register the actions that integration
+   owns (`NEURO_RESERVED_ACTIONS`, relay peers) and refuses to send input while the
+   session is delegated (`control.mode: external`).
+2. **On its own**, for anything without an integration: Neuro Desktop supplies the
+   high-level interface (`game_list_profiles`, `game_detect`, `game_start_session`,
+   `game_move`, `game_look`, `game_action`, `game_press`, `game_observe`, ...), using
+   the profile's keybinds and masked keys.
+
+Profiles live in `desktop/catalog/games/*.json` (see
+[the profile README](desktop/catalog/games/README.md)); ship one profile per game:
+
+```json
+{
+  "id": "minecraft",
+  "name": "Minecraft",
+  "match": { "window_titles": ["Minecraft"], "processes": ["javaw"] },
+  "control": { "mode": "auto", "external_integration": "minecraft",
+               "mouse_look": { "enabled": true }, "move_hold_seconds": 0.6 },
+  "keys": { "forward": "w", "jump": "space" }
+}
+```
+
+`mode: auto` hands the game to the dedicated integration when it is connected
+(through the relay) and drives it from Neuro Desktop otherwise. Override it per
+session from the dashboard or with the `mode` parameter of `game_start_session`
+(`auto`, `nd`, `external`, `hybrid`). `generic-keyboard-mouse.json` is the fallback
+profile for games nobody wrote a profile for.
+
+### Headless machines (no display, command line only)
+
+Neuro Desktop runs on a server, container, SSH session or CI runner with no
+graphical session. Nothing has to be installed for it: mouse and keyboard
+libraries are loaded only when a display actually exists, and `NEURO_HEADLESS`
+forces the mode either way.
+
+```bash
+# A CLI-only box: no X/Wayland, no pyautogui/pynput/mss needed
+export NEURO_HEADLESS=1                    # optional: auto-detected when DISPLAY is unset
+export NEURO_SHELL_ALLOWLIST="ls,cat,python3,git"   # programs Neuro may run (empty = none)
+export NEURO_SHELL_TIMEOUT=20              # seconds per command (max 120)
+export NEURO_SHELL_CWD=/srv/work
+export NEURO_ADMIN_TOKEN="pick-a-secret"   # required before exposing the dashboard
+
+cd desktop/apps/neuro-integration && go run .
+```
+
+What changes on a headless machine:
+
+- **`shell_command` is the capability that matters.** Neuro runs one command line
+  per call and gets the exit code plus truncated stdout/stderr back, which is what
+  a weak model needs to decide the next step: `shell_command {"command": "ls -la"}`.
+- Mouse, keyboard, screenshot and game actions answer with a clear message
+  ("no display session ... use the shell_command action") instead of crashing the
+  controller at import time, which is what used to happen.
+- `get_status` still reports platform, processes (from `/proc`, `psutil` optional)
+  and screen size; there is simply no cursor or window to report.
+- The dashboard, permissions, relay and game *registry* all work exactly as on a
+  desktop, so Neuro can be pointed at a headless build during development.
+
+The shell is fenced three times: the `shell` scope (off in every shipped example
+policy, and not enabled by `default_allow`), the allowlist/denylist firewall, and
+the same checks again inside the Python executor. Destructive patterns (`rm -rf /`,
+`mkfs`, `shutdown`, `curl ... | sh`, `sudo`, `diskpart`, ...) are refused even when
+the program is allowlisted; `NEURO_SHELL_DENYLIST` adds the operator's own
+patterns.
+
+### Seeing what it did (audit log) and stopping it
+
+Two operator safety systems sit in front of every action:
+
+```bash
+export NEURO_PAUSED=1                              # start paused
+export NEURO_KILL_SWITCH_FILE=/run/nd/STOP         # actions refuse while this file exists
+export NEURO_AUDIT_LOG=/var/log/neuro-desktop.jsonl # one JSON line per decision
+export NEURO_DENY_ACTIONS="type_text,key_press"     # a hard deny list the dashboard cannot undo
+```
+
+- `POST /api/control/pause` and `POST /api/control/resume` toggle the brake from
+  the dashboard; `GET /api/control` shows the current state, and input release /
+  status / session-end actions are always allowed so nothing stays stuck down.
+- The kill-switch file is checked once per second; creating it stops action
+  execution immediately and removing it resumes. Actions answer with the reason
+  and the file name, so a model knows to wait rather than retry.
+- `GET /api/audit?limit=100` returns the tail of the audit log
+  (`{"time","event","action","decision","reason"}`); `NEURO_DENY_ACTIONS` is
+  merged into the policy at load time and survives dashboard edits.
+
 ### Component Breakdown
 
 | Component | Language | Role |
 |-----------|----------|------|
-| **neuro-integration** | Go | Bridge: Neuro API, permissions, action registry |
+| **neuro-integration** | Go | Bridge: Neuro API, permissions, game interface, dashboard API |
 | **neuro-desktop** | Rust | Executor orchestrator, IPC, process lifecycle |
 | **controller** | Python | Input control, script parsing, platform intents |
-| **frontend** | TypeScript | Operator UI (permissions export → `permissions.json`) |
+| **frontend** | TypeScript | Operator dashboard, served by the bridge at `/ui/` |
 | **process-handler** | C++ | Optional multi-process supervisor |
 
 ## Quick Start
@@ -237,6 +364,17 @@ $env:NEURO_VISION_SERVER_URL = "http://127.0.0.1:8080/infer"
 $env:NEURO_EXTENSION_INSTALL_MODE = "metadata_only"
 $env:NEURO_EXTENSION_DIR = "./plugins"
 $env:NEURO_UI_LAUNCH = "true"
+$env:NEURO_UI_DIR = "./desktop/frontend/dist"      # dashboard build to serve
+$env:NEURO_ADMIN_TOKEN = "change-me"               # required for dashboard writes
+$env:NEURO_EXECUTOR_TOKEN = "change-me"            # required when the hub is exposed
+$env:NEURO_GAME_PROFILES_DIR = "./desktop/catalog/games"
+$env:NEURO_RESERVED_ACTIONS = "move_mouse_to,osu_click"   # owned by other integrations
+$env:NEURO_HEADLESS = ""                     # 1 = no display (auto-detected on Linux without DISPLAY)
+$env:NEURO_SHELL_ALLOWLIST = "ls,python3"    # programs shell_command may run (empty = none)
+$env:NEURO_SHELL_TIMEOUT = "20"              # seconds per command (max 120)
+$env:NEURO_AUDIT_LOG = "./neuro-desktop.jsonl"
+$env:NEURO_KILL_SWITCH_FILE = "./STOP"       # actions refuse while this file exists
+$env:NEURO_DENY_ACTIONS = "type_text"        # hard deny list the dashboard cannot undo
 
 # Linux/macOS
 export NEURO_SDK_WS_URL="ws://localhost:8000"
@@ -252,10 +390,23 @@ export NEURO_VISION_SERVER_URL="http://127.0.0.1:8080/infer"
 export NEURO_EXTENSION_INSTALL_MODE="metadata_only"
 export NEURO_EXTENSION_DIR="./plugins"
 export NEURO_UI_LAUNCH="true"
+export NEURO_UI_DIR="./desktop/frontend/dist"
+export NEURO_ADMIN_TOKEN="change-me"
+export NEURO_EXECUTOR_TOKEN="change-me"
+export NEURO_GAME_PROFILES_DIR="./desktop/catalog/games"
+export NEURO_RESERVED_ACTIONS="move_mouse_to,osu_click"
+export NEURO_HEADLESS=""                     # 1 = no display (auto-detected on Linux without DISPLAY)
+export NEURO_SHELL_ALLOWLIST="ls,python3"    # programs shell_command may run (empty = none)
+export NEURO_SHELL_TIMEOUT="20"              # seconds per command (max 120)
+export NEURO_AUDIT_LOG="./neuro-desktop.jsonl"
+export NEURO_KILL_SWITCH_FILE="./STOP"       # actions refuse while this file exists
+export NEURO_DENY_ACTIONS="type_text"        # hard deny list the dashboard cannot undo
 ```
 
-Use [`permissions.example.json`](desktop/apps/neuro-integration/permissions.example.json) as a starting policy.
-Set `NEURO_RELAY_BINARY` to an explicit relay executable path if the binary is not in the same folder as `neuro-desktop.exe`.
+Use [`permissions.example.json`](desktop/apps/neuro-integration/permissions.example.json) as a starting policy (it ships with the
+`game` scope enabled, `game_launch` denied and the `shell` scope off, so Neuro can play
+but cannot start programs or run command lines).
+A scope value may be written as `"game": true` or `"game": {"allowed": true, "limits": {"max_actions_per_minute": 120}}`.
 Use `NEURO_EXTENSION_INSTALL_MODE=git_clone` if you want extension installation to clone repositories from GitHub.
 
 ## Development
@@ -277,6 +428,18 @@ On CPU laptops (e.g. Dell Latitude E7490), cold model load can take minutes —
 use `--warm` / `--keep-alive -1`, or stay on `manual`/`random` while wiring IPC.
 Details: [`desktop/tools/ollama-neuro/README.md`](desktop/tools/ollama-neuro/README.md).
 
+### Fake executor (no display needed)
+
+`desktop/tools/fake-executor/fake_executor.py` speaks the executor protocol against
+the bridge and never generates input, so the dashboard, the permission checks and
+the game interface can be exercised on any machine (including CI and macOS):
+
+```bash
+python3 desktop/tools/fake-executor/fake_executor.py --addr 127.0.0.1:9876
+```
+
+Run it before the bridge to see the executor as *connected* and a game as detected.
+
 ### Docker Modular Tests
 
 Run modular tests in Docker:
@@ -286,26 +449,54 @@ docker compose -f docker-compose.tests.yml run --rm go-integration-tests
 docker compose -f docker-compose.tests.yml run --rm python-parser-tests
 ```
 
-### Optional Relay Build/Bundling
+### Coexistence with other integrations (Neuro Relay)
 
-If you have Neuro Relay source locally, set:
-
-```bash
-# PowerShell
-$env:NEURO_RELAY_SOURCE_DIR = "C:\\path\\to\\neuro-relay"
-
-# bash
-export NEURO_RELAY_SOURCE_DIR="/path/to/neuro-relay"
-```
-
-Then run:
+[Neuro Relay](https://github.com/Nakashireyumi/neuro-relay) multiplexes several
+integrations behind one Neuro connection. Neuro Desktop participates as a relay
+*integration* — it does not spawn the relay, which is a Python service with its own
+YAML config:
 
 ```bash
-cd desktop
-./scripts/build-all.ps1
+export NEURO_RELAY_ENABLED=true
+export NEURO_RELAY_URL="ws://127.0.0.1:8765"     # relay intermediary socket
+export NEURO_RELAY_TOKEN="super-secret-token"    # intermediary.auth_token
+export NEURO_RELAY_NAME="Neuro Desktop"
+export NEURO_RESERVED_ACTIONS="minecraft_place_block,osu_click"
 ```
 
-The build script will compile relay and pass it to the bundle scripts automatically.
+There are two ways to coexist, and they are complementary:
+
+1. **Share one Neuro connection (recommended for games).** Point the bridge's own
+   Neuro API client at the relay's Nakurity Backend instead of at Neuro
+   (`NEURO_SDK_WS_URL=ws://127.0.0.1:8001`, the `nakurity-backend` port in the
+   relay's `authentication.yaml`). The bridge then looks like any other Neuro SDK
+   client to the relay: it sends `startup` (`game: "Neuro Desktop"`) and
+   `actions/register`, and the relay multiplexes everything to the real backend.
+   This is the path that makes "run alongside an existing game integration" work
+   with no extra configuration.
+2. **Look in on / be driven by the relay (operator visibility).** With
+   `NEURO_RELAY_ENABLED=true` the bridge registers on the relay's intermediary
+   socket (`ws://127.0.0.1:8765`) as `{"type":"integration","name":...,
+   "auth_token":...}`, publishes its action schemas, and accepts `cmd` envelopes
+   from Neuro-OS watchers — each one still subject to the same permission policy,
+   pause flag and kill switch as Neuro's own calls. Note that the relay's
+   intermediary keeps registrations for watchers; it does not forward them to
+   Neuro, which is exactly why mode 1 exists.
+
+Reserved names are neither registered with Neuro nor accepted from the dashboard
+(the dashboard refuses to add them to the allow list): they belong to another
+integration, and shadowing them is how two integrations end up fighting over the
+same key. When Neuro asks to play a game that a relay peer owns, the refusal names
+that peer's registered actions instead of leaving the model stuck:
+
+```
+game_move -> "this game is controlled by the "minecraft" integration ...
+               Its registered actions are: minecraft.move_forward, minecraft.jump, ..."
+```
+
+Relay status (peers, their actions, reserved names, last error) is on the
+dashboard's Status tab and at `/api/relay`. The protocol shapes are pinned by
+`relay_protocol_test.go`, which speaks what `intermediary.py` actually speaks.
 
 ### Supervised Runtime (Process Handler)
 

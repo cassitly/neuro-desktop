@@ -38,6 +38,11 @@ type NDIntegration struct {
 	// stats powers the dashboard's counters.
 	stats *BridgeStats
 
+	// stop is the operator's brake: pause flag plus an optional kill-switch file.
+	stop *stopSwitch
+	// audit records action decisions when NEURO_AUDIT_LOG is configured.
+	audit *auditor
+
 	startedAt time.Time
 }
 
