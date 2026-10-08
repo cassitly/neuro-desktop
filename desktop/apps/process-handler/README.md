@@ -237,7 +237,7 @@ TEST_F(ProcessManagerTest, RegisterProcess) {
 
 Run tests:
 ```bash
-cd native/process-handler/build
+cd apps/process-handler/build
 ctest --output-on-failure
 ```
 
@@ -533,7 +533,7 @@ std::cout << "Success rate: "
 ## Support
 
 For issues or questions:
-- GitHub: https://github.com/Nakashireyumi/neuro-desktop
+- GitHub: https://github.com/cassitly/neuro-desktop
 - Documentation: See `/docs` folder
 - Tests: See `/tests` folder
 

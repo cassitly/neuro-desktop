@@ -727,7 +727,7 @@ func (a *IPCProxyAction) Execute(state interface{}) {
 	case work.scriptIntent != "":
 		result = a.integration.executeScriptIntent(work.scriptIntent)
 	case work.cmd != nil:
-		resp, err := a.integration.sendToRust(*work.cmd)
+		resp, err := a.integration.sendToExecutor(*work.cmd)
 		if err != nil {
 			result = neuro.NewFailureResult(fmt.Sprintf("executor error: %v", err))
 		} else if !resp.Success {
@@ -769,7 +769,7 @@ func (a *IPCProxyAction) Execute(state interface{}) {
 // leave a key stuck down.
 func (a *IPCProxyAction) executeGameCommands(work pendingWork) neuro.ExecutionResult {
 	for _, cmd := range work.gameCommands {
-		resp, err := a.integration.sendToRust(cmd)
+		resp, err := a.integration.sendToExecutor(cmd)
 		if err != nil {
 			a.integration.releaseAllInput()
 			return neuro.NewFailureResult(fmt.Sprintf("executor error: %v", err))

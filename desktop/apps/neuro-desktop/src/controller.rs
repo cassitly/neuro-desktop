@@ -4,8 +4,6 @@ use pyo3::types::PyTuple;
 use serde_json::Value;
 use std::env;
 
-use rust_core::paths::get_python_packages_path;
-
 pub struct Controller {
     monitor: Py<PyAny>,
     mouse: Py<PyAny>,
@@ -30,7 +28,14 @@ impl Controller {
                 Ok(())
             };
 
-            let runtime_python_root = get_python_packages_path();
+            // Bundled Python runtime lives next to the executable. This used to
+            // come from a separate helper crate; a five-line path join is not
+            // worth a second crate and a second build step
+            // (see docs/ARCHITECTURE.md).
+            let runtime_python_root = env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join("python")))
+                .unwrap_or_else(|| std::path::PathBuf::from("python"));
             add_path(runtime_python_root.clone())?;
             add_path(runtime_python_root.join("Lib"))?;
             add_path(runtime_python_root.join("Lib").join("site-packages"))?;

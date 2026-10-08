@@ -9,8 +9,9 @@ import (
 	"time"
 )
 
-// fakeExecutor is a stand-in for the Rust executor: it performs the hello
-// handshake and answers commands the way the real client does.
+// fakeExecutor is a stand-in for the executor (the Python agent in
+// desktop/backend/python/controller/agent.py): it performs the hello
+// handshake and answers commands and pings the way the real client does.
 type fakeExecutor struct {
 	t       *testing.T
 	conn    net.Conn
@@ -19,6 +20,7 @@ type fakeExecutor struct {
 
 	mu       sync.Mutex
 	commands []IPCCommand
+	pings    int
 	// nacked is set when the hub refused this client's hello.
 	nacked bool
 }
@@ -92,6 +94,9 @@ func (f *fakeExecutor) serve() {
 
 		switch env.Type {
 		case "ping":
+			f.mu.Lock()
+			f.pings++
+			f.mu.Unlock()
 			_ = f.write(map[string]interface{}{"type": "pong", "id": env.ID})
 		case "command":
 			var cmd IPCCommand
@@ -118,6 +123,12 @@ func (f *fakeExecutor) serve() {
 			})
 		}
 	}
+}
+
+func (f *fakeExecutor) seenPings() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pings
 }
 
 func (f *fakeExecutor) seenCommands() []IPCCommand {

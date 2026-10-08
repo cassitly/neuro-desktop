@@ -70,7 +70,7 @@ node --version
 ### Clone Repository
 
 ```bash
-git clone https://github.com/Nakashireyumi/neuro-desktop.git
+git clone https://github.com/cassitly/neuro-desktop.git
 cd neuro-desktop/desktop
 ```
 

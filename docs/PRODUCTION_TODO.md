@@ -4,64 +4,64 @@ Last verified: 2026-03-09
 
 ## GitHub Issues Verification
 
-### `Nakashireyumi/neuro-desktop` (14 open)
+### `Nakashireyumi/neuro-desktop` (upstream tracker; 14 open at the time of writing)
 
-1. [#22](https://github.com/Nakashireyumi/neuro-desktop/issues/22) `Fix critical bugs and code quality issues from PR #19 review`
+1. [#22](https://github.com/cassitly/neuro-desktop/issues/22) `Fix critical bugs and code quality issues from PR #19 review`
    - Status: likely stale for this branch.
    - Verification: references files from older layout (`repository-setup.js`, legacy python client) that are not part of the current Rust/Go/Python rewrite tree.
 
-2. [#21](https://github.com/Nakashireyumi/neuro-desktop/issues/21) `Actions that enables the keyboard fails`
+2. [#21](https://github.com/cassitly/neuro-desktop/issues/21) `Actions that enables the keyboard fails`
    - Status: partially fixed in this fork.
    - Fixes here: key validation in Python keyboard controller + Rust IPC now propagates execution/clear failures instead of silently discarding them.
    - Remaining: end-to-end test against live desktop interaction.
 
-3. [#20](https://github.com/Nakashireyumi/neuro-desktop/issues/20) `Implement Permissions System for Neuro Desktop`
+3. [#20](https://github.com/cassitly/neuro-desktop/issues/20) `Implement Permissions System for Neuro Desktop`
    - Status: partially fixed in this fork.
    - Fixes here: policy file support (`NEURO_PERMISSIONS_FILE`) with allow/deny/default behavior and action-level enforcement in Go integration.
    - Remaining: richer scopes (filesystem/process/network), UI policy editor, signed policy distribution.
 
-4. [#16](https://github.com/Nakashireyumi/neuro-desktop/issues/16) `UI token synchronization issues`
+4. [#16](https://github.com/cassitly/neuro-desktop/issues/16) `UI token synchronization issues`
    - Status: partially fixed in this fork.
    - Fixes here: optional bundled relay runtime (`NEURO_RELAY_ENABLED`) with automatic process supervision and restart.
    - Remaining: UI token synchronization flow and relay-first UX defaults.
 
-5. [#15](https://github.com/Nakashireyumi/neuro-desktop/issues/15) `Neuro Desktop SDK`
+5. [#15](https://github.com/cassitly/neuro-desktop/issues/15) `Neuro Desktop SDK`
    - Status: not fixed yet.
    - Remaining work: plugin SDK + versioned API.
 
-6. [#14](https://github.com/Nakashireyumi/neuro-desktop/issues/14) `Neuro Integrations Manager`
+6. [#14](https://github.com/cassitly/neuro-desktop/issues/14) `Neuro Integrations Manager`
    - Status: not fixed yet.
    - Remaining work: package/index manager and install/update flow.
 
-7. [#13](https://github.com/Nakashireyumi/neuro-desktop/issues/13) `virtualized environment`
+7. [#13](https://github.com/cassitly/neuro-desktop/issues/13) `virtualized environment`
    - Status: not fixed in this repository.
    - Remaining work: external environment integration.
 
-8. [#12](https://github.com/Nakashireyumi/neuro-desktop/issues/12) `permissions`
+8. [#12](https://github.com/cassitly/neuro-desktop/issues/12) `permissions`
    - Status: partially fixed and overlaps issue #20.
    - Remaining work: same as #20.
 
-9. [#11](https://github.com/Nakashireyumi/neuro-desktop/issues/11) `UI`
+9. [#11](https://github.com/cassitly/neuro-desktop/issues/11) `UI`
    - Status: not fixed yet.
    - Remaining work: production UI and marketplace UX.
 
-10. [#8](https://github.com/Nakashireyumi/neuro-desktop/issues/8) `higher-level action abstractions`
+10. [#8](https://github.com/cassitly/neuro-desktop/issues/8) `higher-level action abstractions`
     - Status: partially fixed in this fork.
     - Fixes here: added high-level script commands (`OPEN_WINDOWS_MENU`, `SHOW_DESKTOP`, `MINIMIZE_ALL_WINDOWS`, `CLOSE_FOREGROUND_APP`, `OPEN_TASK_MANAGER`, `CLOSE_ALL_APPS`) plus tests/docs.
     - Remaining: policy gating and richer intent planner.
 
-11. [#5](https://github.com/Nakashireyumi/neuro-desktop/issues/5) `Setup file`
+11. [#5](https://github.com/cassitly/neuro-desktop/issues/5) `Setup file`
     - Status: likely outdated.
     - Verification: mentions `windows-api` package setup from older architecture; current codebase uses bundled Python runtime and separate modules.
 
-12. [#4](https://github.com/Nakashireyumi/neuro-desktop/issues/4) `Action schema`
+12. [#4](https://github.com/cassitly/neuro-desktop/issues/4) `Action schema`
     - Status: fixed in this fork.
     - Fixes here: added `integration-docs/action-schema.run_script.json` and aligned script documentation with parser behavior.
 
-13. [#3](https://github.com/Nakashireyumi/neuro-desktop/issues/3) `Move neuro-specific configs over from windows-api`
+13. [#3](https://github.com/cassitly/neuro-desktop/issues/3) `Move neuro-specific configs over from windows-api`
     - Status: likely outdated for current architecture.
 
-14. [#2](https://github.com/Nakashireyumi/neuro-desktop/issues/2) `Provide built-in neuro integrations`
+14. [#2](https://github.com/cassitly/neuro-desktop/issues/2) `Provide built-in neuro integrations`
     - Status: partially fixed in this fork.
     - Fixes here: optional relay bundling/startup path in Rust app and bundle scripts.
     - Remaining: curated integration catalog and installer UX.
@@ -86,17 +86,17 @@ Last verified: 2026-03-09
 
 ## GitHub PR Verification
 
-### `Nakashireyumi/neuro-desktop` (3 open PRs)
+### `Nakashireyumi/neuro-desktop` (upstream tracker; 3 open PRs)
 
-1. [#28](https://github.com/Nakashireyumi/neuro-desktop/pull/28) `Completely refractor Neuro Desktop`
+1. [#28](https://github.com/cassitly/neuro-desktop/pull/28) `Completely refractor Neuro Desktop`
    - Status: open, non-draft, mergeable `clean` (as of 2026-03-09).
    - Scope: large refactor (134 commits, 128 changed files).
 
-2. [#24](https://github.com/Nakashireyumi/neuro-desktop/pull/24) `CodeRabbit Generated Unit Tests: Add comprehensive pytest test suite for core modules`
+2. [#24](https://github.com/cassitly/neuro-desktop/pull/24) `CodeRabbit Generated Unit Tests: Add comprehensive pytest test suite for core modules`
    - Status: open, non-draft, mergeable `blocked` (as of 2026-03-09).
    - Scope: test-only addition against `master`.
 
-3. [#19](https://github.com/Nakashireyumi/neuro-desktop/pull/19) `CodeRabbit Chat: Disable Python not found error and regionalization setup`
+3. [#19](https://github.com/cassitly/neuro-desktop/pull/19) `CodeRabbit Chat: Disable Python not found error and regionalization setup`
    - Status: open, non-draft, mergeable `clean` (as of 2026-03-09).
    - Scope: small compatibility/config patch set.
 
@@ -126,7 +126,7 @@ Last verified: 2026-03-09
 
 ## GitHub Releases Verification
 
-### `Nakashireyumi/neuro-desktop`
+### `Nakashireyumi/neuro-desktop` (upstream tracker)
 
 - `0.0.3a-dev` (prerelease), published 2025-11-02
 - `0.0.2-alpha` (prerelease), published 2025-10-22

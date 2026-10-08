@@ -185,6 +185,12 @@ def check_docs() -> None:
     for name, needles in (
         ("docs/LLM_GUIDE.md", ("game_move", "/api/actions", "get_status")),
         ("docs/SAFETY.md", ("NEURO_SHELL_ALLOWLIST", "kill switch", "default_allow")),
+        # The architecture, the server↔agent protocol and the relay behaviour are
+        # the three things a contributor (or a future us) needs before touching
+        # either process.
+        ("docs/ARCHITECTURE.md", ("agent", "Python", "server")),
+        ("docs/EXECUTOR_PROTOCOL.md", ("hello", "shell_command", "file ipc")),
+        ("docs/RELAY.md", ("auth_token", "register_actions", "intermediary")),
     ):
         path = os.path.join(REPO_ROOT, name)
         if not os.path.exists(path):
@@ -200,6 +206,85 @@ def check_docs() -> None:
             continue
 
     ok("README documents headless mode and links the LLM + safety guides")
+
+
+def check_bundle_templates() -> None:
+    """The launchers that ship inside the bundle must be valid and self-contained.
+
+    They are templates rather than heredocs written by the bundle script, so bash
+    can check them and Windows launchers can be reviewed as code.
+    """
+    templates = os.path.join(REPO_ROOT, "desktop", "scripts", "bundle", "templates")
+    for name in ("start.sh", "start.bat", "README.txt"):
+        if not os.path.exists(os.path.join(templates, name)):
+            fail(f"missing bundle template scripts/bundle/templates/{name}")
+            return
+
+    sh = os.path.join(templates, "start.sh")
+    bash = shutil.which("bash")
+    if bash:
+        result = subprocess.run([bash, "-n", sh], capture_output=True, text=True)
+        if result.returncode != 0:
+            fail(f"bundle template start.sh is not valid shell: {result.stderr.strip()}")
+            return
+    else:
+        print("  - bash not found; skipped syntax check of start.sh")
+
+    # The release bundle installs the launchers; the dev bundle only prints the
+    # two commands, so it has no launcher to keep in sync.
+    if "@SERVER@" not in _read(os.path.join(templates, "start.sh")):
+        fail("start.sh template lost its @SERVER@ placeholder")
+        return
+    prod = _read(os.path.join(REPO_ROOT, "desktop", "scripts", "bundle", "prod.sh"))
+    if "templates" not in prod:
+        fail("scripts/bundle/prod.sh does not use the launcher templates")
+        return
+
+    ok("bundle launcher templates exist and start.sh parses")
+
+
+def check_no_stale_paths() -> None:
+    """Paths that were deleted must not be referenced anywhere any more.
+
+    Deleting a placeholder directory is easy; the five documents and scripts that
+    still told people to `cd` into it are the actual bug. This check is what
+    keeps the cleanup honest.
+    """
+    stale = (
+        "native/go-neuro-integration",
+        "native/rust-core",
+        "native/process-handler",
+        "native/c_cpp",
+        "tests/integration/test-",
+    )
+    skip_dirs = {".git", "node_modules", "dist", "__pycache__", ".venv", "target"}
+    # This file contains the needles on purpose; it is the check, not a reference.
+    skip_files = {os.path.relpath(__file__, REPO_ROOT)}
+    hits = []
+    for root, dirs, files in os.walk(REPO_ROOT):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for name in files:
+            path = os.path.join(root, name)
+            if os.path.relpath(path, REPO_ROOT) in skip_files:
+                continue
+            if os.path.splitext(name)[1] in {".png", ".jpg", ".ico", ".woff", ".woff2", ".ttf", ".so", ".a"}:
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                    body = handle.read()
+            except OSError:
+                continue
+            for needle in stale:
+                if needle in body:
+                    hits.append(f"{os.path.relpath(path, REPO_ROOT)} -> {needle}")
+
+    if hits:
+        for hit in hits[:10]:
+            fail(f"stale reference: {hit}")
+        if len(hits) > 10:
+            fail(f"… and {len(hits) - 10} more stale references")
+        return
+    ok("no references to deleted paths")
 
 
 def check_process_handler_standalone() -> None:
@@ -294,6 +379,8 @@ def main() -> int:
     check_process_handler_standalone()
     check_ollama_brain_tests()
     check_docs()
+    check_bundle_templates()
+    check_no_stale_paths()
     check_file_sizes()
 
     print()

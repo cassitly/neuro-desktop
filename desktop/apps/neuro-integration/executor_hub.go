@@ -12,6 +12,16 @@ import (
 	"time"
 )
 
+// Executor liveness defaults: ping often enough that a client with a 120s
+// socket read timeout never sees a silent session, and only drop a client well
+// after that. The live values live on the hub (see livenessSchedule) so tests
+// can compress them per instance instead of mutating package state that a
+// running keepalive goroutine is reading — that was a data race.
+const (
+	defaultExecutorPingInterval = 30 * time.Second
+	defaultExecutorDeadAfter    = 90 * time.Second
+)
+
 // ExecutorHub is the server-side socket that remote (or local) executor
 // clients connect to. Neuro actions are forwarded here instead of only
 // using same-machine file IPC.
@@ -22,6 +32,10 @@ import (
 //     never blocks /api/status, the dashboard, or another action.
 //   - A timed-out request only abandons that request; the executor session
 //     stays alive (a long script is not a dead executor).
+//   - The hub pings every connected executor. Clients read with their own socket
+//     timeout, so a silent bridge looked like a broken connection and every
+//     client reconnected on a timer; the churn showed up as a growing
+//     `total_connections` counter.
 //   - Optional shared-secret token: the hub listens on 0.0.0.0 by default so
 //     that a second PC can be controlled, so an unauthenticated executor
 //     socket would be a remote-control hole.
@@ -46,6 +60,28 @@ type ExecutorHub struct {
 	// invisible except in the log; the dashboard can now show the number.
 	replaced       int
 	lastReplaceLog time.Time
+
+	// Liveness schedule for this hub; zero means "use the defaults".
+	pingInterval time.Duration
+	deadAfter    time.Duration
+}
+
+// livenessSchedule returns the ping/dead intervals this hub uses.
+func (h *ExecutorHub) livenessSchedule() (ping, dead time.Duration) {
+	ping, dead = h.pingInterval, h.deadAfter
+	if ping <= 0 {
+		ping = defaultExecutorPingInterval
+	}
+	if dead <= 0 {
+		dead = defaultExecutorDeadAfter
+	}
+	return ping, dead
+}
+
+// setLivenessSchedule compresses the ping schedule. Tests need this; the
+// production default is a 30s ping with a 90s drop.
+func (h *ExecutorHub) setLivenessSchedule(ping, dead time.Duration) {
+	h.pingInterval, h.deadAfter = ping, dead
 }
 
 type executorEnvelope struct {
@@ -73,6 +109,11 @@ type executorConn struct {
 	remote string
 
 	writeMu sync.Mutex
+
+	// liveness is written by the reader goroutine and read by the keepalive
+	// goroutine, so it needs its own lock.
+	livenessMu sync.Mutex
+	lastPong   time.Time
 
 	pendingMu sync.Mutex
 	pending   map[string]chan executorResult
@@ -105,6 +146,21 @@ func (c *executorConn) writeLine(payload []byte) error {
 	_, err := c.conn.Write(payload)
 	_ = c.conn.SetWriteDeadline(time.Time{})
 	return err
+}
+
+func (c *executorConn) notePong() {
+	c.livenessMu.Lock()
+	c.lastPong = time.Now()
+	c.livenessMu.Unlock()
+}
+
+func (c *executorConn) silentFor() time.Duration {
+	c.livenessMu.Lock()
+	defer c.livenessMu.Unlock()
+	if c.lastPong.IsZero() {
+		return 0
+	}
+	return time.Since(c.lastPong)
 }
 
 func (c *executorConn) register(id string) chan executorResult {
@@ -348,7 +404,46 @@ func (h *ExecutorHub) handleConnection(conn net.Conn) {
 	}
 
 	log.Printf("Executor client connected from %s (protocol v%s)", remote, hello.Version)
+	go h.keepAlive(client)
 	client.readLoop(h)
+}
+
+// keepAlive pings the executor so a quiet session does not look like a dead
+// connection to clients that read with a socket timeout (every client we ship
+// does). A client that stops answering for executorDeadAfter is dropped.
+func (h *ExecutorHub) keepAlive(client *executorConn) {
+	pingInterval, deadAfter := h.livenessSchedule()
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
+	// The handshake itself proves the client is alive right now.
+	client.notePong()
+
+	for {
+		select {
+		case <-client.closed:
+			return
+		case <-ticker.C:
+			if silent := client.silentFor(); silent > deadAfter {
+				log.Printf("Executor %s stopped answering pings %s ago; closing the session",
+					client.remote, silent.Round(time.Second))
+				h.statsMu.Lock()
+				h.lastError = fmt.Sprintf("executor %s stopped answering pings", client.remote)
+				h.statsMu.Unlock()
+				client.close()
+				return
+			}
+
+			payload, _ := json.Marshal(executorEnvelope{
+				Type: "ping",
+				ID:   fmt.Sprintf("%d", time.Now().UnixNano()),
+			})
+			if err := client.writeLine(payload); err != nil {
+				// readLoop notices the disconnect; no need to log twice.
+				return
+			}
+		}
+	}
 }
 
 func (h *ExecutorHub) tokenAccepted(provided string, remote string) bool {
@@ -414,7 +509,7 @@ func (c *executorConn) readLoop(h *ExecutorHub) {
 				log.Printf("Executor %s returned result for unknown request %s", c.remote, env.ID)
 			}
 		case "pong":
-			// Liveness only.
+			c.notePong()
 		case "event":
 			log.Printf("Executor %s event: %s %s", c.remote, env.Event, string(env.Data))
 		default:

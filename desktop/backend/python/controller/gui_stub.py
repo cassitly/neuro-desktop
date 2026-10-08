@@ -71,7 +71,7 @@ def _no_display(*_args: Any, **_kwargs: Any) -> None:
         + describe_headless_reason()
         + "), so mouse/keyboard actions cannot run here. "
         "Use the shell_command action for command-line work, or run the executor "
-        "on the desktop machine with `neuro-desktop --executor --server <bridge>:9876`."
+        "on the desktop machine with `python3 -m controller.agent --bridge <bridge>:9876`."
     )
 
 

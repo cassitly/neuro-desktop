@@ -11,7 +11,12 @@ param(
     [switch]$SkipTests,
 
     [Parameter(Mandatory = $false)]
-    [switch]$Clean
+    [switch]$Clean,
+
+    # The Rust executor and the C++ supervisor are reference/optional code and
+    # are not part of the shipped product (docs/ARCHITECTURE.md).
+    [Parameter(Mandatory = $false)]
+    [switch]$WithLegacy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,68 +62,51 @@ try {
         Write-Step 'Cleaning previous builds...'
 
         Remove-Item -Recurse -Force 'dist' -ErrorAction SilentlyContinue
-        Remove-Item -Recurse -Force 'apps/neuro-desktop/target' -ErrorAction SilentlyContinue
-        Remove-Item -Recurse -Force 'apps/process-handler/build' -ErrorAction SilentlyContinue
         Remove-Item -Recurse -Force 'apps/neuro-integration/dist' -ErrorAction SilentlyContinue
         Remove-Item -Recurse -Force 'frontend/dist' -ErrorAction SilentlyContinue
 
         Write-Success 'Clean completed'
     }
 
-    Write-Step 'Building Process Handler (C++)...'
-    Push-Location 'apps/process-handler'
-    try {
-        if (Test-Path 'build/CMakeCache.txt') {
-            $cmakeCache = Get-Content 'build/CMakeCache.txt' -Raw
-            if ($cmakeCache -match 'native/process-handler') {
-                Write-Info 'Removing stale CMake cache from old native/ path...'
-                Remove-Item -Recurse -Force 'build'
+    if ($WithLegacy) {
+        Write-Step 'Building the optional C++ supervisor (not shipped)...'
+        if (!(Get-Command cmake -ErrorAction SilentlyContinue)) {
+            Write-Info 'cmake not found - skipping the supervisor'
+        } else {
+            Push-Location 'apps/process-handler'
+            try {
+                & cmake -S . -B build "-DCMAKE_BUILD_TYPE=$Configuration" -DBUILD_TESTS=ON
+                if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
+                & cmake --build build --config $Configuration
+                if ($LASTEXITCODE -ne 0) { throw 'CMake build failed' }
+            }
+            catch {
+                Write-ErrorLine "Supervisor build failed: $_"
+                exit 1
+            }
+            finally {
+                Pop-Location
             }
         }
+    }
 
-        if (!(Test-Path 'build')) {
-            New-Item -ItemType Directory -Path 'build' | Out-Null
-        }
-
-        Push-Location 'build'
+    if ($WithLegacy) {
+        Write-Step 'Building the optional Rust executor (not shipped)...'
+        Push-Location 'apps/neuro-desktop'
         try {
-            $cmakeArgs = @('..', "-DCMAKE_BUILD_TYPE=$Configuration")
-            if ($SkipTests) {
-                $cmakeArgs += '-DBUILD_TESTS=OFF'
-            }
-            else {
-                $cmakeArgs += '-DBUILD_TESTS=ON'
-            }
-
-            Write-Info 'Running CMake configure...'
-            & cmake @cmakeArgs
-            if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
-
-            Write-Info 'Building C++ targets...'
-            & cmake --build . --config $Configuration
-            if ($LASTEXITCODE -ne 0) { throw 'CMake build failed' }
-
-            if (!$SkipTests) {
-                Write-Info 'Running C++ tests...'
-                & ctest --output-on-failure -C $Configuration
-                if ($LASTEXITCODE -ne 0) { throw 'C++ tests failed' }
+            if (Get-Command cargo -ErrorAction SilentlyContinue) {
+                & cargo build --release
+                if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
+            } else {
+                Write-Info 'cargo not found - skipping the legacy executor'
             }
         }
         finally {
             Pop-Location
         }
-
-        Write-Success 'Process Handler built successfully'
-    }
-    catch {
-        Write-ErrorLine "Process Handler build failed: $_"
-        exit 1
-    }
-    finally {
-        Pop-Location
     }
 
-    Write-Step 'Building Go Integration...'
+    Write-Step 'Building the server (Go)...'
     Push-Location 'apps/neuro-integration'
     try {
         New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
@@ -155,34 +143,8 @@ try {
         Pop-Location
     }
 
-    $relaySourceDir = $env:NEURO_RELAY_SOURCE_DIR
-    if ($relaySourceDir) {
-        Write-Step 'Building Neuro Relay (optional)...'
-        if (Test-Path (Join-Path $relaySourceDir 'src/entrypoint.go')) {
-            Push-Location $relaySourceDir
-            try {
-                $relayOut = Join-Path $RepoRoot 'apps/neuro-integration/dist/neuro-relay.exe'
-                Write-Info "Building relay from: $relaySourceDir"
-                & go build -o $relayOut ./src/entrypoint.go
-                if ($LASTEXITCODE -ne 0) { throw 'Relay build failed' }
-
-                $env:NEURO_RELAY_BINARY_SOURCE = $relayOut
-                Write-Success "Neuro Relay built at $relayOut"
-            }
-            catch {
-                Write-ErrorLine "Neuro Relay build failed: $_"
-                exit 1
-            }
-            finally {
-                Pop-Location
-            }
-        }
-        else {
-            Write-Info "Skipping relay build: src/entrypoint.go not found at $relaySourceDir"
-        }
-    }
-
-    Write-Step 'Building Rust Application...'
+    if ($WithLegacy) {
+    Write-Step 'Building Rust Application (legacy, not shipped)...'
     Push-Location 'apps/neuro-desktop'
     try {
         $cargoBuildArgs = @('build')
@@ -212,8 +174,9 @@ try {
     finally {
         Pop-Location
     }
+    }
 
-    Write-Step 'Building Frontend...'
+    Write-Step 'Building the dashboard client...'
     Push-Location 'frontend'
     try {
         if (!(Test-Path 'node_modules')) {
@@ -278,18 +241,19 @@ try {
         }
     }
 
-    $rustOutDir = if ($Configuration -eq 'Release') { 'release' } else { 'debug' }
-
     Write-Host ''
     Write-Host '=======================================================' -ForegroundColor $Green
     Write-Host '        Build Completed Successfully' -ForegroundColor $Green
     Write-Host '=======================================================' -ForegroundColor $Green
     Write-Host ''
     Write-Info 'Build artifacts:'
-    Write-Host '  - Process Handler: apps/process-handler/build/process-handler.exe'
-    Write-Host '  - Go Integration:  apps/neuro-integration/dist/neuro-integration.exe'
-    Write-Host "  - Rust App:        apps/neuro-desktop/target/$rustOutDir/neuro-desktop.exe"
-    Write-Host '  - Frontend:        frontend/dist/'
+    Write-Host '  - Server:          apps/neuro-integration/dist/neuro-integration.exe'
+    Write-Host '  - Dashboard:       frontend/dist/'
+    Write-Host '  - Agent:           backend/python/controller (no build step)'
+    if ($WithLegacy) {
+        Write-Host '  - (legacy) Process Handler: apps/process-handler/build/'
+        Write-Host '  - (legacy) Rust executor:   apps/neuro-desktop/target/release/'
+    }
     Write-Host ''
     Write-Info 'To create a production bundle:'
     Write-Host '  .\scripts\bundle\prod.ps1'

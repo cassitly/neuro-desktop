@@ -70,10 +70,21 @@ func ipcTimeout() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// sendToRust forwards a command to the executor. It prefers a connected TCP
-// executor (local or remote machine) and falls back to the same-machine file
-// IPC bridge used by the co-located runtime.
-func (n *NDIntegration) sendToRust(cmd IPCCommand) (*IPCResponse, error) {
+// sendToExecutor forwards a command to the executor, the process that actually
+// touches this machine (see docs/EXECUTOR_PROTOCOL.md). It prefers a connected
+// TCP executor (local or a remote machine) and falls back to the same-machine
+// file IPC used by the co-located agent.
+//
+// Commands the bridge handles itself are rejected here: a `switch` that forgot
+// one of them used to look exactly like an executor that silently did nothing.
+func (n *NDIntegration) sendToExecutor(cmd IPCCommand) (*IPCResponse, error) {
+	if !isExecutorCommand(cmd.Type) {
+		return nil, fmt.Errorf(
+			"%q is handled by the bridge, not by the executor (see executor_commands.go)",
+			cmd.Type,
+		)
+	}
+
 	n.ipcMu.Lock()
 	defer n.ipcMu.Unlock()
 

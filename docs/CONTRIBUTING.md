@@ -49,14 +49,14 @@ Before contributing, ensure you have:
 
 ```bash
 # 1. Fork the repository on GitHub
-# Click "Fork" button on https://github.com/Nakashireyumi/neuro-desktop
+# Click "Fork" button on https://github.com/cassitly/neuro-desktop
 
 # 2. Clone your fork
 git clone https://github.com/cassitly/neuro-desktop.git
 cd neuro-desktop
 
 # 3. Add upstream remote
-git remote add upstream https://github.com/Nakashireyumi/neuro-desktop.git
+git remote add upstream https://github.com/cassitly/neuro-desktop.git
 
 # 4. Create a branch for your changes
 git checkout -b feature/my-awesome-feature

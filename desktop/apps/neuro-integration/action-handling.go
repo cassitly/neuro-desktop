@@ -145,7 +145,7 @@ func (n *NDIntegration) executeScriptIntent(script string) neuro.ExecutionResult
 		ClearAfter: true,
 	}
 
-	resp, err := n.sendToRust(cmd)
+	resp, err := n.sendToExecutor(cmd)
 	if err != nil {
 		return neuro.NewFailureResult(fmt.Sprintf("IPC error: %v", err))
 	}
@@ -177,11 +177,11 @@ func (n *NDIntegration) handleGracefulShutdown(data json.RawMessage) {
 
 	log.Println("Graceful shutdown requested")
 
-	resp, err := n.sendToRust(IPCCommand{
+	resp, err := n.sendToExecutor(IPCCommand{
 		Type: CmdShutdownGracefully,
 	})
 	if err != nil || !resp.Success {
-		log.Printf("Warning: Rust graceful shutdown failed: %v", err)
+		log.Printf("Warning: executor graceful shutdown failed: %v", err)
 	}
 
 	if err := n.client.SendShutdownReady(); err != nil {
@@ -194,7 +194,7 @@ func (n *NDIntegration) handleGracefulShutdown(data json.RawMessage) {
 func (n *NDIntegration) handleImmediateShutdown(_ json.RawMessage) {
 	log.Println("Immediate shutdown requested")
 
-	_, _ = n.sendToRust(IPCCommand{
+	_, _ = n.sendToExecutor(IPCCommand{
 		Type: CmdShutdownImmediately,
 	})
 

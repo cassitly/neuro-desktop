@@ -8,6 +8,66 @@ This project aims to follow semantic versioning once stable releases begin.
 
 ### Added
 
+- **Python agent** (`desktop/backend/python/controller/agent.py`): the process
+  that executes commands on the machine Neuro controls, replacing the Rust
+  executor. Speaks the executor protocol over TCP (connecting out or listening)
+  and over the bridge's file-IPC fallback, honours `execute_now`/`clear_after`,
+  answers pings, and refuses input on a headless machine with a message that
+  points at `shell_command`.
+- `docs/ARCHITECTURE.md` — the consolidation decision, the migration table, and
+  what is (and is not) on the shipping path.
+- `docs/EXECUTOR_PROTOCOL.md` — the server↔agent wire format, the command table,
+  queue semantics and file-IPC rules.
+- `docs/RELAY.md` — how Neuro Desktop coexists with other integrations through
+  Neuro Relay, including the two modes and the upstream limitation that actions
+  registered on the intermediary never reach Neuro.
+- `docs/LLM_GUIDE.md` and `docs/SAFETY.md` — prompting tactics for small models,
+  and every guard with where it lives and how to verify it.
+- `desktop/scripts/bundle/templates/` — checked-in `start.sh`, `start.bat` and
+  `README.txt` for the release bundle, so the launchers can be syntax-checked.
+- `desktop/scripts/build-go.ps1` cross-compiles the server for Windows, Linux and
+  macOS; CI cross-compiles the same targets on every change.
+- `agent-e2e` CI job: starts the server and the agent together and asserts the
+  dashboard sees the agent, so a protocol regression between the two languages
+  fails the pipeline.
+- Executor keepalive on the hub: a 30-second ping with a 90-second drop, which
+  removed a reconnect-per-2-minutes loop (`total_connections` used to climb
+  forever).
+- `desktop/tools/ci/repo_checks.py`: bundle-template validation, a stale-path
+  checker (deleted `native/*` paths may not be referenced any more), and
+  documentation link checks for the three new guides.
+
+### Changed
+
+- The shipped product is **Go server + Python agent + TypeScript dashboard
+  client**; the Rust executor and the C++ supervisor are no longer part of the
+  build, the bundle, or the CI gate (they remain as reference code).
+- Test coverage for the executor protocol, the `/api/actions` metadata
+  (schema + plain-language params), the relay self-peer phantom, and the
+  process-handler parser/lifecycle.
+
+### Removed
+
+- `desktop/native/{go,c_cpp,rust-core}` — hello-world placeholders that were
+  referenced by documentation describing a layout that never existed.
+- The root `tests/integration/*.js` files — Jasmine-style tests with no runner
+  (they cannot be executed at all).
+- The Rust `relay_manager` invocation and the `build-all.ps1` "relay build" step
+  (both launched a `neuro-relay` CLI that does not exist), plus every pointer to
+  the placeholder Go module under `desktop/native/` that was never written.
+
+### Fixed
+
+- The relay link reported **its own registration** as a coexisting integration
+  (the relay echoes `integration_connected` back), so `peer_count` could never
+  reach zero and game delegation could point at ourselves.
+- A rejected relay registration now reports the relay's own error text
+  ("invalid auth token") with a hint at `NEURO_RELAY_TOKEN`, instead of a bare
+  "connection failed" that read like a network problem.
+- The bridge no longer writes a stale executor result: replaced clients are
+  counted (`replaced_connections`) and closing one no longer looks like a crash.
+- `sendToExecutor` refuses commands the bridge handles itself, so a forgotten
+  command fails loudly instead of silently doing nothing.
 - Baseline Windows CI workflow for Rust, Go, Node, and C++ validation.
 - Python parser tests for high-level commands and click syntax.
 - Go tests for integration documentation loading.

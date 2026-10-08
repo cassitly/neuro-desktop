@@ -1,270 +1,128 @@
 # ============================================================
-# desktop/scripts/bundle/prod.ps1
+# desktop/scripts/bundle/prod.ps1 - release bundle
+#   .\scripts\bundle\prod.ps1
+#   .\scripts\bundle\prod.ps1 -SkipFrontend -SkipVenv
+#
+# Produces dist\neuro-desktop\ with:
+#   neuro-integration.exe   the server (Neuro client + dashboard API + hub)
+#   agent\                  the Python agent + its requirements
+#   frontend\               dashboard client, served at /ui/
+#   catalog\, config\       game profiles, policy example, docs
 # ============================================================
-
-$ErrorActionPreference = "Stop"
-
-Write-Host "=== Building Neuro Desktop Bundle ==="
-
-$DIST = "dist/neuro-desktop"
-$PY_DIST = "$DIST/python"
-
-# ---------- Clean ----------
-Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $DIST | Out-Null
-
-# ---------- Build Rust ----------
-Write-Host "[1/4] Building Rust application..."
-Push-Location apps/neuro-desktop
-cargo build --release
-Pop-Location
-
-Copy-Item `
-  apps/neuro-desktop/target/release/neuro-desktop.exe `
-  $DIST
-
-Write-Host "      ??? Rust binary built"
-
-# ---------- Build Process Handler ----------
-Write-Host "[1.5/4] Building Process Handler..."
-Push-Location apps/process-handler
-if (!(Test-Path "build")) {
-    New-Item -ItemType Directory -Path "build" | Out-Null
-}
-Push-Location build
-cmake .. -DBUILD_TESTS=OFF
-cmake --build . --config Release
-Pop-Location
-Pop-Location
-Write-Host "      [ok] Process Handler built"
-
-# ---------- Build Neuro Integration ----------
-Write-Host "[2/4] Building Neuro integration..."
-
-New-Item -ItemType Directory -Force -Path apps/neuro-integration/dist | Out-Null
-Push-Location apps/neuro-integration
-
-# Build for Windows
-go build -o dist/neuro-integration.exe .
-
-Pop-Location
-
-Copy-Item `
-  apps/neuro-integration/dist/neuro-integration.exe `
-  $DIST/neuro-integration.exe
-
-New-Item -ItemType Directory -Force -Path $DIST/integration-docs | Out-Null
-
-Copy-Item `
-  apps/neuro-integration/integration-docs/"Action Script Documentation.md" `
-  $DIST/integration-docs/"Action Script Documentation.md"
-
-Copy-Item `
-  apps/neuro-integration/permissions.example.json `
-  $DIST/permissions.json
-
-Write-Host "      ??? Neuro Integration binary built"
-
-# ---------- Copy Process Handler ----------
-$processHandlerCandidates = @(
-  "apps/process-handler/build/Release/process-handler.exe",
-  "apps/process-handler/build/process-handler.exe"
+param(
+    [switch]$SkipFrontend,
+    [switch]$SkipVenv
 )
-$processHandlerSource = $processHandlerCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if ($processHandlerSource) {
-    Copy-Item $processHandlerSource "$DIST/process-handler.exe"
-    Write-Host "      [ok] Process Handler binary bundled"
-} else {
-    throw "Process Handler binary not found after build step"
-}
 
-$relayBinarySource = $env:NEURO_RELAY_BINARY_SOURCE
-if ($relayBinarySource -and (Test-Path $relayBinarySource)) {
-    Copy-Item $relayBinarySource "$DIST/neuro-relay.exe"
-    Write-Host "      [ok] Neuro Relay binary bundled"
-} else {
-    Write-Host "      [..] Neuro Relay binary not bundled (set NEURO_RELAY_BINARY_SOURCE)"
-}
+$ErrorActionPreference = 'Stop'
 
-# ---------- Build frontend ----------
-Write-Host "[3/4] Building frontend..."
-Push-Location frontend
-npm run build
-Pop-Location
+$Root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+Push-Location $Root
+try {
+    $Dist = 'dist/neuro-desktop'
+    $AgentDist = "$Dist/agent"
+    $Server = 'neuro-integration.exe'
 
-Copy-Item frontend/dist -Recurse $DIST/frontend
+    Write-Host '=== Building Neuro Desktop bundle ==='
 
-Write-Host "      ??? Frontend built"
+    if (Test-Path $Dist) { Remove-Item -Recurse -Force $Dist }
+    New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
-# ---------- Copy Config ----------
-Write-Host "Copying configuration files..."
-Copy-Item config "$DIST/config" -Recurse
-Write-Host "  ??? Config files copied"
+    # ----------------------------------------------------------
+    # 1. Server (Go)
+    # ----------------------------------------------------------
+    Write-Host '[1/3] Building the server...'
+    Push-Location 'apps/neuro-integration'
+    try {
+        New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
+        & go build -trimpath -o "dist/$Server" .
+        if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
+    }
+    finally {
+        Pop-Location
+    }
+    Copy-Item "apps/neuro-integration/dist/$Server" "$Dist/$Server" -Force
 
-Write-Host "Copying catalog files..."
-Copy-Item catalog "$DIST/catalog" -Recurse
-Write-Host "  [ok] Catalog files copied"
-
-# ---------- Bundle Python (EMBEDDED) ----------
-Write-Host "[4/4] Bundling Python runtime..."
-
-New-Item -ItemType Directory -Force -Path $PY_DIST | Out-Null
-
-Copy-Item backend/python/.venv/Lib $PY_DIST/Lib -Recurse
-
-$sitePackagesPath = Join-Path $PY_DIST "Lib/site-packages"
-if (Test-Path $sitePackagesPath) {
-    # Bundle only runtime dependencies needed by controller drivers.
-    # Local development environments sometimes contain optional scientific stacks
-    # (numpy/scipy) that can crash embedded Python builds on Windows.
-    $stripPatterns = @("numpy*", "scipy*")
-    foreach ($pattern in $stripPatterns) {
-        Get-ChildItem -Path $sitePackagesPath -Force -Filter $pattern -ErrorAction SilentlyContinue |
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    # ----------------------------------------------------------
+    # 2. Dashboard client
+    # ----------------------------------------------------------
+    if (!$SkipFrontend) {
+        Write-Host '[2/3] Building the dashboard client...'
+        Push-Location 'frontend'
+        try {
+            if (!(Test-Path 'node_modules')) {
+                & npm install
+                if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+            }
+            & npm run build
+            if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
+        }
+        finally {
+            Pop-Location
+        }
+        New-Item -ItemType Directory -Force -Path "$Dist/frontend" | Out-Null
+        Copy-Item 'frontend/dist/*' "$Dist/frontend" -Recurse -Force
+    } else {
+        Write-Host '[2/3] Dashboard client skipped (-SkipFrontend)'
     }
 
-    # Remove cached wheel artifacts accidentally copied from development venvs.
-    Get-ChildItem -Path $sitePackagesPath -Force -Filter "*.whl" -ErrorAction SilentlyContinue |
-        Remove-Item -Force -ErrorAction SilentlyContinue
+    # ----------------------------------------------------------
+    # 3. Agent (Python) + config, catalog, docs
+    # ----------------------------------------------------------
+    Write-Host '[3/3] Bundling the agent, config and catalog...'
+    New-Item -ItemType Directory -Force -Path $AgentDist | Out-Null
+    Copy-Item 'backend/python/controller' $AgentDist -Recurse -Force
+    Get-ChildItem -Path $AgentDist -Recurse -Directory -Filter '__pycache__' |
+        Remove-Item -Recurse -Force
+    Copy-Item 'backend/python/requirements.txt' "$AgentDist/requirements.txt" -Force
+    if (Test-Path 'backend/python/requirements-windows.txt') {
+        Copy-Item 'backend/python/requirements-windows.txt' "$AgentDist/requirements-windows.txt" -Force
+    }
+
+    # A vendored runtime is a convenience, not a requirement: a build machine
+    # without Python or without network still produces a usable bundle.
+    if ($SkipVenv) {
+        Write-Host '      ! agent runtime not vendored (-SkipVenv)'
+    } else {
+        try {
+            $Venv = 'backend/python/.venv'
+            if (!(Test-Path $Venv)) { & python -m venv $Venv | Out-Null }
+            & "$Venv/Scripts/pip.exe" install --quiet --upgrade pip
+            & "$Venv/Scripts/pip.exe" install --quiet -r 'backend/python/requirements-windows.txt'
+            if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
+            Copy-Item "$Venv/Lib" "$AgentDist/Lib" -Recurse -Force
+            Write-Host '      agent runtime vendored'
+        }
+        catch {
+            Write-Host "      ! could not vendor the runtime: $_"
+            Write-Host '        The bundle runs with the system python + agent\requirements.txt'
+        }
+    }
+
+    Copy-Item 'config' "$Dist/config" -Recurse -Force
+    Copy-Item 'catalog' "$Dist/catalog" -Recurse -Force
+    Copy-Item 'apps/neuro-integration/permissions.example.json' "$Dist/permissions.json" -Force
+    New-Item -ItemType Directory -Force -Path "$Dist/integration-docs" | Out-Null
+    Copy-Item 'apps/neuro-integration/integration-docs/*' "$Dist/integration-docs" -Recurse -Force
+    Copy-Item 'docs/*.md' "$Dist/integration-docs" -Force -ErrorAction SilentlyContinue
+
+    # ----------------------------------------------------------
+    # Templates (launchers + README) — checked in, so they are reviewable
+    # ----------------------------------------------------------
+    $Templates = 'scripts/bundle/templates'
+    foreach ($pair in @(@('README.txt', 'README.txt'), @('start.bat', 'start.bat'), @('start.sh', 'start.sh'))) {
+        $body = Get-Content (Join-Path $Templates $pair[0]) -Raw
+        Set-Content -Path (Join-Path $Dist $pair[1]) -Value ($body -replace '@SERVER@', $Server) -NoNewline
+    }
+
+    Write-Host ''
+    Write-Host '=== Bundle complete ==='
+    Write-Host "Location: $Dist"
+    Write-Host ''
+    Get-ChildItem $Dist | Select-Object Name
+    Write-Host ''
+    Write-Host 'Run it: cd dist\neuro-desktop && .\start.bat'
 }
-
-# ---------- Copy Controller Drivers ----------
-Copy-Item `
-  backend/python/controller `
-  "$PY_DIST/controller" `
-  -Recurse
-
-Write-Host "      ??? Python runtime bundled"
-
-# ---------- Metadata ----------
-@"
-Neuro Desktop Control System
-=============================
-
-This is a self-contained bundle of Neuro Desktop.
-
-Contents:
-  - neuro-desktop.exe         Main application (Rust)
-  - neuro-integration.exe     Neuro API connector (Go)
-  - neuro-relay.exe           Optional relay binary (if bundled)
-  - process-handler.exe       Optional process supervisor
-  - python/                   Python runtime and drivers
-  - frontend/                 Web UI assets
-
-To run:
-  1. Double-click neuro-desktop.exe
-  2. Or run from terminal: .\neuro-desktop.exe
-
-Environment Variables (optional):
-  - NEURO_SDK_WS_URL    WebSocket URL for Neuro API
-                        Default: ws://localhost:8000
-  
-  - NEURO_IPC_FILE      Path to IPC file
-                        Default: ./neuro_ipc.json
-
-  - NEURO_PERMISSIONS_FILE  Path to permissions policy file
-                            Default: ./permissions.json
-
-  - NEURO_RELAY_ENABLED     Enable bundled Neuro Relay
-                            Default: false
-
-The Go integration binary will be started automatically
-by the main Rust binary. You do not need to run it manually.
-
-Press Ctrl+C to stop.
-
-For more information, visit:
-https://github.com/Nakashireyumi/neuro-desktop
-"@ | Out-File "$DIST/README.txt"
-
-# ---------- Create launcher script ----------
-@" 
-@echo off
-echo Starting Neuro Desktop...
-echo.
-neuro-desktop.exe
-pause
-"@ | Out-File "$DIST/start.bat" -Encoding ASCII
-
-@"
-@echo off
-echo Starting Neuro Desktop (supervised mode)...
-echo.
-process-handler.exe
-pause
-"@ | Out-File "$DIST/start-supervised.bat" -Encoding ASCII
-
-Write-Host ""
-Write-Host "=== Bundle complete ==="
-Write-Host "Location: $DIST"
-Write-Host ""
-Write-Host "Files included:"
-Get-ChildItem $DIST -Recurse -File | ForEach-Object {
-    $relativePath = $_.FullName.Replace("$PWD\$DIST\", "")
-    Write-Host "  - $relativePath"
+finally {
+    Pop-Location
 }
-Write-Host ""
-Write-Host "To test: cd $DIST && .\neuro-desktop.exe"
-
-# OLD CODE:
-# $ErrorActionPreference = "Stop"
-
-# Write-Host "=== Building Neuro Desktop Bundle ==="
-
-# $DIST = "dist/neuro-desktop"
-# $PY_DIST = "$DIST/python"
-
-# # ---------- Clean ----------
-# Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
-# New-Item -ItemType Directory -Force -Path $DIST | Out-Null
-
-# # ---------- Build Rust ----------
-# Write-Host "Building Rust app..."
-# Push-Location apps/neuro-desktop
-# cargo build --release
-# Pop-Location
-
-# Copy-Item `
-#   apps/neuro-desktop/target/release/neuro-desktop.exe `
-#   $DIST
-
-# # ---------- Build frontend ----------
-# Write-Host "Building frontend..."
-# Push-Location frontend
-# npm run build
-# Pop-Location
-
-# Copy-Item frontend/dist -Recurse $DIST/frontend
-
-# # ---------- Build Go Integration ----------
-# Write-Host "Building Go integration..."
-# Push-Location native/go-neuro-integration
-# go build -o go-neuro-integration.exe main.go
-# Pop-Location
-
-# Copy-Item `
-#   native/go-neuro-integration/go-neuro-integration.exe `
-#   $DIST
-
-# # ---------- Bundle Python (EMBEDDED) ----------
-# Write-Host "Bundling Python files and libraries..."
-
-# New-Item -ItemType Directory -Force -Path $PY_DIST | Out-Null
-
-# Copy-Item backend/python/.venv/Lib $PY_DIST/Lib -Recurse
-
-# # ---------- Copy Controller Drivers ----------
-# Copy-Item `
-#   backend/python/controller `
-#   "$PY_DIST/controller" `
-#   -Recurse
-
-# # ---------- Metadata ----------
-# @"
-# Neuro Desktop
-# -------------
-# This folder contains all runtime dependencies.
-# Do not move files individually.
-# "@ | Out-File "$DIST/README.txt"
-
-# Write-Host "=== Bundle complete ==="

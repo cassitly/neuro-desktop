@@ -3,7 +3,7 @@
 > **An AI-powered desktop control system that gives Neuro-sama the ability to control a computer through natural language commands.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/Nakashireyumi/neuro-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/Nakashireyumi/neuro-desktop/actions/workflows/ci.yml)
+[![CI](https://github.com/cassitly/neuro-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/cassitly/neuro-desktop/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-0.0.3b--dev-blue.svg)]()
 
 ## Table of Contents
@@ -48,39 +48,48 @@ See **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)** for an honest “what works
 
 ## Architecture
 
-Neuro Desktop is a **bridge + executor** stack. Per the
-[Neuro SDK](https://github.com/VedalAI/neuro-sdk), this app is a WebSocket
+Neuro Desktop is a **server + agent** pair with a browser **client**. Per the
+[Neuro SDK](https://github.com/VedalAI/neuro-sdk), the server is a WebSocket
 **client** of Neuro's API server. Internally:
 
-- **Bridge (server)** — `neuro-integration` talks to Neuro, enforces permissions,
-  listens for executor clients on TCP `:9876`, and serves operator admin HTTP on `:8300`.
-- **Executor (client)** — `neuro-desktop` + Python run on the machine being controlled
-  (`--executor --server host:9876`). Can be a different PC than the bridge.
+- **Server** — `neuro-integration` (Go) talks to Neuro, owns the permission
+  policy, audit log, game catalog and relay link, serves the dashboard, and
+  listens for agents on TCP `:9876` (or uses file IPC on the same machine).
+- **Agent** — `desktop/backend/python/controller/agent.py` runs on the PC Neuro
+  controls (`python3 -m controller.agent --bridge host:9876`) and is the only
+  process that touches that machine.
+- **Dashboard client** — the TypeScript frontend, served by the server at
+  `/ui/`; the admin's browser is the client in the client-server sense.
 
 ```
 ┌──────────────────┐     Neuro WS      ┌─────────────────────────────┐
-│  Neuro API       │◄─────────────────►│  Bridge (Go)                │
-│  (Vedal)         │                   │  + admin :8300              │
-└──────────────────┘                   │  + executor hub :9876       │
-                                       └──────────────┬──────────────┘
-                                                      │ TCP JSON-lines
-                                       ┌──────────────▼──────────────┐
-                                       │  Executor (Rust + Python)   │
-                                       │  mouse / keyboard / scripts │
-                                       └─────────────────────────────┘
+│  Neuro API       │◄─────────────────►│  SERVER (Go)                │
+│  (Vedal)         │                   │  dashboard :8300/ui         │
+└──────────────────┘                   │  executor hub :9876         │
+        ▲                              └──────────────┬──────────────┘
+        │ HTTP (browser)                              │ JSON-lines
+┌───────┴──────────┐                   ┌──────────────▼──────────────┐
+│  DASHBOARD       │                   │  AGENT (Python)             │
+│  (the client)    │                   │  mouse/keyboard/scripts/shell│
+└──────────────────┘                   └─────────────────────────────┘
 ```
+
+`docs/ARCHITECTURE.md` explains the consolidation (Rust and C++ are no longer on
+the shipping path), `docs/EXECUTOR_PROTOCOL.md` is the server↔agent wire format,
+and `docs/RELAY.md` covers coexisting with other integrations.
 
 ### Split-machine quick start
 
 ```bash
-# PC with Neuro / Vedal (bridge)
+# PC that runs Neuro (server)
 ./neuro-integration --ws-url ws://localhost:8000 --executor-listen 0.0.0.0:9876
 
-# PC Neuro should control (executor) — Omarchy/Linux graphical session, NO sudo
-./neuro-desktop --executor --server <bridge-lan-ip>:9876
+# PC Neuro should control (agent) — graphical session, NO sudo
+cd desktop/backend/python && python3 -m controller.agent --bridge <server-lan-ip>:9876
 ```
 
-Co-located (default): `./neuro-desktop` still spawns the bridge beside itself.
+The same machine is the default: run the agent with no arguments (loopback hub)
+or point `NEURO_IPC_FILE` at a shared path for file IPC.
 
 ### Operator dashboard
 
@@ -213,43 +222,45 @@ export NEURO_DENY_ACTIONS="type_text,key_press"     # a hard deny list the dashb
 
 | Component | Language | Role |
 |-----------|----------|------|
-| **neuro-integration** | Go | Bridge: Neuro API, permissions, game interface, dashboard API |
-| **neuro-desktop** | Rust | Executor orchestrator, IPC, process lifecycle |
-| **controller** | Python | Input control, script parsing, platform intents |
-| **frontend** | TypeScript | Operator dashboard, served by the bridge at `/ui/` |
-| **process-handler** | C++ | Optional multi-process supervisor |
+| **neuro-integration** | Go | **Server**: Neuro API, permissions, audit, game interface, dashboard API, executor hub |
+| **controller/agent.py** | Python | **Agent**: input control, script parsing, shell, telemetry (the only part that touches the machine) |
+| **controller/\*** | Python | Drivers the agent uses: `actions`, `desktop`, `shell`, `platform_intents`, `controls/` |
+| **frontend** | TypeScript | **Dashboard client**, served by the server at `/ui/` |
+| **neuro-desktop** | Rust | *Not shipped* — the executor this replaced, kept as a reference |
+| **process-handler** | C++ | *Not shipped* — optional supervisor with a real test suite |
 
 ## Quick Start
 
 ### Prerequisites
 
 ```bash
-# Rust 1.70+
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Go 1.22+
+# Go 1.22+ — the server (required)
 # Download from https://go.dev/dl/
 
-# Python 3.10+
-python --version
+# Python 3.10+ — the agent (required)
+python3 --version
 
-# Node.js 18+ (for frontend)
+# Node.js 18+ — only to build the dashboard client
 node --version
+
+# Rust 1.70+ — OPTIONAL: only for the legacy executor, which is not shipped
+# (docs/ARCHITECTURE.md). Skip it unless you are working on that code.
 ```
 
 ### Installation
 
-**Option 1: Pre-built Binaries** (Recommended)
+**Option 1: Pre-built bundle** (recommended)
 
-1. Download the latest release from [Releases](https://github.com/Nakashireyumi/neuro-desktop/releases)
-2. Extract the archive
-3. Run `neuro-desktop.exe` (Windows) or `./neuro-desktop` (Linux/macOS)
+1. Download the latest release archive
+2. Extract it anywhere
+3. Run `start.bat` (Windows) or `./start.sh` (Linux/macOS): that starts the
+   server, the local agent and the dashboard together
 
 **Option 2: Build from Source**
 
 ```bash
 # Clone repository
-git clone https://github.com/Nakashireyumi/neuro-desktop.git
+git clone https://github.com/cassitly/neuro-desktop.git
 cd neuro-desktop/desktop
 
 # Run automated build
@@ -260,20 +271,19 @@ cd neuro-desktop/desktop
 ### First Run
 
 ```bash
-# Windows
-cd apps/neuro-desktop/target/release
-.\neuro-desktop.exe
+# 1. Server + dashboard (PC that runs Neuro)
+cd desktop/apps/neuro-integration && go build -o neuro-integration . && ./neuro-integration
 
-# Linux/macOS
-cd apps/neuro-desktop/target/release
-./neuro-desktop
+# 2. Agent (PC Neuro should control; the same machine in a dev setup)
+cd desktop/backend/python && python3 -m controller.agent --bridge 127.0.0.1:9876
+
+# 3. Dashboard
+#    http://127.0.0.1:8300/ui/
 ```
 
-The system will automatically:
-1. ✅ Initialize Python controllers
-2. ✅ Start IPC handler
-3. ✅ Launch Go integration
-4. ✅ Connect to Neuro API (default: `ws://localhost:8000`)
+Or stage the whole thing at once: `./scripts/bundle/dev.sh` (Linux/macOS) /
+`.\scripts\bundle\dev.ps1` (Windows). The server prints every connection attempt,
+so you can see immediately whether Neuro, the agent and the dashboard are up.
 
 ## Usage
 
@@ -749,7 +759,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Support
 
 - 💬 [Discord](https://discord.gg/neuro)
-- 🐛 [Issue Tracker](https://github.com/Nakashireyumi/neuro-desktop/issues)
+- 🐛 [Issue Tracker](https://github.com/cassitly/neuro-desktop/issues)
 - 📧 Email: support@neuro-desktop.dev
 
 ---

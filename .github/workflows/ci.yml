@@ -63,13 +63,11 @@ jobs:
           cache-dependency-path: desktop/frontend/package-lock.json
 
       # ---------------------------------------------------------------
-      # Rust executor: advisory.
+      # Rust executor: advisory, and legacy.
       #
-      # The bridge, controller and dashboard are verified below; the Rust
-      # executor is huge and the checkout may not compile on every runner, so a
-      # failure here is reported but does not red the whole pipeline. Remove
-      # continue-on-error once the executor is confirmed building on all three
-      # platforms.
+      # The Python agent replaced it (docs/ARCHITECTURE.md) and it is not part of
+      # the shipped bundle, so a failure here does not red the pipeline. It stays
+      # in the build matrix until the crate is deleted or moved to legacy/.
       # ---------------------------------------------------------------
       - name: Rust format check
         continue-on-error: true
@@ -108,6 +106,21 @@ jobs:
       - name: Go tests (neuro-integration)
         working-directory: desktop/apps/neuro-integration
         run: go test -count=1 ./...
+
+      # The server has OS-specific branches (paths, platform keys, tray/shell
+      # hints). Compiling for the three shipped platforms on every change is how
+      # a Windows-only syntax/API mistake is caught without a Windows box.
+      - name: Go cross-compile (windows, darwin, linux)
+        working-directory: desktop/apps/neuro-integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in windows/amd64 darwin/amd64 darwin/arm64 linux/amd64; do
+            goos="${target%%/*}"
+            goarch="${target##*/}"
+            echo "building $goos/$goarch"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -o /tmp/nd-server-"$goos"-"$goarch" .
+          done
 
       # The race detector needs cgo, which only the Linux runner provides by
       # default. This is where the concurrent executor-hub / relay code is
@@ -168,6 +181,74 @@ jobs:
           cmake -S desktop/apps/process-handler -B desktop/apps/process-handler/build-ci -DBUILD_TESTS=ON
           cmake --build desktop/apps/process-handler/build-ci --config Release --parallel
           ctest --test-dir desktop/apps/process-handler/build-ci -C Release --output-on-failure
+
+  # The server and the agent are two languages and two processes; a unit test on
+  # each side cannot see a protocol regression between them. This job starts
+  # both for real and asks the dashboard what it sees.
+  agent-e2e:
+    name: Server + agent end to end
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Build the server
+        working-directory: desktop/apps/neuro-integration
+        run: go build -o /tmp/neuro-integration .
+
+      - name: Start the server
+        env:
+          NEURO_HEADLESS: "1"
+          NEURO_EXECUTOR_LISTEN: 127.0.0.1:9876
+          NEURO_ADMIN_LISTEN: 127.0.0.1:8399
+          NEURO_PERMISSIONS_FILE: ${{ runner.temp }}/permissions.json
+          NEURO_SHELL_ALLOWLIST: echo
+        run: |
+          cp desktop/apps/neuro-integration/permissions.example.json "$NEURO_PERMISSIONS_FILE"
+          nohup /tmp/neuro-integration --ws-url ws://127.0.0.1:8000 > /tmp/server.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8399/health >/dev/null; then exit 0; fi
+            sleep 0.5
+          done
+          echo "server did not come up:"; cat /tmp/server.log; exit 1
+
+      - name: Start the agent and check that the server sees it
+        env:
+          NEURO_HEADLESS: "1"
+          PYTHONPATH: desktop/backend/python
+        run: |
+          set -euo pipefail
+          python -m controller.agent --bridge 127.0.0.1:9876 > /tmp/agent.log 2>&1 &
+          for _ in $(seq 1 30); do
+            status="$(curl -fsS http://127.0.0.1:8399/api/status)"
+            if echo "$status" | grep -q '"connected": *true'; then
+              echo "$status" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['executor']['connected'] is True; print('executor connected, profile:', d['executor'].get('remote'))"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "the agent never showed up as connected"; cat /tmp/agent.log; cat /tmp/server.log; exit 1
+
+      - name: The agent's telemetry is what the dashboard shows
+        run: |
+          curl -fsS http://127.0.0.1:8399/api/actions | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['actions']), 'actions exposed')"
+
+      - name: Logs on failure
+        if: failure()
+        run: |
+          echo "--- server ---"; tail -50 /tmp/server.log || true
+          echo "--- agent ---"; tail -50 /tmp/agent.log || true
 
   python-cli-only:
     name: Python controller on a CLI-only install (stdlib only)

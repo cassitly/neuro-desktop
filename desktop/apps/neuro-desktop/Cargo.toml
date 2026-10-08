@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rust-core = { path = "../../native/rust-core" }
 pyo3 = { version = "0.21.0", features = ["auto-initialize"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

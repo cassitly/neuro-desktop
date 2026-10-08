@@ -817,7 +817,7 @@ func (r *RelayState) executeRelayCommand(from string, cmd map[string]interface{}
 		return
 	}
 
-	if _, err := integration.sendToRust(command); err != nil {
+	if _, err := integration.sendToExecutor(command); err != nil {
 		log.Printf("Relay: command %q from %q failed: %v", name, from, err)
 		return
 	}

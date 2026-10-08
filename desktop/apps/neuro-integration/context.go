@@ -84,7 +84,7 @@ func (n *NDIntegration) fetchDesktopStatus(captureScreenshot bool) (map[string]i
 		ClearAfter: false,
 	}
 
-	resp, err := n.sendToRust(cmd)
+	resp, err := n.sendToExecutor(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("ipc error: %w", err)
 	}

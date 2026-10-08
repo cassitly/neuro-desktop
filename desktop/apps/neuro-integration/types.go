@@ -7,7 +7,7 @@ import (
 	neuro "github.com/cassitly/neuro-integration-sdk"
 )
 
-// Command types that match the Rust IPC implementation.
+// Command types on the executor protocol (docs/EXECUTOR_PROTOCOL.md).
 type CommandType string
 
 type NDIntegration struct {
@@ -46,7 +46,7 @@ type NDIntegration struct {
 	startedAt time.Time
 }
 
-// IPC Command to Rust binary.
+// IPCCommand is one command for the executor.
 type IPCCommand struct {
 	Type       CommandType            `json:"type"`
 	Params     map[string]interface{} `json:"params,omitempty"`
@@ -54,7 +54,7 @@ type IPCCommand struct {
 	ClearAfter bool                   `json:"clear_after"`
 }
 
-// IPC Response from Rust binary.
+// IPCResponse is the executor's answer to one command.
 type IPCResponse struct {
 	Success bool                   `json:"success"`
 	Data    map[string]interface{} `json:"data,omitempty"`

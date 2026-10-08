@@ -11,13 +11,16 @@ Last updated: 2026-10-08
 | Piece | Binary / path | Role |
 |-------|---------------|------|
 | **Bridge (server)** | `neuro-integration` | Neuro WebSocket client, permissions, TCP executor hub `:9876`, admin HTTP `:8300` |
-| **Executor (client)** | `neuro-desktop` + Python | Mouse/keyboard/scripts on the controlled machine |
+| **Agent** | `desktop/backend/python/controller/agent.py` | Mouse/keyboard/scripts/shell on the controlled machine (the only part that touches it) |
 | **Local Neuro mock** | `desktop/tools/ollama-neuro` | Randy-like tester using Ollama + `heredos/rwkv7:2.9b` |
 | **Operator dashboard** | `desktop/frontend`, served by the bridge at `/ui/` | Live permissions, extensions, games and status |
 | **Fake executor** | `desktop/tools/fake-executor` | Protocol simulator for the dashboard (never injects input) |
-| **Process supervisor** | `process-handler` | Optional; real message parsing + lifecycle now, still not required for day-to-day use |
+| **Process supervisor** | `process-handler` | Not shipped. Real parser/lifecycle with a 100-check suite, but nothing calls it: the agent reconnects on its own. Candidate for deletion (`docs/PRODUCTION_TODO.md`). |
 
-**Split machines:** bridge on the Neuro/operator PC; executor on the desktop Neuro should control (`--executor --server host:9876`).
+**Split machines:** the server runs where Neuro runs; the agent runs on the PC Neuro should control
+(`python3 -m controller.agent --bridge <server-ip>:9876`). One machine: point the agent at loopback, or use
+`NEURO_IPC_FILE` for file IPC. The Rust executor and the C++ supervisor are **not shipped** — see
+`docs/ARCHITECTURE.md`.
 
 **Co-located:** `./neuro-desktop` can still spawn the Go bridge beside itself (file IPC fallback if no TCP client).
 
@@ -219,8 +222,8 @@ sudo chown -R "$USER:$USER" frontend/dist dist apps/neuro-desktop/target backend
 # Or split:
 # terminal A — bridge
 ./apps/neuro-desktop/target/release/neuro-integration --ws-url ws://127.0.0.1:8000
-# terminal B — executor (graphical session)
-./apps/neuro-desktop/target/release/neuro-desktop --executor --server 127.0.0.1:9876
+# terminal B — agent (graphical session)
+python3 -m controller.agent --bridge 127.0.0.1:9876   # from desktop/backend/python
 ```
 
 Dashboard without a display, a GPU or pyautogui:

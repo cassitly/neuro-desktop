@@ -482,7 +482,7 @@ func (n *NDIntegration) endGameSession(reason string) neuro.ExecutionResult {
 	}
 
 	// Never leave keys held after a session ends.
-	if _, err := n.sendToRust(IPCCommand{
+	if _, err := n.sendToExecutor(IPCCommand{
 		Type:       CmdKeyReleaseAll,
 		ExecuteNow: true,
 		ClearAfter: false,
@@ -499,7 +499,7 @@ func (n *NDIntegration) endGameSession(reason string) neuro.ExecutionResult {
 }
 
 func (n *NDIntegration) releaseAllInput() neuro.ExecutionResult {
-	resp, err := n.sendToRust(IPCCommand{
+	resp, err := n.sendToExecutor(IPCCommand{
 		Type:       CmdKeyReleaseAll,
 		ExecuteNow: true,
 		ClearAfter: true,
@@ -866,7 +866,7 @@ func (n *NDIntegration) launchGame(profile *GameProfile) error {
 			profile.Name, key, strings.Join(sortedKeys(profile.Launch.Commands), ", "))
 	}
 
-	resp, err := n.sendToRust(IPCCommand{
+	resp, err := n.sendToExecutor(IPCCommand{
 		Type:       CmdRunScript,
 		Params:     map[string]interface{}{"script": fmt.Sprintf("LAUNCH %s", command)},
 		ExecuteNow: true,
