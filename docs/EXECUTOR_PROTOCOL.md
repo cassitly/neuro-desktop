@@ -4,9 +4,9 @@ The server decides *what* to do; the agent is the only process that touches a
 machine. They talk over one of three transports with the same message format:
 newline-delimited JSON (one object per line, UTF-8, no length prefix).
 
-* **agent → server** (`python3 -m controller.agent --bridge host:9876`)
-* **server → agent** (`--executor-listen host:9876`, agent connects out from
-  behind a firewall/NAT with `--listen host:9877`)
+* **agent → server** (`python3 -m controller.agent --bridge host:9876`). The agent always dials
+  out to the hub, so it needs no inbound port. The server's side is `NEURO_EXECUTOR_LISTEN`
+  (`-executor-listen`), which defaults to `127.0.0.1:9876`.
 * **file IPC** (co-located only): the server writes the command to
   `NEURO_IPC_FILE` and polls `NEURO_IPC_FILE.response`.
 

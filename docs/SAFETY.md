@@ -1,68 +1,80 @@
-# Safety systems and firewalls
+# Safety
 
-Every control listed here exists in the code, has a test, and can be turned on or
-off without editing code. The rule the project follows: **the desktop is never
-driven by something the operator did not allow, and every refusal is visible.**
+This is the order of defences, where each one lives, and what it does when it refuses.
+Read it before you give Neuro a new capability, and before you open a port.
 
 ## 1. Where the safety code lives
 
-| Layer | File | What it enforces |
-| ----- | ---- | ---------------- |
-| Bridge (Go) | `desktop/apps/neuro-integration/safety.go` | stop switch, kill-switch file, audit log |
-| Bridge (Go) | `desktop/apps/neuro-integration/permissions.go` | permission scopes, allow/deny lists, default-allow |
-| Bridge (Go) | `desktop/apps/neuro-integration/shellfirewall.go` | shell command allow-list and dangerous-pattern rules |
-| Bridge (Go) | `desktop/apps/neuro-integration/ratelimit.go` | per-scope actions/minute limits |
-| Bridge (Go) | `desktop/apps/neuro-integration/admin_server.go` | token-gated dashboard, loopback-only defaults |
-| Bridge (Go) | `desktop/apps/neuro-integration/executor_hub.go` | executor shared secret, per-request timeout |
-| Controller (Python) | `desktop/backend/python/controller/shell.py` | the same shell rules again, on the machine that runs them |
-| Controller (Python) | `desktop/backend/python/controller/gui_stub.py` | refuses input actions with no display |
-| Controller (Python) | `desktop/backend/python/controller/launcher.py` | launch allow-list for `system` scope |
-| Bundle scripts | `desktop/scripts/bundle/*.sh` | refuse to run as root / sudo |
+| Layer | Where | What it does |
+|-------|-------|--------------|
+| Operator brake | `desktop/apps/neuro-integration/safety.go` | pause, and the kill-switch file; a small set of actions still runs while stopped |
+| Policy | `permissions.go`, `permission_requests.go`, `admin_permissions.go` | scopes (on, requestable), allow and deny lists, approvals, and the requests Neuro files |
+| Rate limits | `ratelimit.go` | a sliding window per scope, shared by Neuro and by watchers |
+| Shell firewall | `shellfirewall.go` (server) and `controller/shell.py` (agent) | allowlist, dangerous patterns, timeouts |
+| Executor hub | `executor_hub.go` | a token for every agent, and no listening beyond loopback without one |
+| Dashboard | `admin_server.go` | loopback by default; writes need a token elsewhere |
+| Relay | `relay_host.go` (host), `relay.go` (client, and the gates on watcher commands) | a token, browsers refused, frame limits |
+| Extensions and catalog | `catalog_trust.go`, `extensions.go`, `mcp.go` | signatures, publishers, install mode, a clean environment for MCP servers |
+| Vision | `vision.go`, `desktop/apps/nd-vision-server` | a token off loopback, reads only inside one directory |
+| Audit | `NEURO_AUDIT_LOG` (JSON lines) | every refusal and every accepted action |
 
 ## 2. Layers, in the order an action passes through them
 
-```
-Neuro / relay watcher / dashboard
-        │
-        ├─ 1. stop switch        paused?  kill-switch file?  → refuse
-        ├─ 2. deny list          NEURO_DENY_ACTIONS         → refuse
-        ├─ 3. permission scope   scope allowed? allow-list? → refuse
-        ├─ 4. rate limit         scope limits, e.g. 30/min  → refuse
-        ├─ 5. shell firewall     allow-list + regex rules   → refuse
-        └─ 6. audit log          every decision, allowed or refused
-```
+1. **Connection.** Neuro's API is outbound. The executor hub checks its token. The
+   dashboard needs a token off loopback. The relay needs its token, and refuses
+   browsers.
+2. **Operator brake.** A paused bridge, or a present kill-switch file, refuses every
+   action except the stop-safe set (section 3).
+3. **Hard deny.** Actions in `NEURO_DENY_ACTIONS` are refused whatever the policy says.
+   The dashboard cannot remove them.
+4. **Policy.** The action's scope must be on, and the action must not be on the deny
+   list. A scope that is off but requestable is refused with a way to ask (section 4).
+5. **Rate limit.** Each scope has an optional `max_actions_per_minute`. Over the limit,
+   the refusal says when to try again.
+6. **Validation.** Parameters are checked before anything runs. A refusal names the
+   action and the parameter, and gives a valid example, so a small model can correct
+   itself on its next turn.
+7. **Executor.** The agent applies its own checks. The shell firewall is one of them.
+8. **Audit.** Each refusal and each accepted action is written to the audit log.
 
-Refusals name the reason and, where the operator can change it, the setting to
-change (`NEURO_SHELL_ALLOWLIST`, the dashboard's Permissions tab, ...).
+A watcher command that comes through the relay passes through the same gates, in
+the same order (`denyRelayCommand`). It is counted against the same rate limit.
 
 ## 3. The operator brake
 
-| Control | How to use it |
-| ------- | ------------- |
-| Pause | `POST /api/control/pause` (dashboard button) or `NEURO_PAUSED=1` |
-| Resume | `POST /api/control/resume`, or the dashboard button |
-| Kill switch | create the file in `NEURO_KILL_SWITCH_FILE`, or `POST /api/control` with `{"kill_switch": true}` |
-| Release input | `POST /api/games/release` — releases every held key and mouse button |
-
-While stopped, only release/status/session-end actions run. The stop switch is
-checked before permissions, so it cannot be bypassed by a permissive policy, and
-it applies to commands that arrive through the relay as well as through Neuro.
+- `NEURO_PAUSED=1` starts the bridge paused. The dashboard's Pause and Resume buttons
+  call `POST /api/control/pause` and `POST /api/control/resume`.
+- The kill switch is a file. `NEURO_KILL_SWITCH_FILE` names it, and while it exists every
+  action is refused. Deleting the file resumes the bridge.
+- While the bridge is stopped, these still run: `key_release_all`, `get_status`,
+  `send_desktop_context`, `game_release_all`, `game_status`, `game_end_session`,
+  `desktop_guide`, and `reset_controls`. They release held input, report status, and
+  tell Neuro how to recover. `request_permission` does not run while stopped.
 
 ## 4. Permissions
 
-Scopes are `input`, `filesystem`, `process`, `network`, `system`, `vision`,
-`game`, `shell`.
+The policy is a JSON file (`NEURO_PERMISSIONS_FILE`). `default_allow` decides what happens to an
+action that no scope or list covers, and it is `false` by default. Without a file the server uses a
+built-in default, and an action is denied unless its scope is on.
 
-* `default_allow` applies only to actions whose scope is not listed. Shell and
-  system are deliberately excluded from that shortcut.
-* `allowed_actions` / `denied_actions` override per action; hard denials
-  (`denied_actions`) always win.
-* `shell` and `system` need an explicit entry in the policy. An allow-list entry
-  for `shell_command` alone is not enough: the scope must be enabled too.
-* Each scope can carry limits, e.g. `{"allowed": true, "max_actions_per_minute": 30}`.
-* The dashboard writes the policy atomically and applies it to the running
-  bridge immediately (`PUT /api/permissions`); a policy that does not parse is
-  rejected and the previous one stays live.
+| Scope | Default | Notes |
+|-------|---------|-------|
+| `input` | on | mouse and keyboard |
+| `process`, `network`, `vision`, `game` | on | |
+| `filesystem`, `system`, `shell`, `extensions` | **off** | `shell` and `system` need explicit consent |
+
+Each scope has `allowed` and `requestable`:
+
+- **Requestable** means Neuro may call `request_permission` with a reason and a time
+  (5 minutes, 15, 1 hour, 4 hours, or until revoked). The request shows on the Permissions
+  page. Vedal approves it or denies it. Approvals and requests are in memory, so a restart
+  clears them.
+- **Always allowed**, under any policy: `desktop_guide`, `reset_controls`, and
+  `request_permission`. A deny-all policy cannot lock Neuro out of the way to recover or
+  to ask. A test pins this.
+
+The dashboard saves policy changes to `NEURO_PERMISSIONS_FILE` (`PUT /api/permissions`)
+and applies them at once. Keep a copy of the file before you edit it on the dashboard.
 
 ## 5. Shell firewall
 
@@ -84,41 +96,56 @@ controller (so the executor is not defenceless if it is driven directly).
 
 ## 6. Network exposure
 
-* The dashboard binds to `127.0.0.1:8300` by default. Binding anywhere else
-  requires `NEURO_ADMIN_TOKEN`; non-GET requests without the token get `403`,
-  and the bridge warns loudly at startup.
-* The executor port takes a shared secret (`NEURO_EXECUTOR_TOKEN`). Without it,
-  only loopback clients can connect.
-* The relay link sends `auth_token` from `NEURO_RELAY_TOKEN` and reports a
-  mismatch as an actionable error instead of silently retrying forever.
-* No component opens an inbound port to the internet by itself.
+- **Dashboard.** It binds to `127.0.0.1:8300` by default. Binding anywhere else needs
+  `NEURO_ADMIN_TOKEN`. Non-GET requests without the token get `403`, and the bridge warns
+  loudly at startup.
+- **Executor hub.** With `NEURO_EXECUTOR_TOKEN` set, every agent must present it. Without
+  one, the hub listens on loopback only. It refuses to start on any other address and
+  says why. Before this rule, a hub with no token accepted any client as the executor,
+  and that client received Neuro's commands.
+- **Relay host.** Loopback by default. It refuses any request with an `Origin` header
+  (so a web page cannot connect), refuses binary frames, refuses the upstream sample token
+  and any token under 16 characters, and limits each connection's frame rate. Anything
+  that holds the token can register, so keep the token secret.
+- **Vision server.** Loopback by default. Binding elsewhere needs `NEURO_VISION_TOKEN`. It
+  reads image files only inside `NEURO_VISION_ROOT`, and never opens a path without one.
+- **MCP servers.** Child processes that the bridge starts only after Vedal enables them,
+  and only from the signed catalog. A child gets a small base environment and only the
+  variables its catalog entry lists.
+- No component opens an inbound port to the internet by itself.
 
-## 7. What is audited
+## 7. Extensions and the catalog
 
-`NEURO_AUDIT_LOG` writes JSON lines: action name, decision (`accepted`,
-`refused`, `error`), reason, and the command for shell actions. The dashboard's
-`/api/audit` endpoint tails it. Every refusal path in the bridge records an
-entry, which is what makes a stuck model debuggable after the fact.
+- Catalog items are signed. An item whose signature does not match is refused in every
+  mode. An item signed by a publisher the server does not list is refused too.
+- Installing never takes a URL from Neuro or from the dashboard. The id is looked up in the
+  signed index.
+- `NEURO_EXTENSION_INSTALL_MODE=metadata_only` (the default) records the install and
+  fetches nothing. `git_clone` fetches the item's pinned commit from its `https`
+  repository, and only for a verified item.
+- `NEURO_EXTENSIONS_ALLOW_UNSIGNED` lets unsigned items be fetched. It exists for a lab
+  machine. Do not set it on a machine Neuro controls.
+- The shipped signature uses a key that the maintainer generated for this repository.
+  Rotate to your own publisher key before you rely on the signatures. See
+  `docs/PRODUCTION_TODO.md`.
 
-## 8. Verify it yourself
+## 8. What is audited
+
+`NEURO_AUDIT_LOG` writes JSON lines. Each line has the action name, the decision
+(`accepted`, `refused`, or `error`), a reason for a refusal, and the command for a shell
+action. Relay commands are recorded as `relay_command`. The dashboard's `/api/audit`
+endpoint reads it. Every refusal path records an entry, which is what makes a stuck model
+debuggable after the fact. Tokens are never written.
+
+## 9. Verify it yourself
 
 ```bash
-# Go: safety, policy, rate limit, shell firewall, executor auth, relay rules
-cd desktop/apps/neuro-integration && go test -count=1 ./...
-
-# Python: headless refusal, shell firewall, primitives — no display needed
-cd desktop/backend/python && python3 -m unittest discover -s tests -v
-
-# Repository-wide: JSON, catalog, docs, C++ parser/lifecycle, ollama brain
-python3 desktop/tools/ci/repo_checks.py
-
-# Live: refusal is reported, not silent
-curl -s -H "X-ND-Token: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"command":"ls"}' http://127.0.0.1:8300/api/control   # pause etc.
+cd desktop/apps/neuro-integration
+go test -race -count=1 ./...                                  # everything
+go test -count=1 -run 'Relay|Watcher' -v ./                   # the relay and watcher gates
+go test -count=1 -run 'ExecutorHub' -v ./                     # the hub's token and loopback rules
+go test -count=1 -run 'WeakModel|EscapeHatch|ExamplePolicy' -v ./   # refusals and the escape hatch
+python3 ../../tools/ci/repo_checks.py                         # the repository checks (run from this folder)
 ```
 
-Tests that guard the invariants specifically:
-`TestScopeRequiresExplicitConsent` (shell/system cannot be handed out by
-default-allow or an allow-list entry), `TestShellFirewall*`,
-`TestRateLimit*`, `TestExecutorHubRequiresToken`,
-`TestExecutorHubRejectsWrongToken`, `test_headless_and_shell.py`.
+The CI workflow runs all of these, and a release is blocked unless every job passes.

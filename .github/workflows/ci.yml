@@ -230,3 +230,273 @@ jobs:
           DISPLAY: ""
           WAYLAND_DISPLAY: ""
         run: python -m unittest discover desktop/backend/python/tests -t desktop/backend/python -v
+
+  # ---------------------------------------------------------------
+  # Neuro Relay host (Go, `neuro-integration relay`). The protocol tests run
+  # the bridge's own relay client against the host; the smoke test runs the
+  # built binary the way an operator would.
+  # ---------------------------------------------------------------
+  relay-host:
+    name: Neuro Relay host (protocol tests and a live smoke test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Relay protocol tests (race detector)
+        working-directory: desktop/apps/neuro-integration
+        run: go test -race -count=1 -run 'Relay' -v ./
+
+      - name: Build the bridge binary
+        working-directory: desktop/apps/neuro-integration
+        run: go build -o /tmp/nd-bridge .
+
+      - name: The relay refuses the upstream sample token
+        run: |
+          set +e
+          NEURO_RELAY_AUTH_TOKEN=super-secret-token timeout 15 /tmp/nd-bridge relay \
+            --listen 127.0.0.1:18765 --health 127.0.0.1:18766 --token-file /tmp/relay-token-refused
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" = "2"
+
+      - name: Start the relay with a generated token and check /health
+        run: |
+          set -euo pipefail
+          rm -f /tmp/relay-token-ci
+          /tmp/nd-bridge relay --listen 127.0.0.1:18765 --health 127.0.0.1:18766 \
+            --token-file /tmp/relay-token-ci > /tmp/relay.log 2>&1 &
+          echo $! > /tmp/relay.pid
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:18766/health > /tmp/health.json; then break; fi
+            sleep 0.25
+          done
+          cat /tmp/health.json
+          grep -q '"ok":true' /tmp/health.json
+          test "$(stat -c %a /tmp/relay-token-ci)" = "600"
+          grep -q "generated one" /tmp/relay.log
+
+      - name: Stop the relay
+        if: always()
+        run: |
+          if [ -f /tmp/relay.pid ]; then kill "$(cat /tmp/relay.pid)" || true; fi
+
+      - name: Relay log on failure
+        if: failure()
+        run: cat /tmp/relay.log || true
+
+  # ---------------------------------------------------------------
+  # MCP bridge: fake-server tests on every run, and the real npm reference
+  # server (@modelcontextprotocol/server-memory, pinned) through npx.
+  # ---------------------------------------------------------------
+  mcp:
+    name: MCP bridge (fake server, then the real reference server)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: MCP tests with the fake server (race detector)
+        working-directory: desktop/apps/neuro-integration
+        run: go test -race -count=1 -run 'MCP' -v ./
+
+      - name: MCP test against the real npm reference server
+        working-directory: desktop/apps/neuro-integration
+        env:
+          NDTEST_REAL_MCP: "1"
+        run: go test -count=1 -run 'TestMCPRealReferenceServer' -v ./
+
+  # ---------------------------------------------------------------
+  # Vision: the bridge's client, and the nd-vision-server Python package.
+  # ---------------------------------------------------------------
+  vision:
+    name: Vision (bridge client and nd-vision-server)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Bridge vision client tests
+        working-directory: desktop/apps/neuro-integration
+        run: go test -count=1 -run 'Vision' -v ./
+
+      - name: Install the optional image backend (Pillow)
+        run: python -m pip install -q pillow
+
+      - name: nd-vision-server tests
+        working-directory: desktop/apps/nd-vision-server
+        run: python -m unittest discover -s tests -t . -v
+
+  # ---------------------------------------------------------------
+  # Signed catalog: the shipped index must verify with the bridge's own
+  # `catalog verify`, and the trust rules have their own tests.
+  # ---------------------------------------------------------------
+  catalog-verify:
+    name: Signed catalog (verify the shipped index)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Build the bridge (it also contains the catalog tool)
+        working-directory: desktop/apps/neuro-integration
+        run: go build -o /tmp/nd-bridge .
+
+      - name: Verify the shipped catalog signatures
+        working-directory: desktop
+        run: /tmp/nd-bridge catalog verify --index catalog/index.json --publishers catalog/publishers.json
+
+      - name: Catalog trust and shipped-catalog tests
+        working-directory: desktop/apps/neuro-integration
+        run: go test -count=1 -run 'Catalog|Sign|Tamper|Publisher|Canonical|Keygen|Signing|Extension' -v ./
+
+  # ---------------------------------------------------------------
+  # Small-model eval: recorded weak-model calls with the verdict and the
+  # corrective text they must get, plus the escape hatch and the example policy.
+  # ---------------------------------------------------------------
+  weak-model-eval:
+    name: Small-model eval (recorded calls, escape hatch, example policy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Run the eval
+        working-directory: desktop/apps/neuro-integration
+        run: go test -count=1 -run 'WeakModel|RefusalsName|EscapeHatch|ResetOutcome|ExamplePolicy' -v ./
+
+  # ---------------------------------------------------------------
+  # Release bundle: build the dashboard and the bundle exactly as a release
+  # does, then check that the server can serve the dashboard from the bundle
+  # folder and that the shipped catalog verifies from inside it.
+  # ---------------------------------------------------------------
+  bundle:
+    name: Release bundle (build, then serve the dashboard from it)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Build the dashboard and the bundle
+        working-directory: desktop
+        env:
+          NEURO_BUNDLE_SKIP_VENV: "1"
+        run: |
+          set -euo pipefail
+          (cd frontend && npm ci && npm run build)
+          ./scripts/bundle/prod.sh
+
+      - name: The bundle has what the launcher needs
+        working-directory: desktop/dist/neuro-desktop
+        run: |
+          set -euo pipefail
+          test -x neuro-integration
+          test -f start.sh && sh -n start.sh
+          test -f permissions.json
+          test -f frontend/index.html
+          test -f catalog/index.json && test -f catalog/publishers.json
+          ./neuro-integration catalog verify --index catalog/index.json --publishers catalog/publishers.json
+
+      - name: Serve the dashboard from the bundle folder
+        working-directory: desktop/dist/neuro-desktop
+        run: |
+          set -euo pipefail
+          NEURO_ADMIN_LISTEN=127.0.0.1:8311 NEURO_EXECUTOR_LISTEN=127.0.0.1:9911 \
+            NEURO_UI_DIR="$PWD/frontend" NEURO_PERMISSIONS_FILE="$PWD/permissions.json" \
+            NEURO_AUDIT_LOG=/tmp/bundle-audit.log ./neuro-integration > /tmp/bundle-server.log 2>&1 &
+          echo $! > /tmp/bundle-server.pid
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8311/ui/ -o /tmp/ui.html; then break; fi
+            sleep 0.25
+          done
+          grep -q 'src="./assets/' /tmp/ui.html
+          curl -sf http://127.0.0.1:8311/api/runtime | grep -q '"state": "running"'
+
+      - name: Stop the server
+        if: always()
+        run: |
+          if [ -f /tmp/bundle-server.pid ]; then kill "$(cat /tmp/bundle-server.pid)" || true; fi
+
+      - name: Server log on failure
+        if: failure()
+        run: cat /tmp/bundle-server.log || true
+
+  # ---------------------------------------------------------------
+  # Release gate: one check that branch protection can require. It fails if any
+  # other job did not succeed, including jobs that were skipped.
+  # ---------------------------------------------------------------
+  release-gate:
+    name: Release gate (every required job succeeded)
+    if: always()
+    needs: [repo-checks, build-and-test, agent-e2e, python-cli-only, relay-host, mcp, vision, catalog-verify, weak-model-eval, bundle]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          results = json.loads(os.environ["RESULTS"])
+          bad = {name: r["result"] for name, r in results.items() if r["result"] != "success"}
+          for name, r in sorted(results.items()):
+              print(f"{name}: {r['result']}")
+          if bad:
+              print("not successful:", bad)
+              sys.exit(1)
+          print(f"all {len(results)} required jobs succeeded")
+          PY

@@ -4,7 +4,7 @@ Honest snapshot of what works today (post bridge/executor split). This is not a
 roadmap; see [VISION.md](../VISION.md) and [PRODUCTION_TODO.md](PRODUCTION_TODO.md)
 for direction and backlog.
 
-Last updated: 2026-10-08
+Last updated: 2026-10-09
 
 ## Architecture (what you actually run)
 
@@ -15,14 +15,16 @@ Last updated: 2026-10-08
 | **Local Neuro mock** | `desktop/tools/ollama-neuro` | Randy-like tester using Ollama + `heredos/rwkv7:2.9b` |
 | **Operator dashboard** | `desktop/frontend`, served by the bridge at `/ui/` | Live permissions, extensions, games and status |
 | **Fake executor** | `desktop/tools/fake-executor` | Protocol simulator for the dashboard (never injects input) |
-| **Process supervisor** | `process-handler` | Not shipped. Real parser/lifecycle with a 100-check suite, but nothing calls it: the agent reconnects on its own. Candidate for deletion (`docs/PRODUCTION_TODO.md`). |
+| **Relay host** | `neuro-integration relay` | Neuro Relay socket for other integrations and watchers (see `docs/RELAY.md`) |
+| **MCP bridge** | inside the bridge | Runs the MCP servers Vedal enabled from the signed catalog, as child processes |
+| **Vision server** | `desktop/apps/nd-vision-server` | Optional screen description, reached through `NEURO_VISION_URL` |
 
 **Split machines:** the server runs where Neuro runs; the agent runs on the PC Neuro should control
 (`python3 -m controller.agent --bridge <server-ip>:9876`). One machine: point the agent at loopback, or use
-`NEURO_IPC_FILE` for file IPC. The Rust executor and the C++ supervisor are **not shipped** — see
+`NEURO_IPC_FILE` for file IPC. The Rust executor and the C++ supervisor were removed; see
 `docs/ARCHITECTURE.md`.
 
-**Co-located:** `./neuro-desktop` can still spawn the Go bridge beside itself (file IPC fallback if no TCP client).
+**Co-located:** the agent can run on the same PC. With no TCP connection, the server uses file IPC (`NEURO_IPC_FILE`).
 
 ## Platforms
 
@@ -51,9 +53,15 @@ Not production-hardened:
 
 - Live Neuro vs Evil character UX beyond startup ack fields
 - Voice chat side-channel
-- Signed / distributed permission policies
+- Permission policies are local files. Catalog items are signed; see the catalog section
 
 ## Actions Neuro can use
+
+### Always available (cannot be switched off)
+
+- `desktop_guide` (optional `topic`): how to use the desktop, with examples. Neuro should call it first when unsure, and after any refusal.
+- `reset_controls` (no parameters): the escape hatch. It clears queued inputs that have not run yet, then releases every held key and button. It runs even while the bridge is paused or killed, and it works under a deny-all policy. The reply says what worked and what may still be held.
+- `request_permission` (`scope`, `reason`, optional `minutes`): asks Vedal for a scope that is switched on for requests. Vedal approves it for a chosen time, or denies it, on the Permissions page.
 
 ### Low-level (default registered on startup)
 
@@ -119,48 +127,29 @@ Unsupported intents on an OS fail with a clear error (e.g. macOS clipboard histo
 - Catalog list/search/get — metadata from local catalog config
 - Extensions: install (`metadata_only` or `git_clone`), enable/disable, uninstall,
   persisted in the extension state file, driven from the dashboard Extensions tab
-- Desktop context + optional HTTP vision summarize (`NEURO_VISION_SERVER_URL`)
+- Desktop context + optional HTTP vision summary (`NEURO_VISION_URL`; `NEURO_VISION_SERVER_URL` is still read as an alias)
+- Extensions come from the signed catalog only. Neuro can install one (`install_extension`) when the `extensions` scope is on, and it can ask for that scope with `request_permission`
+- MCP servers from the catalog run as child processes, only after Vedal enables them. Their tools appear as actions under the `extensions` scope
 - `game_observe` (and the dashboard's “Show me what Neuro sees”) captures a
   screenshot and asks the vision server for a summary
 
 ### Working alongside other integrations
 
-- Relay participation (`NEURO_RELAY_*`): register as `<name>` on the relay's
-  intermediary socket, publish action schemas, report peers, and receive watcher
-  commands that still pass through the permission policy, pause flag and kill switch
-- Shared-Neuro-connection mode: point `NEURO_SDK_WS_URL` at the relay's Nakurity
-  Backend (usually `ws://127.0.0.1:8001`) and the bridge is an ordinary Neuro SDK
-  client to the relay, which is the supported way to run beside a game integration
-- Peer awareness: watcher events (`integration_registered_actions`,
-  `integration_message`) are turned into concrete hints, so a refused
-  `game_move` names the owning integration's real action names
-- Registrations are verified against the upstream sources; a bad
-  `NEURO_RELAY_TOKEN` is reported as "invalid auth token" instead of an
-  unexplained disconnect, and the bridge no longer lists itself as a peer
-- The relay link survives an idle relay: liveness is checked with websocket
-  pings (a gorilla read deadline used to reconnect the link every 90 seconds),
-  and writes racing the relay's rejection frame are reported as such
-- Verified against a live upstream relay (`python3
-  desktop/tools/relay-compat/run_relay.py <neuro-relay>/src`): the intermediary
-  logs `Registered actions from Neuro Desktop: [... 51 actions]` and the link
-  stays connected
-- Upstream caveat, found while verifying: the relay cannot start with any
-  published `neuro-api` release because `NakurityBackend` does not implement all
-  abstract methods (0.x/1.x have no `neuro_api.server` at all; 2.x+ leave five to
-  seven methods abstract). `desktop/tools/relay-compat/run_relay.py` fills them
-  in at runtime so the relay runs unchanged
-- `NEURO_RESERVED_ACTIONS` keeps another integration's action names out of the
-  registry so the two cannot shadow each other
-- `control.mode: auto` delegates a game to its dedicated integration when that
-  integration is connected, and drives it from Neuro Desktop when it is not
+- The server connects to Neuro Relay as an integration (`NEURO_RELAY_ENABLED`, `NEURO_RELAY_URL`, `NEURO_RELAY_TOKEN`). The relay can be the built-in host (`neuro-integration relay`) or the upstream Python relay.
+- `TestRelayRegistrationMatchesIntermediaryProtocol` pins the client's frames to the intermediary's protocol, and `TestRelayClientAgainstTheGoHost` runs the server's own client against the built-in host in CI.
+- Not repeated after the shim was removed: a live run against the upstream Python relay with its own integrations. Re-run it by hand before relying on that combination.
+- `NEURO_RESERVED_ACTIONS` keeps another integration's action names out of the registry, so the two cannot shadow each other.
+- `control.mode: auto` delegates a game to its dedicated integration when that integration is connected, and drives it from Neuro Desktop when it is not.
 
 ## Operator / Vedal controls
 
 Working:
 
 - `permissions.json` enforced in the Go bridge before actions run
-- Scopes: `input`, `game`, `shell`, `filesystem`, `process`, `network`, `system`, `vision`
-- Scope values accept both `true`/`false` and `{"allowed": …, "limits": {...}}`;
+- Permission requests: when Neuro asks for a scope that is requestable, the request is listed on the Permissions page with the reason and the time asked for. Vedal approves or denies it. Approvals last until the chosen time or until revoked, and they are in memory, so a restart clears them
+- The Extensions page shows live runtime state first (bridge, relay, vision server, MCP bridge), and install state second
+- Scopes: `input`, `game`, `shell`, `filesystem`, `process`, `network`, `system`, `vision`, `extensions`
+- Scope values accept both `true`/`false` and `{"allowed": …, "requestable": …, "limits": {...}}`;
   per-scope `max_actions_per_minute` is enforced (sliding window, denial explains
   how to raise it)
 - Safe defaults: system + filesystem restricted; the example policy denies
@@ -187,7 +176,7 @@ Not done:
 
 - Rich path/process/host allowlists for file and network actions (the shell has a
   real allowlist/denylist; file/network scopes are still whole-capability toggles)
-- Signed / distributed permission policies
+- Permission policies are local files. Catalog items are signed; see the catalog section
 
 ## Local testing without live Neuro
 
@@ -200,13 +189,9 @@ Not done:
 
 ## Explicitly not ready
 
-- Full plugin marketplace / signed catalogs (extensions are a catalog + state file,
-  not a sandboxed plugin runtime)
-- Production native tray shell
-- Process-handler as the primary supervisor (stubs / TODOs remain)
-- Guaranteed Linux DE shortcut parity
-- Running input under `sudo` (still forbidden; headless mode exists precisely so
-  this is not needed)
+- A public plugin marketplace. The catalog has one item, the `memory` MCP server, and one publisher key that the maintainer must replace before relying on the signatures.
+- A native tray. This was decided against, not postponed: the dashboard is served by the server and works headless, and a tray could not be built or verified in this environment. See `docs/PRODUCTION_TODO.md`.
+- Process supervision by the server. The server does not start other programs (no relay process, no agent). Operators start each process.
 
 ## Quick verify
 
@@ -214,14 +199,14 @@ Not done:
 cd desktop
 
 # Fix leftover root-owned build dirs if a past sudo broke things:
-sudo chown -R "$USER:$USER" frontend/dist dist apps/neuro-desktop/target backend/python/.venv
+sudo chown -R "$USER:$USER" frontend/dist dist backend/python/.venv
 
 # Bundle as your user (never sudo):
 ./scripts/bundle/dev.sh
 
 # Or split:
 # terminal A — bridge
-./apps/neuro-desktop/target/release/neuro-integration --ws-url ws://127.0.0.1:8000
+cd apps/neuro-integration && go run . -ws-url ws://127.0.0.1:8000
 # terminal B — agent (graphical session)
 python3 -m controller.agent --bridge 127.0.0.1:9876   # from desktop/backend/python
 ```
@@ -248,14 +233,14 @@ NEURO_HEADLESS=1 NEURO_SHELL_ALLOWLIST=ls PYTHONPATH=desktop/backend/python \
 # Repository-level checks (JSON, catalog, example policies, docs)
 python3 desktop/tools/ci/repo_checks.py
 
-# Relay protocol contract (fake intermediary speaking the upstream shapes)
-cd desktop/apps/neuro-integration && go test -run TestRelay -v ./...
+# Relay host and client (the built-in relay, against the bridge's own client)
+cd desktop/apps/neuro-integration && go test -run Relay -v ./...
 
-# Relay end-to-end (real upstream relay + this bridge)
-python3 desktop/tools/relay-compat/run_relay.py /path/to/neuro-relay/src
-# then, with NEURO_RELAY_ENABLED=true NEURO_RELAY_URL=ws://127.0.0.1:8765
-# and NEURO_RELAY_TOKEN matching intermediary.auth_token:
-curl -s http://127.0.0.1:8300/api/relay     # connected/registered true
+# Relay, live: start the host, then point the bridge at it
+NEURO_RELAY_AUTH_TOKEN=<a long random token> go run . relay --listen 127.0.0.1:8765 --health 127.0.0.1:8766
+# in another shell, with NEURO_RELAY_ENABLED=true NEURO_RELAY_URL=ws://127.0.0.1:8765
+# and NEURO_RELAY_TOKEN set to the same token:
+curl -s http://127.0.0.1:8300/api/relay     # connected / registered true
 ```
 
 For a fake Neuro backend: see [desktop/tools/ollama-neuro/README.md](../desktop/tools/ollama-neuro/README.md).

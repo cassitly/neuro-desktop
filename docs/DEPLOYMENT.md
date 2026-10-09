@@ -1,699 +1,200 @@
-# Deployment Guide
+# Deployment
 
-> **Complete guide for deploying Neuro Desktop in various environments**
+This describes how to build, bundle, and run Neuro Desktop. It replaces the older
+guide, which described the Rust executor and the C++ supervisor; both were removed
+(see `CHANGELOG.md`).
 
-## Table of Contents
+There are two processes: the **server** (`neuro-integration`, Go), which is the PC
+Neuro uses and which talks to Neuro's API, and the **agent** (Python), which runs
+the commands on the desktop. They can run on one machine or on two. The dashboard
+is served by the server.
 
-- [Development Setup](#development-setup)
-- [Building from Source](#building-from-source)
-- [Production Deployment](#production-deployment)
-- [Configuration](#configuration)
-- [Troubleshooting](#troubleshooting)
+## Requirements
 
-## Development Setup
+| What | Version | Needed for |
+| --- | --- | --- |
+| Go | 1.22 or newer (`go.mod` says 1.22) | the server |
+| Python | 3.12 is what CI runs; other 3.x versions are untested | the agent |
+| Node.js | 22 is what CI runs | building the dashboard only |
+| Git | any | cloning |
 
-### Prerequisites
+Optional: `tesseract` (OCR for the vision server), Ollama (the local test brain), and
+`npx` on the PATH for MCP servers from the catalog.
 
-Install all required tools:
+**Never run any of it with `sudo`.** The agent needs your logged-in desktop session
+(Wayland and X authorisation belong to that session), and `sudo` makes the files it
+writes owned by root.
 
-#### Windows
+## Build
 
-```powershell
-# Install Rust
-Invoke-WebRequest -Uri https://sh.rustup.rs -OutFile rustup-init.exe
-.\rustup-init.exe
-
-# Install Go
-winget install GoLang.Go
-
-# Install Python 3.10+
-winget install Python.Python.3.10
-
-# Install Node.js
-winget install OpenJS.NodeJS
-
-# Verify installations
-rustc --version
-go version
-python --version
-node --version
-```
-
-#### Linux/macOS
+From the repository root:
 
 ```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install Go (Linux)
-sudo apt update
-sudo apt install golang-go
-
-# Install Go (macOS)
-brew install go
-
-# Install Python
-sudo apt install python3.10 python3.10-venv  # Linux
-brew install python@3.10                      # macOS
-
-# Install Node.js
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-nvm install --lts
-
-# Verify installations
-rustc --version
-go version
-python3 --version
-node --version
+cd desktop
+# the server
+(cd apps/neuro-integration && go build -o neuro-integration .)
+# the dashboard
+(cd frontend && npm ci && npm run build)
+# the agent: nothing to build; it is Python
 ```
 
-### Clone Repository
+On Windows, use `go build -o neuro-integration.exe .` in `apps\neuro-integration`.
+`scripts/build-go.ps1` does the Go step for all three platforms.
 
-```bash
-git clone https://github.com/cassitly/neuro-desktop.git
-cd neuro-desktop/desktop
-```
+## Bundle
 
-### Setup Python Environment
+The bundle scripts put the server, the dashboard, the agent, the catalog, and the
+policy into one folder:
 
-```bash
-cd backend/python
+| Platform | Development bundle | Release bundle |
+| --- | --- | --- |
+| Linux / macOS | `scripts/bundle/dev.sh` | `scripts/bundle/prod.sh` |
+| Windows | `scripts/bundle/dev.ps1` | `scripts/bundle/prod.ps1` |
 
-# Create virtual environment
-python -m venv .venv
-
-# Activate (Windows)
-.venv\Scripts\activate
-
-# Activate (Linux/macOS)
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### Setup Frontend
-
-```bash
-cd frontend
-
-# Install dependencies
-npm install
-
-# Optional: Test build
-npm run build
-```
-
-### Run Development Build
-
-```powershell
-# Windows
-.\scripts\bundle\dev.ps1
-
-# Linux/macOS
-./scripts/bundle/dev.sh
-```
-
-This will:
-1. Build all components
-2. Copy files to `apps/neuro-desktop/target/release`
-3. Launch the application
-
-## Building from Source
-
-### Full Build
-
-```powershell
-# Windows - Complete build with tests
-.\scripts\build-all.ps1
-
-# Linux/macOS
-./scripts/build-all.sh
-```
-
-### Skip Tests (Faster)
-
-```powershell
-.\scripts\build-all.ps1 -SkipTests
-```
-
-### Build Specific Components
-
-```bash
-# Build Rust only
-cd apps/neuro-desktop
-cargo build --release
-
-# Build Go only
-cd apps/neuro-integration
-go build -o neuro-integration.exe .
-
-# Build Frontend only
-cd frontend
-npm run build
-
-# Setup Python only
-cd backend/python
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-### Cross-Platform Go Builds
-
-```powershell
-.\scripts\build-go.ps1
-```
-
-Creates binaries for:
-- Windows (amd64)
-- Linux (amd64)
-- macOS (amd64, arm64)
-
-## Production Deployment
-
-### Create Production Bundle
-
-```powershell
-# Windows
-.\scripts\bundle\prod.ps1
-
-# Linux/macOS
-./scripts/bundle/prod.sh
-```
-
-This creates a complete, standalone package in `dist/neuro-desktop/`:
+The output is `desktop/dist/neuro-desktop/`:
 
 ```
 neuro-desktop/
-├── neuro-desktop.exe         # Main application
-├── neuro-integration.exe     # Neuro API client
-├── python/                   # Embedded Python runtime
-│   ├── Lib/                  # Standard library + dependencies
-│   └── controller/           # Control drivers
-├── frontend/                 # Web UI assets
-├── config/                   # Configuration files
-├── integration-docs/         # Documentation
-├── README.txt               # User instructions
-└── start.bat                # Quick launcher (Windows)
+├── neuro-integration(.exe)     the server
+├── start.sh / start.bat        starts the server and the local agent
+├── agent/                      the Python agent (controller/, requirements)
+├── frontend/                   the dashboard
+├── catalog/                    the signed extension index and publisher keys
+├── config/                     example configuration
+├── permissions.json            the policy (copied from the example; edit it)
+├── integration-docs/           documentation for Neuro
+└── README.txt
 ```
 
-### Distribution
+Set `NEURO_BUNDLE_SKIP_VENV=1` to skip creating a Python virtual environment.
 
-#### Option 1: Zip Archive
+**Edit `permissions.json` before you start.** It is copied from the example, which is
+safe by default: the shell, system, filesystem, and extensions scopes are off. Neuro
+can ask for filesystem and extensions with `request_permission`; you decide on the
+Permissions page.
 
-```powershell
-# Create distributable archive
-Compress-Archive -Path "dist/neuro-desktop" -DestinationPath "neuro-desktop-v0.0.3b.zip"
-```
+## Run
 
-Users extract and run:
+On the PC Neuro uses, from a logged-in session:
+
 ```bash
-# Windows
-cd neuro-desktop
-.\neuro-desktop.exe
-
-# Linux/macOS
-cd neuro-desktop
-chmod +x neuro-desktop neuro-integration
-./neuro-desktop
+cd dist/neuro-desktop
+./start.sh          # Windows: start.bat
 ```
 
-#### Option 2: Installer (Future)
+This starts the server and the local agent. `NEURO_NO_AGENT=1` starts only the
+server, for a split-machine setup where the agent runs elsewhere.
 
-- NSIS installer (Windows)
-- .deb package (Debian/Ubuntu)
-- .rpm package (Fedora/RHEL)
-- .dmg installer (macOS)
+Open the dashboard at `http://127.0.0.1:8300/ui/`.
 
-### System Requirements
+### Split machines
 
-**Minimum**:
-- OS: Windows 10+, Ubuntu 20.04+, macOS 11+
-- CPU: 2 cores, 2.0 GHz
-- RAM: 4 GB
-- Disk: 500 MB
+Run the server on the machine that runs Neuro. Run the agent on the desktop it should
+control. The agent always dials the server, so the desktop needs no inbound port:
 
-**Recommended**:
-- OS: Windows 11, Ubuntu 22.04+, macOS 12+
-- CPU: 4 cores, 3.0 GHz
-- RAM: 8 GB
-- Disk: 1 GB
+```bash
+# on the desktop PC
+python3 -m controller.agent --bridge <server-ip>:9876 --token "$NEURO_EXECUTOR_TOKEN"
+```
+
+On the server, the hub must listen on an address the desktop can reach, for example
+`NEURO_EXECUTOR_LISTEN=0.0.0.0:9876`, and `NEURO_EXECUTOR_TOKEN` must be set. The hub
+refuses to listen beyond loopback without a token, and it says why. Allow port 9876 from
+the desktop's address only.
+
+### Headless (no display)
+
+On a machine with no graphical session, set `NEURO_HEADLESS=1`. The agent then skips the
+GUI libraries, so it starts without a display. Shell commands still run (within the
+allowlist), and a screenshot reports that there is no display session. The dashboard and
+the policy work the same. See `docs/CAPABILITIES.md`.
+
+To open the dashboard from another machine, forward the port over SSH rather than
+exposing it:
+
+```bash
+ssh -L 8300:127.0.0.1:8300 user@server
+```
+
+## Ports
+
+| Port | Process | Default address | Expose it? |
+| --- | --- | --- | --- |
+| 8300 | server: dashboard and admin API | `127.0.0.1:8300` (`NEURO_ADMIN_LISTEN`) | no; use SSH forwarding |
+| 9876 | server: executor hub, agents connect here | `127.0.0.1:9876` (`NEURO_EXECUTOR_LISTEN`) | only on a trusted LAN, with a token |
+| 8765 | relay host: integrations and watchers | `127.0.0.1:8765` | only on loopback or a firewalled LAN |
+| 8766 | relay host: `/health` | `127.0.0.1:8766` | no |
+| 8610 | vision server | `127.0.0.1:8610` | no |
+| 8000 | Neuro API (outbound) | `NEURO_SDK_WS_URL` | outbound only |
+
+Allow outbound traffic to the Neuro API and, if you use them, to the npm registry (for
+MCP servers) and to GitHub (for `git_clone` extension installs). Nothing else needs to
+reach the machine from outside.
+
+## The relay and the vision server (optional)
+
+- **Relay:** run `neuro-integration relay` next to the server, then set the server's
+  `NEURO_RELAY_ENABLED`, `NEURO_RELAY_URL`, and `NEURO_RELAY_TOKEN`. Details are in
+  `docs/RELAY.md`.
+- **Vision:** run `python3 -m nd_vision` from `desktop/apps/nd-vision-server` and set
+  `NEURO_VISION_URL` and `NEURO_VISION_TOKEN` on the server. Details are in that
+  folder's README.
+
+The Extensions page shows whether each one is reachable.
 
 ## Configuration
 
-### Configuration Files
+Every environment variable the server reads is listed in `desktop/README.md`
+(Configuration). The ones an operator usually sets:
 
-**Location**: `config/integration-config.yml`
+| Variable | Set it to |
+| --- | --- |
+| `NEURO_SDK_WS_URL` | the Neuro API websocket |
+| `NEURO_ADMIN_TOKEN` | a token for dashboard writes when the dashboard is not on loopback |
+| `NEURO_EXECUTOR_TOKEN` | the secret every agent presents |
+| `NEURO_PERMISSIONS_FILE` | the policy file (defaults to `permissions.json` in the bundle) |
+| `NEURO_SHELL_ALLOWLIST` | the programs the shell action may run |
+| `NEURO_AUDIT_LOG` | where the audit log is written (JSON lines) |
+| `NEURO_KILL_SWITCH_FILE` | a file whose existence stops every action |
 
-```yaml
-connection:
-  # Neuro API WebSocket URL
-  neuro-backend: "ws://localhost:8000"
-  
-  # Plugin server (future feature)
-  neuro-desktop-plugins-server: "ws://localhost:2328"
-  
-  # Web UIs (future features)
-  neuro-desktop-admin-dashboard: "http://localhost:8300"
-  neuro-desktop-internal-thinking: "http://localhost:8400"
+## Upgrading
 
-package:
-  name: "neuro-desktop"
-  version: "0.0.3b-dev"
-  build: "release/28-12-2025"
-  package-id: "builtby.nakashireyumi/neuro-desktop"
-  description: "Desktop control integration for Neuro-sama"
-```
+1. Stop the running processes (Ctrl-C in the terminal that runs `start.sh`).
+2. Build and bundle the new version.
+3. Keep your `permissions.json`, your audit log, and the extension state file. Copy them
+   into the new bundle, then compare the new example policy with yours.
+4. Start it again and check the Status tab and the Extensions page.
 
-### Environment Variables
-
-Override config values with environment variables:
-
-```powershell
-# Windows
-$env:NEURO_SDK_WS_URL = "ws://192.168.1.100:8000"
-$env:NEURO_IPC_FILE = "C:\neuro\ipc.json"
-
-# Linux/macOS
-export NEURO_SDK_WS_URL="ws://192.168.1.100:8000"
-export NEURO_IPC_FILE="/var/neuro/ipc.json"
-```
-
-**Available Variables**:
-- `NEURO_SDK_WS_URL` - WebSocket URL for Neuro API
-- `NEURO_IPC_FILE` - Path to IPC communication file
-
-### Network Configuration
-
-#### Firewall Rules
-
-If connecting to remote Neuro API:
-
-```powershell
-# Windows Firewall
-New-NetFirewallRule -DisplayName "Neuro Desktop" -Direction Outbound -Program "C:\neuro-desktop\neuro-desktop.exe" -Action Allow
-
-# Linux (ufw)
-sudo ufw allow out 8000/tcp
-
-# macOS
-# Add to Security & Privacy → Firewall → Firewall Options
-```
-
-#### Port Forwarding
-
-To allow external Neuro API connections:
+## Health checks
 
 ```bash
-# Router configuration (example)
-External Port: 8000
-Internal IP: 192.168.1.100
-Internal Port: 8000
-Protocol: TCP
+curl -s http://127.0.0.1:8300/api/runtime       # bridge, relay, vision, and MCP state
+curl -s http://127.0.0.1:8766/health            # the relay host, if you run it
+curl -s http://127.0.0.1:8610/health            # the vision server, if you run it
 ```
 
-## Troubleshooting
+The dashboard's Extensions page shows the same runtime state, live.
 
-### Common Issues
+## Backups
 
-#### "Python module not found"
+Back up `permissions.json`, the audit log, and the extension state file. Nothing else
+holds state. Permission approvals and pending requests are in memory, so a restart
+clears them.
 
-**Symptom**: `ModuleNotFoundError: No module named 'pyautogui'`
+## Service installs
 
-**Fix**:
-```bash
-cd backend/python
-.venv\Scripts\activate  # Windows
-pip install -r requirements.txt
-```
+The bundle does not install a service, and this repository does not ship one. Run the
+bundle from a logged-in session. A service that runs without the desktop session cannot
+control the desktop, so it is not a supported setup for the agent. The server alone can
+run as a service on a headless machine, but that has not been tested here.
 
-Or rebuild bundle:
-```bash
-.\scripts\bundle\prod.ps1
-```
+## What is verified here, and what is not
 
----
+Verified in CI: the server builds for Windows, macOS, and Linux; the server and agent
+test suites pass; the dashboard builds; the release bundle builds on Linux, and the
+dashboard is served from the bundle folder; and the agent and server run end to end on
+Linux with no display.
 
-#### "Go binary not found"
-
-**Symptom**: `Neuro integration binary not found at: ...`
-
-**Fix**:
-```bash
-cd apps/neuro-integration
-go build -o neuro-integration.exe .
-cp neuro-integration.exe ../neuro-desktop/target/release/
-```
-
----
-
-#### "WebSocket connection failed"
-
-**Symptom**: `Failed to connect to Neuro: dial tcp: connection refused`
-
-**Fix**:
-1. Check Neuro API is running:
-   ```bash
-   curl -I http://localhost:8000
-   ```
-
-2. Start Randy for testing:
-   ```bash
-   cd Randy
-   npm install
-   npm start
-   ```
-
-3. Check firewall settings
-
----
-
-#### "Permission denied"
-
-**Symptom**: `Permission denied (Linux/macOS)`
-
-**Fix**:
-```bash
-chmod +x neuro-desktop
-chmod +x neuro-integration
-```
-
----
-
-#### "Python version mismatch"
-
-**Symptom**: `ImportError: cannot import name '_imaging' from 'PIL'`
-
-**Fix**:
-```bash
-# Ensure Python 3.10+
-python --version
-
-# Recreate virtual environment
-rm -rf backend/python/.venv
-python -m venv backend/python/.venv
-# ... reinstall dependencies
-```
-
----
-
-#### "IPC timeout"
-
-**Symptom**: `timeout waiting for Rust response`
-
-**Fix**:
-1. Check Rust process is running
-2. Check IPC file permissions
-3. Increase timeout (if needed)
-4. Restart both processes
-
----
-
-### Debug Mode
-
-Enable verbose logging:
-
-```rust
-// In main.rs
-log::set_max_level(log::LevelFilter::Debug);
-```
-
-Or set environment variable:
-```bash
-export RUST_LOG=debug
-```
-
-### Log Files
-
-Logs are output to console. Redirect to file:
-
-```bash
-# Windows
-.\neuro-desktop.exe > neuro.log 2>&1
-
-# Linux/macOS
-./neuro-desktop > neuro.log 2>&1
-```
-
-### Testing Installation
-
-1. **Run Randy**:
-   ```bash
-   cd Randy
-   npm start
-   ```
-
-2. **Run Neuro Desktop**:
-   ```bash
-   .\neuro-desktop.exe
-   ```
-
-3. **Verify**:
-   - Should see "Connected to Neuro!" in logs
-   - Randy should show registered actions
-   - Randy will send random test actions
-
-### Health Checks
-
-```bash
-# Check if processes are running
-ps aux | grep neuro-desktop      # Linux/macOS
-tasklist | findstr neuro         # Windows
-
-# Check IPC file exists
-ls neuro_ipc.json                # Should exist when communicating
-
-# Check network connection
-netstat -an | grep 8000          # Should show connection to :8000
-```
-
-## Security Considerations
-
-### Running as Service
-
-**Windows (NSSM)**:
-```powershell
-# Install NSSM
-winget install NSSM
-
-# Install service
-nssm install NeuroDesktop "C:\neuro-desktop\neuro-desktop.exe"
-nssm start NeuroDesktop
-```
-
-**Linux (systemd)**:
-```bash
-# Create service file
-sudo nano /etc/systemd/system/neuro-desktop.service
-```
-
-```ini
-[Unit]
-Description=Neuro Desktop Control System
-After=network.target
-
-[Service]
-Type=simple
-User=neuro
-WorkingDirectory=/opt/neuro-desktop
-ExecStart=/opt/neuro-desktop/neuro-desktop
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-# Enable and start
-sudo systemctl enable neuro-desktop
-sudo systemctl start neuro-desktop
-```
-
-### Sandboxing (Advanced)
-
-Run in restricted environment:
-
-```bash
-# Linux (firejail)
-firejail --net=none --private=~/.neuro neuro-desktop
-
-# Windows (AppContainer)
-# Use Windows Sandbox or VM
-```
-
-### Network Isolation
-
-Only allow local connections:
-
-```yaml
-# config/integration-config.yml
-connection:
-  neuro-backend: "ws://127.0.0.1:8000"  # Only localhost
-```
-
-## Performance Tuning
-
-### Optimize Python
-
-```bash
-# Use PyPy for faster execution (experimental)
-pypy3 -m venv .venv
-```
-
-### Reduce Logging
-
-```rust
-log::set_max_level(log::LevelFilter::Error);
-```
-
-### Increase IPC Poll Rate
-
-```rust
-// In ipc_handler.rs
-thread::sleep(Duration::from_millis(10));  // Faster (was 50ms)
-```
-
-**Warning**: Higher CPU usage
-
-### Pre-compile Python
-
-```bash
-python -m compileall backend/python/controller
-```
-
-## Monitoring
-
-### Metrics Collection
-
-```python
-# Add to Python controller
-import time
-import psutil
-
-def get_metrics():
-    return {
-        "cpu_percent": psutil.cpu_percent(),
-        "memory_mb": psutil.Process().memory_info().rss / 1024 / 1024,
-        "actions_executed": controller.action_count,
-    }
-```
-
-### External Monitoring
-
-```bash
-# Prometheus exporter (future)
-curl http://localhost:9090/metrics
-```
-
-## Backup and Recovery
-
-### Backup Configuration
-
-```bash
-# Backup config
-cp -r config config.backup
-
-# Backup user data (if any)
-cp -r ~/.neuro-desktop ~/.neuro-desktop.backup
-```
-
-### Disaster Recovery
-
-```bash
-# Restore from backup
-cp -r config.backup config
-
-# Rebuild from source
-git pull origin main
-.\scripts\build-all.ps1
-.\scripts\bundle\prod.ps1
-```
-
-## Updates
-
-### Update Process
-
-```bash
-# 1. Backup current installation
-cp -r neuro-desktop neuro-desktop.backup
-
-# 2. Download new version
-# ... extract to temp directory ...
-
-# 3. Stop running instance
-# Ctrl+C or kill process
-
-# 4. Replace binaries
-cp neuro-desktop-new/* neuro-desktop/
-
-# 5. Restart
-cd neuro-desktop
-.\neuro-desktop.exe
-```
-
-### Rolling Back
-
-```bash
-# Restore previous version
-rm -rf neuro-desktop
-mv neuro-desktop.backup neuro-desktop
-cd neuro-desktop
-.\neuro-desktop.exe
-```
-
-## Advanced Deployment
-
-### Docker Container (Experimental)
-
-```dockerfile
-FROM ubuntu:22.04
-
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    python3.10 python3-pip \
-    x11-apps xvfb
-
-# Copy application
-COPY dist/neuro-desktop /opt/neuro-desktop
-
-# Run with virtual display
-CMD ["xvfb-run", "/opt/neuro-desktop/neuro-desktop"]
-```
-
-### Kubernetes Deployment (Future)
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: neuro-desktop
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: neuro-desktop
-  template:
-    metadata:
-      labels:
-        app: neuro-desktop
-    spec:
-      containers:
-      - name: neuro-desktop
-        image: neuro-desktop:latest
-        env:
-        - name: NEURO_SDK_WS_URL
-          value: "ws://neuro-api:8000"
-```
-
-## Conclusion
-
-Neuro Desktop can be deployed in various environments from simple desktop installations to complex containerized deployments. Choose the method that best fits your use case.
-
-For production use, always:
-- ✅ Test thoroughly before deploying
-- ✅ Keep backups of configurations
-- ✅ Monitor system health
-- ✅ Keep software updated
-- ✅ Follow security best practices
+Not verified here: the bundle on a real Windows or macOS desktop, input and screen
+capture on a real desktop, and an installed (not built) release. Treat those as open
+until someone has run them.

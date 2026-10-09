@@ -25,7 +25,7 @@ Neuro Desktop is a multi-language integration system that enables [Neuro-sama](h
 
 ### What Makes Neuro Desktop Special?
 
-- **Multi-Language Architecture**: Combines Rust (system integration), Go (API communication), Python (cross-platform control), and C++ (process management) for optimal performance
+- **Two languages on the machine**: Go (the server: Neuro API, permissions, audit, dashboard API, relay host) and Python (the agent that touches the machine), plus a TypeScript dashboard. The Rust and C++ parts were removed; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Human-Like Mouse Movement**: Advanced algorithmic pathfinding that mimics natural human mouse movements with Bézier curves and Perlin noise
 - **Powerful Script Language**: Simple yet expressive action scripting for complex automation tasks
 - **Automatic Recovery**: Built-in crash detection and automatic process restart capabilities
@@ -226,8 +226,9 @@ export NEURO_DENY_ACTIONS="type_text,key_press"     # a hard deny list the dashb
 | **controller/agent.py** | Python | **Agent**: input control, script parsing, shell, telemetry (the only part that touches the machine) |
 | **controller/\*** | Python | Drivers the agent uses: `actions`, `desktop`, `shell`, `platform_intents`, `controls/` |
 | **frontend** | TypeScript | **Dashboard client**, served by the server at `/ui/` |
-| **neuro-desktop** | Rust | *Not shipped* — the executor this replaced, kept as a reference |
-| **process-handler** | C++ | *Not shipped* — optional supervisor with a real test suite |
+| **relay host** (`neuro-integration relay`) | Go | Neuro Relay intermediary: lets other integrations and Neuro-OS watchers share the connection |
+| **nd-vision-server** | Python | Optional vision service the server calls through `NEURO_VISION_URL` (stdlib HTTP, Pillow optional) |
+| **MCP servers** | any | Optional extension servers. The server starts one only after Vedal enables it on the Extensions page |
 
 ## Quick Start
 
@@ -243,8 +244,6 @@ python3 --version
 # Node.js 18+ — only to build the dashboard client
 node --version
 
-# Rust 1.70+ — OPTIONAL: only for the legacy executor, which is not shipped
-# (docs/ARCHITECTURE.md). Skip it unless you are working on that code.
 ```
 
 ### Installation
@@ -346,78 +345,21 @@ See [Action Script Documentation](docs/action_script/LANGUAGE_REFERENCE.md) for 
 
 ### Configuration
 
-Edit `config/integration-config.yml`:
-
-```yaml
-connection:
-  neuro-backend: "ws://localhost:8000"
-  
-package:
-  name: "neuro-desktop"
-  version: "0.0.3b-dev"
-```
-
-Or use environment variables:
+The server reads its settings from environment variables and command-line flags. There is no
+configuration file to edit. The full list is in [desktop/README.md](desktop/README.md#configuration).
 
 ```bash
-# Windows
-$env:NEURO_SDK_WS_URL = "ws://localhost:8000"
-$env:NEURO_IPC_FILE = "./neuro_ipc.json"
-$env:NEURO_PERMISSIONS_FILE = "./desktop/apps/neuro-integration/permissions.example.json"
-$env:NEURO_RELAY_ENABLED = "true"
-$env:NEURO_RELAY_EMULATED_ADDR = "127.0.0.1:8001"
-$env:NEURO_RELAY_NAME = "Neuro Desktop Hub"
-$env:NEURO_CATALOG_FILE = "./desktop/catalog/index.json"
-$env:NEURO_CONTEXT_POLL_SECONDS = "15"
-$env:NEURO_CONTEXT_CAPTURE_SCREENSHOT = "false"
-$env:NEURO_VISION_SERVER_URL = "http://127.0.0.1:8080/infer"
-$env:NEURO_EXTENSION_INSTALL_MODE = "metadata_only"
-$env:NEURO_EXTENSION_DIR = "./plugins"
-$env:NEURO_UI_LAUNCH = "true"
-$env:NEURO_UI_DIR = "./desktop/frontend/dist"      # dashboard build to serve
-$env:NEURO_ADMIN_TOKEN = "change-me"               # required for dashboard writes
-$env:NEURO_EXECUTOR_TOKEN = "change-me"            # required when the hub is exposed
-$env:NEURO_GAME_PROFILES_DIR = "./desktop/catalog/games"
-$env:NEURO_RESERVED_ACTIONS = "move_mouse_to,osu_click"   # owned by other integrations
-$env:NEURO_HEADLESS = ""                     # 1 = no display (auto-detected on Linux without DISPLAY)
-$env:NEURO_SHELL_ALLOWLIST = "ls,python3"    # programs shell_command may run (empty = none)
-$env:NEURO_SHELL_TIMEOUT = "20"              # seconds per command (max 120)
-$env:NEURO_AUDIT_LOG = "./neuro-desktop.jsonl"
-$env:NEURO_KILL_SWITCH_FILE = "./STOP"       # actions refuse while this file exists
-$env:NEURO_DENY_ACTIONS = "type_text"        # hard deny list the dashboard cannot undo
-
-# Linux/macOS
-export NEURO_SDK_WS_URL="ws://localhost:8000"
-export NEURO_IPC_FILE="./neuro_ipc.json"
-export NEURO_PERMISSIONS_FILE="./desktop/apps/neuro-integration/permissions.example.json"
-export NEURO_RELAY_ENABLED="true"
-export NEURO_RELAY_EMULATED_ADDR="127.0.0.1:8001"
-export NEURO_RELAY_NAME="Neuro Desktop Hub"
-export NEURO_CATALOG_FILE="./desktop/catalog/index.json"
-export NEURO_CONTEXT_POLL_SECONDS="15"
-export NEURO_CONTEXT_CAPTURE_SCREENSHOT="false"
-export NEURO_VISION_SERVER_URL="http://127.0.0.1:8080/infer"
-export NEURO_EXTENSION_INSTALL_MODE="metadata_only"
-export NEURO_EXTENSION_DIR="./plugins"
-export NEURO_UI_LAUNCH="true"
-export NEURO_UI_DIR="./desktop/frontend/dist"
-export NEURO_ADMIN_TOKEN="change-me"
-export NEURO_EXECUTOR_TOKEN="change-me"
-export NEURO_GAME_PROFILES_DIR="./desktop/catalog/games"
-export NEURO_RESERVED_ACTIONS="move_mouse_to,osu_click"
-export NEURO_HEADLESS=""                     # 1 = no display (auto-detected on Linux without DISPLAY)
-export NEURO_SHELL_ALLOWLIST="ls,python3"    # programs shell_command may run (empty = none)
-export NEURO_SHELL_TIMEOUT="20"              # seconds per command (max 120)
-export NEURO_AUDIT_LOG="./neuro-desktop.jsonl"
-export NEURO_KILL_SWITCH_FILE="./STOP"       # actions refuse while this file exists
-export NEURO_DENY_ACTIONS="type_text"        # hard deny list the dashboard cannot undo
+# Linux / macOS
+export NEURO_SDK_WS_URL=ws://localhost:8000     # the Neuro API (the default)
+export NEURO_ADMIN_LISTEN=127.0.0.1:8300        # the dashboard (the default)
+export NEURO_EXECUTOR_TOKEN=change-me           # the secret every agent presents
 ```
 
-Use [`permissions.example.json`](desktop/apps/neuro-integration/permissions.example.json) as a starting policy (it ships with the
-`game` scope enabled, `game_launch` denied and the `shell` scope off, so Neuro can play
-but cannot start programs or run command lines).
-A scope value may be written as `"game": true` or `"game": {"allowed": true, "limits": {"max_actions_per_minute": 120}}`.
-Use `NEURO_EXTENSION_INSTALL_MODE=git_clone` if you want extension installation to clone repositories from GitHub.
+```powershell
+# Windows (PowerShell)
+$env:NEURO_SDK_WS_URL = "ws://localhost:8000"
+$env:NEURO_EXECUTOR_TOKEN = "change-me"
+```
 
 ## Development
 
@@ -493,96 +435,41 @@ There are two ways to coexist, and they are complementary:
    intermediary keeps registrations for watchers; it does not forward them to
    Neuro, which is exactly why mode 1 exists.
 
-### Upstream relay compatibility (it does not start as-is)
+### Neuro Relay (Go host)
 
-Worth knowing before you debug your setup: **Nakashireyumi/neuro-relay cannot
-start with any published `neuro-api` release.** `src/dev/nakurity/server.py`
-subclasses three abstract server classes but implements only part of the
-interface, so Python refuses to instantiate it:
-
-```text
-TypeError: Can't instantiate abstract class NakurityBackend with abstract methods
-get_character_id, get_websocket_session_id
-```
-
-Checked against every release on PyPI: 0.x/1.x have no `neuro_api.server` module
-at all, and 2.x/3.x/4.x leave `get_next_id`, `handle_actions_register`,
-`handle_actions_unregister`, `handle_actions_force`, `handle_action_result` (plus
-the two above in 4.x) abstract. This is upstream's bug, not a configuration
-problem — the relay's own protocol code is fine.
-
-`desktop/tools/relay-compat/run_relay.py` starts the relay unchanged by filling
-in exactly those methods before `dev.nakurity.__main__` runs:
+Neuro Relay's intermediary (the socket integrations and Neuro-OS watchers connect to) is built into the server as a subcommand. It replaces the earlier Python shim, and the server no longer starts any relay process itself.
 
 ```bash
-pip install "websockets==13.1" neuro-api pyyaml
-python3 desktop/tools/relay-compat/run_relay.py /path/to/neuro-relay/src
-# [relay-compat] filled in 2 abstract method(s): get_character_id, get_websocket_session_id
-# [Intermediary] listening on ws://127.0.0.1:8765
-# [Nakurity Backend] Starting websocket server on ws://127.0.0.1:8001
+cd desktop/apps/neuro-integration
+# Relay: integrations and watchers connect here (ws)
+NEURO_RELAY_AUTH_TOKEN=change-me-to-a-long-random-value \
+  go run . relay --listen 127.0.0.1:8765 --health 127.0.0.1:8766
 ```
 
-Nothing on disk is patched and no fork is maintained: it is a shim for a broken
-upstream entry point, and it disappears the day upstream fixes their class.
+- With no `NEURO_RELAY_AUTH_TOKEN`, the host generates a token, stores it in `NEURO_RELAY_TOKEN_FILE` (default `./relay-token`, mode 0600), and logs where it is. The sample token from the upstream project is refused.
+- `GET /health` on the health address reports the connected integrations, the watchers, and whether the optional Neuro link is up. It shows names and counts only.
+- The bridge connects as a relay client with `NEURO_RELAY_ENABLED=true`, `NEURO_RELAY_URL=ws://127.0.0.1:8765`, and `NEURO_RELAY_TOKEN` set to the same value. The dashboard's Extensions page shows the live relay state.
+- Browsers are refused (any request with an `Origin` header), binary frames are refused, and each connection has a frame-rate limit.
+- A watcher with `NEURO_RELAY_NEURO_OS_TOKEN` (a second, enhanced token) can send `direct_to_neuro` messages, but only when the host has `NEURO_RELAY_NEURO_URL` set to a Neuro API server.
 
-Reserved names are neither registered with Neuro nor accepted from the dashboard
-(the dashboard refuses to add them to the allow list): they belong to another
-integration, and shadowing them is how two integrations end up fighting over the
-same key. When Neuro asks to play a game that a relay peer owns, the refusal names
-that peer's registered actions instead of leaving the model stuck:
-
-```
-game_move -> "this game is controlled by the "minecraft" integration ...
-               Its registered actions are: minecraft.move_forward, minecraft.jump, ..."
-```
-
-Relay status (peers, their actions, reserved names, last error) is on the
-dashboard's Status tab and at `/api/relay`. The protocol shapes are pinned by
-`relay_protocol_test.go`, which speaks what `intermediary.py` actually speaks.
-
-### Supervised Runtime (Process Handler)
-
-The process handler can now supervise ND and integration workers directly:
-
-```bash
-# From dist bundle folder
-./process-handler.exe
-```
-
-`process-handler` starts `neuro-desktop.exe --supervised` and launches `neuro-integration.exe` itself.
-If `neuro-relay.exe` exists in the same folder, it is also supervised and the integration is routed through relay automatically.
+The upstream Python relay speaks the same socket, so the bridge can connect to it too. The bridge does not start it for you. Full details and the protocol are in [docs/RELAY.md](docs/RELAY.md).
 
 ### Project Structure
 
 ```
 desktop/
 ├── apps/
-│   ├── neuro-desktop/          # Main Rust application
-│   │   └── src/
-│   │       ├── main.rs          # Entry point
-│   │       ├── controller.rs    # Python FFI bridge
-│   │       ├── ipc_handler.rs   # IPC command processor
-│   │       └── go_manager.rs    # Go process manager
-│   │
-│   └── neuro-integration/      # Go WebSocket client
-│       ├── main.go
-│       ├── action-handling.go
-│       ├── action-registry.go
-│       └── types.go
-│
-├── backend/python/controller/  # Python control drivers
-│   ├── lib.py                  # Entry point
-│   ├── actions.py              # Script parser
-│   ├── controls/
-│   │   ├── mouse.py            # Mouse controller
-│   │   └── keyboard.py         # Keyboard controller
-│   └── libraries/
-│       └── mouse_pathfinder.py # Human-like motion
-│
-├── frontend/                   # Web UI (TypeScript/Vite)
-├── config/                     # Configuration files
-├── scripts/                    # Build and bundle scripts
-└── docs/                       # Documentation
+│   ├── neuro-integration/     # Go server: Neuro API, permissions, audit, dashboard API,
+│   │                          #   relay host, MCP bridge, signed catalog, game interface
+│   │   └── third_party/neuro-integration-sdk/   # the Go SDK port (replaced in go.mod)
+│   └── nd-vision-server/      # optional Python vision service (NEURO_VISION_URL)
+├── backend/python/            # Python agent (controller/) and its tests
+├── catalog/                   # signed extension index, publisher keys, game profiles
+├── config/                    # example permission policy and integration config
+├── frontend/                  # TypeScript dashboard, served by the server at /ui/
+├── scripts/                   # build and bundle scripts (dev, prod)
+└── tools/                     # CI checks, fake executor, Ollama test client
+docs/                          # architecture, safety, capabilities, relay, deployment
 ```
 
 ### Development Workflow
@@ -598,9 +485,8 @@ make all
 .\scripts\bundle\dev.ps1
 
 # 4. Run tests
-cargo test                      # Rust tests
-go test ./...                   # Go tests
-pytest backend/python/          # Python tests
+(cd apps/neuro-integration && go test ./...)   # server tests, including the relay, MCP, vision and catalog suites
+python3 -m unittest discover backend/python/tests -t backend/python   # agent tests
 
 # 5. Build production bundle
 .\scripts\bundle\prod.ps1
@@ -608,47 +494,11 @@ pytest backend/python/          # Python tests
 
 ### Adding New Actions
 
-1. **Define action schema** in `action-registry.go`:
-
-```go
-var MyActionSchema = ActionDefinition{
-    Name: "my_action",
-    Description: "Does something cool",
-    Schema: map[string]interface{}{
-        "type": "object",
-        "properties": map[string]interface{}{
-            "param1": map[string]interface{}{
-                "type": "string",
-                "description": "A parameter",
-            },
-        },
-        "required": []string{"param1"},
-    },
-}
-```
-
-2. **Handle action** in `action-handling.go`:
-
-```go
-case string(CmdMyAction):
-    param1, _ := params["param1"].(string)
-    cmd = IPCCommand{
-        Type: CmdMyAction,
-        Params: map[string]interface{}{
-            "param1": param1,
-        },
-    }
-```
-
-3. **Implement in Rust** (`ipc_handler.rs`):
-
-```rust
-IPCCommand::MyAction { params } => {
-    controller.my_action(&params.param1)
-}
-```
-
-4. **Add Python implementation** if needed (`controller/`).
+1. **Define it** in `desktop/apps/neuro-integration/action-registry.go`: a `CommandType` constant, then an `actionSpec` in `HLActionSpecs` or `LLActionSpecs` with the name, a description that ends with a one-line example, and the parameter schema.
+2. **Build the command** in `buildIPCCommand` (same file). Reject bad input there with a message that names the parameter and shows a valid example. That text is what a small model reads on its next turn.
+3. **Give it a scope** in `desktop/apps/neuro-integration/permissions.go` (`actionScope`). Actions without a scope follow `default_allow`. Only actions that cannot start anything belong in `alwaysAllowed`.
+4. **Connect the executor** if the command runs on the machine: add it to the allowlist in `executor_commands.go`, and handle it in the Python agent (`desktop/backend/python/controller/agent.py`).
+5. **Test it**: add the call a small model would make to `desktop/apps/neuro-integration/testdata/weak_model_cases.json` with the expected verdict and reply text, then run `go test ./...`.
 
 ### Testing with Randy
 
@@ -661,8 +511,8 @@ npm install
 npm start
 
 # Terminal 2: Run Neuro Desktop
-cd apps/neuro-desktop/target/release
-.\neuro-desktop.exe
+cd desktop/apps/neuro-integration
+go run .
 ```
 
 Randy will send random actions to test your integration.
@@ -694,7 +544,7 @@ Leftover from a `sudo` bundle. Fix ownership, never rebuild as root:
 
 ```bash
 cd desktop
-sudo chown -R "$USER:$USER" frontend/dist dist apps/neuro-desktop/target backend/python/.venv
+sudo chown -R "$USER:$USER" frontend/dist dist backend/python/.venv
 ./scripts/bundle/dev.sh
 ```
 

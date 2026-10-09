@@ -8,6 +8,20 @@ This project aims to follow semantic versioning once stable releases begin.
 
 ### Added
 
+- CI `bundle` job: builds the release bundle, checks that it contains what the launcher needs, verifies the shipped catalog from inside it, and serves the dashboard from the bundle folder. The release gate requires it.
+- `desktop/apps/nd-vision-server/README.md` and `requirements.txt`: the vision HTTP contract, its backends, and the optional Pillow and tesseract.
+
+- **Neuro Relay host** (`neuro-integration relay`, Go). It replaces the Python relay shim and the bridge no longer starts any relay process. It checks the token on registration, refuses browsers (any `Origin` header) and binary frames, limits frame rates, and reports `/health`. The bridge is a relay client. Covered by `relay_host_test.go`, an end-to-end test of the real client against the host, and a CI smoke test.
+- **Signed extension catalog**: `desktop/catalog/index.json` and `desktop/catalog/publishers.json`. The bridge verifies every signature and refuses unsigned items unless `NEURO_EXTENSIONS_ALLOW_UNSIGNED` is set. `neuro-integration catalog verify` checks the shipped index.
+- **MCP bridge**: starts the MCP servers Vedal enables and exposes their tools as actions, gated by the `extensions` scope. The shipped catalog item is `memory`, the pinned `@modelcontextprotocol/server-memory`.
+- **Permission requests**: Neuro can call `request_permission` for a scope that Vedal marked requestable. Vedal approves or denies it on the Permissions page.
+- **Live runtime state** on the Extensions page: bridge, relay, vision server, and MCP bridge. Install state is shown second.
+- **Vision**: `NEURO_VISION_URL` (`NEURO_VISION_SERVER_URL` is still read as an alias), with a live reachability probe, and the `nd-vision-server` Python service.
+- **Escape hatch** `reset_controls`: no parameters. It clears queued inputs, then releases every held key and button. It is always allowed, runs while the bridge is paused or killed, and works under a deny-all policy. The reply says what worked and what may still be held.
+- `desktop_guide` is always allowed. Refusals name the action and give a valid example, so a small model can correct itself on its next turn.
+- **Small-model eval**: `desktop/apps/neuro-integration/testdata/weak_model_cases.json` holds recorded weak-model calls with the expected verdict and reply. It runs in `go test` and in the `weak-model-eval` CI job.
+- **CI**: `relay-host`, `mcp`, `vision`, `catalog-verify`, and `weak-model-eval` jobs, and a `release-gate` job that fails unless every required job succeeded.
+
 - **Python agent** (`desktop/backend/python/controller/agent.py`): the process
   that executes commands on the machine Neuro controls, replacing the Rust
   executor. Speaks the executor protocol over TCP (connecting out or listening)
@@ -39,14 +53,28 @@ This project aims to follow semantic versioning once stable releases begin.
 
 ### Changed
 
+- **Security:** the executor hub refuses to listen beyond loopback without `NEURO_EXECUTOR_TOKEN`. Before, a hub with no token accepted any client as the executor, and that client received Neuro's commands. Only a warning was logged.
+- **Security:** watcher commands that arrive through the relay share the per-scope rate limit with Neuro's actions. Before, they skipped it. The gates are in one place (`denyRelayCommand`) and are tested.
+- `reset_controls` now goes through the same accept-then-execute path as other input actions, and it reports its outcome to Neuro whether it worked or not.
+- The vision hint in an observation says whether `NEURO_VISION_URL` is missing or the server did not answer. Before, both said to set the URL.
+- Documentation rewritten for the current system: `ARCHITECTURE`, `RELAY`, `DEPLOYMENT`, `TROUBLESHOOTING`, `SAFETY`, `LLM_GUIDE`, `PRODUCTION_TODO`, and the README, desktop README, and contributing guide. Each was checked against the code. The `DEPLOYMENT` and `TROUBLESHOOTING` guides lost sections that could not be verified here, such as the Kubernetes and monitoring examples.
+
+- Example permission policy (both copies, kept identical by `repo_checks.py`): `extensions` and `filesystem` are off and requestable; `shell` and `system` are off and not requestable; `install_extension` moved from the deny list to the `extensions` scope.
+- Relay status reports `disabled`, `disconnected`, `unreachable`, `connected`, `idle`, or `registered`. The process fields (`process_restarts`, `process_managed_here`, `supervised_by`) are gone.
+
 - The shipped product is **Go server + Python agent + TypeScript dashboard
   client**; the Rust executor and the C++ supervisor are no longer part of the
   build, the bundle, or the CI gate (they remain as reference code).
-- Test coverage for the executor protocol, the `/api/actions` metadata
-  (schema + plain-language params), the relay self-peer phantom, and the
-  process-handler parser/lifecycle.
 
 ### Removed
+
+- The agent's `--listen` mode. Nothing connects to it: the server only accepts agents that dial the hub. It bound to `0.0.0.0` by default and executed commands from any peer, with no check on the peer's identity. Agents connect out with `--bridge`, which the hub's token protects. A reverse connection is a design question, not a default, and it is not planned.
+- `desktop/config/integration-config.yml`. Nothing read it: the server takes its settings from environment variables and flags. Its ports and package block were stale.
+
+- The bridge no longer starts a relay process. `NEURO_RELAY_COMMAND`, `NEURO_RELAY_CONFIG`, and `NEURO_RELAY_MAX_RESTARTS` are gone, and so is the restart supervision they fed.
+- The relay shim (`desktop/tools/relay-compat/`), replaced by the Go relay host.
+- The C++ process handler and the Rust executor sources. Nothing in the shipped path used them.
+- The stale catalog entries. `desktop/catalog/extensions-state.json` is runtime state and is no longer tracked; it is ignored.
 
 - `desktop/native/{go,c_cpp,rust-core}` — hello-world placeholders that were
   referenced by documentation describing a layout that never existed.
@@ -57,6 +85,13 @@ This project aims to follow semantic versioning once stable releases begin.
   the placeholder Go module under `desktop/native/` that was never written.
 
 ### Fixed
+
+- The catalog test fixture used a wrong upstream repository URL.
+- The relay client's comment still named a removed environment variable.
+- `permissions.example.json` (both copies, kept identical): the deny list no longer blocks `install_extension`, which the `extensions` scope now governs; `filesystem` and `extensions` are requestable; `shell` and `system` are off and not requestable.
+
+- The runtime endpoint no longer panics when there is no executor hub.
+- When nothing is listening on the relay address, the relay status reports `unreachable` instead of `disconnected`.
 
 - The relay link reported **its own registration** as a coexisting integration
   (the relay echoes `integration_connected` back), so `peer_count` could never
@@ -94,8 +129,6 @@ This project aims to follow semantic versioning once stable releases begin.
   models, and `docs/SAFETY.md`: every safety system, where it lives and how to
   verify it. `desktop/tools/ci/repo_checks.py` fails if they disappear or stop
   being linked from the README.
-- Dependency-free process-handler test suite (`tests/test_standalone.cpp`) that
-  CI compiles and runs, plus an ollama-neuro check that no longer needs `aiohttp`.
 - Go tests for the executor hub, game profiles, permissions/rate limits, the admin
   API and a full bridge end-to-end run against a fake Neuro backend.
 - Python protocol tests for the game input primitives.
@@ -117,16 +150,12 @@ This project aims to follow semantic versioning once stable releases begin.
 - `relay_protocol_test.go`: a fake intermediary that speaks what upstream
   `intermediary.py` speaks, pinning registration, action announcement, watcher
   commands, peer tracking and bad-token handling.
-- `desktop/tools/relay-compat/run_relay.py`: starts the upstream relay despite its
-  abstract-method bug (it cannot be instantiated with any published `neuro-api`).
 - CI: repository checks (JSON/catalog/example-policy/doc consistency) and a
   stdlib-only Python job that proves the CLI-only install; the main workflow now
   also runs `go build`, `go vet` and `go test -race` on Linux.
 
 ### Changed
 
-- Process-handler test build now creates one executable per test source.
-- Rust IPC execution path now propagates queue execution/clear failures.
 - Action script supports high-level desktop commands.
 - Integration docs loading is now non-fatal and supports fallback paths.
 - Action script documentation updated to match runtime behavior.
@@ -140,19 +169,6 @@ This project aims to follow semantic versioning once stable releases begin.
 
 ### Fixed
 
-- Process handler: `Message::from_json` was a stub that returned an empty message
-  for every input, so no IPC command could ever be understood. It now parses the
-  wire format strictly (rejecting malformed input instead of routing an empty
-  command), `is_safe_json` validates instead of accepting everything, and
-  `check_rate_limit` enforces a per-source sliding window.
-- Process handler: crash recovery self-deadlocked (`monitor_process` held the
-  manager lock and called `restart_process` → `stop_process`, which re-locks the
-  same non-recursive mutex). Monitoring now reads state under the lock and
-  recovers outside it; `enable_health_monitoring` actually toggles the heartbeat
-  check, heartbeat timeouts terminate the offender instead of leaking it, held
-  keys are released, `env_vars` are applied on Windows and POSIX, a graceful
-  shutdown message is sent before killing a child, and monitor threads are
-  joined in `shutdown()` instead of being detached.
 - Relay: the bridge counted the relay's echo of its own registration as a
   coexisting integration, so `/api/relay` reported a phantom peer and the
   "another integration owns this game" hints could point at itself.

@@ -65,21 +65,20 @@ together; `NEURO_NO_AGENT=1` skips the agent for a split-machine setup.
 ```
 desktop/
 ├── apps/
-│   ├── neuro-integration/    SERVER (Go): Neuro client, dashboard API, hub, policy
-│   ├── process-handler/      optional C++ supervisor — NOT shipped, see docs/ARCHITECTURE.md
-│   └── neuro-desktop/        legacy Rust executor — NOT shipped, kept as reference
+│   ├── neuro-integration/    SERVER (Go): Neuro client, dashboard API, executor hub, policy,
+│   │                         relay host (`relay` subcommand), MCP bridge, signed catalog
+│   └── nd-vision-server/     optional vision service (Python, stdlib HTTP; Pillow optional)
 ├── backend/python/
 │   ├── controller/           AGENT + drivers (agent.py, actions.py, controls/, shell.py)
 │   └── tests/                unittest suite for the agent and the safety rules
 ├── frontend/                 DASHBOARD CLIENT (TypeScript + Vite, no framework)
 ├── catalog/                  game profiles, catalog index, live extension state
-├── config/                   example policy + integration config
+├── config/                   example policy (no config file: settings are env vars)
 ├── scripts/                  build-all.*, build-go.ps1, bundle/{dev,prod}.*, templates/
 ├── tools/
 │   ├── ci/repo_checks.py     dependency-free repository checks (what CI runs first)
 │   ├── fake-executor/        protocol simulator for the server (no input is ever generated)
-│   ├── ollama-neuro/         local small-model brain for testing the action surface
-│   └── relay-compat/         runs Neuro Relay with the neuro-api version we can support
+│   └── ollama-neuro/         local small-model brain for testing the action surface
 └── docs/ (repo root docs/)   ARCHITECTURE, EXECUTOR_PROTOCOL, LLM_GUIDE, SAFETY, CAPABILITIES
 ```
 
@@ -98,6 +97,13 @@ desktop/
 | `NEURO_SHELL_ALLOWLIST` | programs the shell action may run (`ls,echo,python3`) |
 | `NEURO_DENY_ACTIONS` | actions that never run (`type_text`) |
 | `NEURO_AUDIT_LOG` | JSON-lines audit file |
+| `NEURO_RELAY_ENABLED` / `NEURO_RELAY_URL` / `NEURO_RELAY_TOKEN` | connect the server to a relay as an integration (`neuro-integration relay`, or the upstream relay) |
+| `NEURO_RELAY_LISTEN` / `NEURO_RELAY_AUTH_TOKEN` / `NEURO_RELAY_TOKEN_FILE` | the relay host's socket, token, and the file a generated token is written to (mode 0600) |
+| `NEURO_RELAY_HEALTH_LISTEN` / `NEURO_RELAY_NEURO_URL` / `NEURO_RELAY_NEURO_OS_TOKEN` | the relay host's health endpoint, the optional Neuro link for `direct_to_neuro`, and the enhanced watcher token |
+| `NEURO_VISION_URL` / `NEURO_VISION_TOKEN` | the vision service `game_observe` calls (`NEURO_VISION_SERVER_URL` is still read as an alias) |
+| `NEURO_CATALOG_FILE` / `NEURO_PUBLISHERS_FILE` | the signed extension index and the publisher keys the server trusts |
+| `NEURO_EXTENSION_DIR` / `NEURO_EXTENSION_INSTALL_MODE` | where installed extensions live, and `metadata_only` (default) or `git_clone` |
+| `NEURO_EXTENSIONS_ALLOW_UNSIGNED` | **dangerous**: install extensions whose signature does not verify. Leave it unset |
 | `NEURO_GAME_PROFILES_DIR`, `NEURO_CATALOG_FILE` | game profiles and catalog index |
 | `NEURO_RELAY_*` | optional Neuro Relay participation (see `docs/RELAY.md`) |
 | `NEURO_VISION_URL` | vision server used by `game_observe` |
@@ -141,7 +147,7 @@ cd desktop/apps/neuro-integration && go test ./...          # add -race when cgo
 cd desktop/backend/python && python3 -m unittest discover -s tests -t .
 
 # everything CI runs first: JSON/JSONC, policy parity, catalog, docs, file sizes,
-# the C++ suite, the ollama brain tests
+# stale references, the ollama brain tests
 python3 desktop/tools/ci/repo_checks.py
 
 # dashboard client
@@ -159,15 +165,12 @@ explored) on a machine with no display and without touching anything.
 | `/api/status` shows `executor.connected: false` | No agent connected. Start `python3 -m controller.agent --bridge 127.0.0.1:9876`, or use `NEURO_IPC_FILE` file IPC. |
 | `executor.replaced_connections` climbing | Two agents are running against one hub; the newer one wins. Kill the extra process. |
 | Actions fail with "no display session" | The agent is on a machine without a GUI session. Use `shell_command`, or run the agent on the desktop PC. |
-| `relay rejected the registration` | `NEURO_RELAY_TOKEN` must equal `intermediary.auth_token` in the relay's `authentication.yaml`. |
+| `relay rejected the registration` | The token must match on both sides: `NEURO_RELAY_AUTH_TOKEN` for `neuro-integration relay`, or `intermediary.auth_token` for the upstream relay. The relay's log says `invalid auth token`. |
 | Shell action says the command is not allow-listed | Add the program to `NEURO_SHELL_ALLOWLIST`; the output names the pattern that blocked it. |
 | Dashboard shows 403 on a write | Set `X-ND-Token`/`Bearer`/`?token=` from `NEURO_ADMIN_TOKEN` when the dashboard is not on loopback. |
 
-## What is *not* shipped
+## Removed
 
-* `apps/neuro-desktop` — the Rust executor, which the Python agent replaces. Keep
-  it as a reference for the action surface, or delete it once nothing references it.
-* `apps/process-handler` — a C++ supervisor with a real test suite. Nothing in the
-  shipped path uses it (the agent reconnects on its own); it is a candidate for
-  deletion or for wiring in as the Windows supervisor. Tracked in
-  `docs/PRODUCTION_TODO.md`.
+Several components were deleted when the server and the agent were consolidated into Go and Python: the Rust executor, the C++ process handler, the Python relay shim, the `native/` placeholders, and the root integration scripts that could not run. Nothing in the shipped path uses them, and `tools/ci/repo_checks.py` fails if a reference to one of them returns. The list and the reasons are in `CHANGELOG.md`.
+
+There is no native tray. The dashboard is served by the server and works headless, and a tray could not be verified here. The decision is recorded in `docs/PRODUCTION_TODO.md`.
