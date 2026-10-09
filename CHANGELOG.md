@@ -86,6 +86,9 @@ This project aims to follow semantic versioning once stable releases begin.
 
 ### Fixed
 
+- Windows: the audit log is opened per write, so nothing holds it locked; a relay host refusal is no longer reported as a connection reset, because the host waits for the client to read it first.
+- macOS: the test binaries are built without cgo, which the server does not need. They no longer fail to load (`missing LC_UUID`).
+- CI: the Go format check no longer depends on `mapfile` or `find`, and sources keep LF line endings on every platform (`.gitattributes`).
 - The catalog test fixture used a wrong upstream repository URL.
 - The relay client's comment still named a removed environment variable.
 - `permissions.example.json` (both copies, kept identical): the deny list no longer blocks `install_extension`, which the `extensions` scope now governs; `filesystem` and `extensions` are requestable; `shell` and `system` are off and not requestable.
