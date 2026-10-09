@@ -29,6 +29,9 @@ jobs:
         run: python3 desktop/tools/ci/repo_checks.py
 
   build-and-test:
+    permissions:
+      contents: read
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -101,6 +104,24 @@ jobs:
       # The server has OS-specific branches (paths, platform keys, tray/shell
       # hints). Compiling for the three shipped platforms on every change is how
       # a Windows-only syntax/API mistake is caught without a Windows box.
+      # TEMPORARY (remove once the macOS and Windows Go test failure is fixed):
+      # posts the tail of the failing test output to the PR, because the raw log
+      # is not downloadable from outside GitHub.
+      - name: TEMP post the failing Go test output to the PR
+        if: failure() && github.event_name == 'pull_request' && matrix.os != 'ubuntu-latest'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tail -n 120 /tmp/go-test.log > /tmp/tail.txt 2>/dev/null || echo "no log" > /tmp/tail.txt
+          {
+            echo "CI debug for ${{ matrix.os }} (temporary): last 120 lines of go test"
+            echo '```'
+            cat /tmp/tail.txt
+            echo '```'
+          } > /tmp/comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md || true
+
       - name: Go cross-compile (windows, darwin, linux)
         working-directory: desktop/apps/neuro-integration
         shell: bash
