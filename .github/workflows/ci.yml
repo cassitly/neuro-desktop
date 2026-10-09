@@ -84,7 +84,17 @@ jobs:
 
       - name: Go tests (neuro-integration)
         working-directory: desktop/apps/neuro-integration
-        run: go test -count=1 ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -count=1 -v ./... 2>&1 | tee /tmp/go-test.log
+          status=${PIPESTATUS[0]}
+          # Each failing test becomes an annotation, so the run's page and API show
+          # what broke without the raw log (which is not always downloadable).
+          grep -E -- '--- FAIL|_test\.go:[0-9]+:|panic:' /tmp/go-test.log | head -60 | while IFS= read -r line; do
+            echo "::error title=go test::${line//%/%25}"
+          done
+          exit "$status"
 
       # The server has OS-specific branches (paths, platform keys, tray/shell
       # hints). Compiling for the three shipped platforms on every change is how
