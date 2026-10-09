@@ -37,6 +37,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # The server needs no cgo. Test binaries linked through the external C
+      # linker fail to load on current macOS runners ("missing LC_UUID"), so
+      # these steps build without cgo. The race detector needs cgo, so that
+      # step turns it back on.
+      CGO_ENABLED: "0"
 
     steps:
       - name: Checkout
