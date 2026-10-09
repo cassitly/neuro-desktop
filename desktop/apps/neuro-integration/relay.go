@@ -862,8 +862,7 @@ func (r *RelayState) actionSchemas() map[string]interface{} {
 
 	out := map[string]interface{}{}
 	specs := append(append(append([]actionSpec{}, HLActionSpecs...), LLActionSpecs...), gameActionSpecs()...)
-	specs = append(specs, ShellActionSpecs...)
-	specs = append(specs, guideActionSpecs()...)
+	specs = append(specs, alwaysRegisteredSpecs()...)
 	for _, spec := range specs {
 		if r.reservedSet()[strings.ToLower(string(spec.Name))] {
 			continue

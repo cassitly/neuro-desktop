@@ -56,6 +56,9 @@ func (a *AdminServer) routes() *http.ServeMux {
 	mux.HandleFunc("/api/catalog", a.handleCatalog)
 	mux.HandleFunc("/api/extensions", a.guard(a.handleExtensions))
 	mux.HandleFunc("/api/extensions/", a.guard(a.handleExtensionAction))
+	mux.HandleFunc("/api/permission-requests", a.guard(a.handlePermissionRequests))
+	mux.HandleFunc("/api/permission-requests/", a.guard(a.handlePermissionRequestAction))
+	mux.HandleFunc("/api/permissions/grants/", a.guard(a.handlePermissionGrant))
 	mux.HandleFunc("/api/games", a.guard(a.handleGames))
 	mux.HandleFunc("/api/games/session", a.guard(a.handleGameSession))
 	mux.HandleFunc("/api/games/release", a.guard(a.handleGameRelease))
@@ -123,17 +126,21 @@ func isLoopbackAddr(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// guard enforces the admin token on non-read requests when one is configured,
-// and always refuses destructive calls on a non-loopback bind without a token.
+// guard protects the sensitive routes (policy, audit, extensions, requests,
+// relay, games, control). On loopback the operator is the local user, so reads
+// are open and writes need the token only when one is configured. On a network
+// address everything needs the token, because the audit log and the policy
+// are not for the whole LAN. Without a token there, the route refuses.
 func (a *AdminServer) guard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		destructive := r.Method != http.MethodGet && r.Method != http.MethodHead
+		loopback := isLoopbackAddr(a.addr)
 
-		if destructive {
+		if destructive || !loopback {
 			if a.token == "" {
-				if !isLoopbackAddr(a.addr) {
+				if !loopback {
 					writeError(w, http.StatusForbidden,
-						"dashboard is bound to a network address; set NEURO_ADMIN_TOKEN before changing settings")
+						"dashboard is bound to a network address; set NEURO_ADMIN_TOKEN before using it")
 					return
 				}
 			} else if !a.tokenMatches(r) {
@@ -260,15 +267,18 @@ func (a *AdminServer) handlePermissionSchema(w http.ResponseWriter, _ *http.Requ
 		return actions[i]["name"].(string) < actions[j]["name"].(string)
 	})
 
+	policy := a.integration.policy()
 	scopes := []map[string]interface{}{}
 	for _, scope := range allScopes() {
 		scopes = append(scopes, map[string]interface{}{
-			"name":    string(scope),
-			"default": defaultPermissionPolicy().scopes[scope].Allowed,
+			"name":             string(scope),
+			"default":          defaultPermissionPolicy().scopes[scope].Allowed,
+			"description":      scopeDescriptions[scope],
+			"explicit_consent": scopeRequiresExplicitConsent(scope),
+			"requestable":      policy.ScopeRequestable(scope),
 		})
 	}
 
-	policy := a.integration.policy()
 	effective := map[string]bool{}
 	for _, spec := range allActionSpecs() {
 		effective[string(spec.Name)] = policy == nil || policy.IsAllowed(string(spec.Name))
@@ -291,19 +301,24 @@ func allActionSpecs() []actionSpec {
 	specs = append(specs, gameActionSpecs()...)
 	// The shell and the self-documentation guide are part of the surface the
 	// dashboard can grant, so they must show up here too.
-	specs = append(specs, ShellActionSpecs...)
-	specs = append(specs, guideActionSpecs()...)
+	specs = append(specs, alwaysRegisteredSpecs()...)
 	return specs
 }
 
 func allScopes() []PermissionScope {
 	return []PermissionScope{
-		ScopeInput, ScopeGame, ScopeShell, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision,
+		ScopeInput, ScopeGame, ScopeShell, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision, ScopeExtensions,
 	}
 }
 
+// actionScopeName names the switch an action sits behind. "always" marks the
+// actions that no switch can turn off (request_permission): the operator
+// controls them through the deny list and NEURO_DENY_ACTIONS instead.
 func actionScopeName(action string) string {
-	if scope, ok := actionScope[action]; ok {
+	if alwaysAllowed[action] {
+		return "always"
+	}
+	if scope, ok := scopeForAction(action); ok {
 		return string(scope)
 	}
 	return "unknown"
@@ -463,6 +478,13 @@ func (a *AdminServer) handlePermissions(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid policy JSON: %v", err))
 			return
 		}
+		// An unknown scope name is a typo that would silently drop a switch.
+		for scope := range parsed.Scopes {
+			if !knownScope(scope) {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown permission scope %q (use one of: %s)", scope, scopeNameList(allScopes())))
+				return
+			}
+		}
 		normalized, err := json.MarshalIndent(parsed, "", "  ")
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "could not normalise policy")
@@ -519,10 +541,21 @@ func scopeConfigMap(policy *PermissionPolicy) map[string]bool {
 func (a *AdminServer) handleCatalog(w http.ResponseWriter, _ *http.Request) {
 	index, err := loadCatalogIndex(catalogFilePath())
 	if err != nil {
-		writeJSON(w, map[string]interface{}{"ok": false, "error": err.Error(), "items": []CatalogItem{}})
+		writeJSON(w, map[string]interface{}{"ok": false, "error": err.Error(), "items": []interface{}{}})
 		return
 	}
-	writeJSON(w, map[string]interface{}{"ok": true, "items": index.Items, "path": catalogFilePath()})
+	publishers := loadPublishersOrEmpty()
+	views := make([]map[string]interface{}, 0, len(index.Items))
+	for _, item := range index.Items {
+		views = append(views, catalogItemView(item, publishers))
+	}
+	writeJSON(w, map[string]interface{}{
+		"ok":           true,
+		"items":        views,
+		"path":         catalogFilePath(),
+		"publishers":   len(publishers.Publishers),
+		"install_mode": extensionInstallMode(),
+	})
 }
 
 func (a *AdminServer) handleExtensions(w http.ResponseWriter, _ *http.Request) {
@@ -536,6 +569,7 @@ func (a *AdminServer) handleExtensions(w http.ResponseWriter, _ *http.Request) {
 	if index, err := loadCatalogIndex(catalogFilePath()); err == nil {
 		items = index.Items
 	}
+	publishers := loadPublishersOrEmpty()
 
 	installed := make([]map[string]interface{}, 0, len(state.Installed))
 	for id, install := range state.Installed {
@@ -546,11 +580,15 @@ func (a *AdminServer) handleExtensions(w http.ResponseWriter, _ *http.Request) {
 			"source":       install.Source,
 			"path":         install.Path,
 		}
+		entry["trust"] = install.Trust
+		entry["publisher"] = install.Publisher
+		entry["commit"] = install.Commit
 		if item := findCatalogItemByID(CatalogIndex{Items: items}, id); item != nil {
 			entry["name"] = item.Name
 			entry["description"] = item.Description
 			entry["type"] = item.Type
 			entry["repository"] = item.Repository
+			entry["signature_state"] = verifyCatalogItem(*item, publishers).State
 		}
 		installed = append(installed, entry)
 	}
@@ -558,13 +596,19 @@ func (a *AdminServer) handleExtensions(w http.ResponseWriter, _ *http.Request) {
 		return installed[i]["id"].(string) < installed[j]["id"].(string)
 	})
 
+	catalog := make([]map[string]interface{}, 0, len(items))
+	for _, item := range items {
+		catalog = append(catalog, catalogItemView(item, publishers))
+	}
+
 	writeJSON(w, map[string]interface{}{
 		"ok":            true,
 		"installed":     installed,
-		"catalog":       items,
+		"catalog":       catalog,
 		"install_mode":  extensionInstallMode(),
 		"extension_dir": extensionRootPath(),
 		"state_file":    extensionStatePath(),
+		"unsigned_ok":   extensionAllowsUnsigned(),
 	})
 }
 

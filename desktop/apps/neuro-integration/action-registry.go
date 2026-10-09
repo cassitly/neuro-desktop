@@ -275,8 +275,9 @@ var HLActionSpecs = []actionSpec{
 		Schema:      nil,
 	},
 	{
-		Name:        CmdInstallExtension,
-		Description: "Install an extension from the catalog (supports metadata-only or git-clone mode)",
+		Name: CmdInstallExtension,
+		Description: "Install a catalog extension by id. Needs the extensions permission (you can ask for it with request_permission). " +
+			"Only signed catalog items can fetch code. The outcome arrives later as a message.",
 		Schema: neuro.WrapSchema(map[string]interface{}{
 			"item_id": map[string]interface{}{
 				"type":        "string",
@@ -339,6 +340,16 @@ var ShellActionSpecs = []actionSpec{
 			},
 		}, []string{"command"}),
 	},
+}
+
+// alwaysRegisteredSpecs are registered whatever the high- or low-level mode.
+// The shell is the main capability on a headless machine, the guide is the
+// cheapest way to make a small model behave, and request_permission is how
+// Neuro asks the operator for a permission it does not have.
+func alwaysRegisteredSpecs() []actionSpec {
+	specs := append([]actionSpec{}, ShellActionSpecs...)
+	specs = append(specs, guideActionSpecs()...)
+	return append(specs, permissionRequestSpecs()...)
 }
 
 var LLActionSpecs = []actionSpec{
@@ -509,7 +520,7 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 
 	// Per-scope rate limit, before any work is queued.
 	if policy != nil {
-		scope := actionScope[name]
+		scope, _ := scopeForAction(name)
 		if limit := policy.ScopeRateLimit(scope); limit > 0 {
 			if allowed, retryAfter := a.integration.rate.allow(scope, limit, time.Now()); !allowed {
 				a.integration.stats.noteDenied(name)
@@ -591,13 +602,27 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 		return nil, a.integration.sendDesktopContext(capture, silent)
 	case CmdListInstalledExts:
 		return nil, a.integration.listInstalledExtensions()
+	case CmdRequestPermission:
+		// Filing a request never changes the policy; the decision comes later
+		// as a message from the operator.
+		scope, _ := params["scope"].(string)
+		reason, _ := params["reason"].(string)
+		minutes := int(numericParam(params, "minutes"))
+		return nil, a.integration.requestPermission(scope, reason, minutes, "neuro")
+
 	case CmdInstallExtension:
+		// An install can fetch code and take longer than the action window, so
+		// it runs in Execute, after the acknowledgement. Only the id is checked here.
 		itemID, _ := params["item_id"].(string)
-		itemID = strings.TrimSpace(itemID)
-		if itemID == "" {
-			return nil, neuro.NewFailureResult("item_id is required")
+		itemID = strings.ToLower(strings.TrimSpace(itemID))
+		if _, err := normalizeExtensionID(itemID); err != nil {
+			return nil, neuro.NewFailureResult(err.Error())
 		}
-		return nil, a.integration.installExtension(itemID)
+		a.integration.audit.record("action", map[string]interface{}{
+			"action": name, "decision": "accepted", "item": itemID,
+		})
+		return pendingWork{extension: &extensionJob{op: "install", id: itemID}},
+			neuro.NewSuccessResult("accepted: installing " + itemID + ". The outcome arrives as a message when it finishes.")
 	case CmdUninstallExtension:
 		itemID, _ := params["item_id"].(string)
 		itemID = strings.TrimSpace(itemID)
@@ -655,6 +680,8 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 type pendingWork struct {
 	cmd          *IPCCommand
 	scriptIntent string
+	// extension is a slow extension operation (an install) run after the ack.
+	extension *extensionJob
 	// gameCommands is a batch of input primitives produced by one game action
 	// (e.g. game_move with steps=3 holds a key three times, in order).
 	gameCommands []IPCCommand
@@ -717,6 +744,9 @@ func (a *IPCProxyAction) Execute(state interface{}) {
 
 	var result neuro.ExecutionResult
 	switch {
+	case work.extension != nil:
+		a.integration.runExtensionJob(work.extension)
+		return
 	case work.gameObserve != nil:
 		// Slow path: the action was already acknowledged, the observation is
 		// delivered to Neuro as context when it is ready.

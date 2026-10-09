@@ -971,7 +971,7 @@ func (n *NDIntegration) buildGameObservation(vision bool, prompt string) (string
 	if summary != "" {
 		lines = append(lines, fmt.Sprintf("- Vision summary: %s", summary))
 	} else if vision {
-		lines = append(lines, "- Vision summary: unavailable (set NEURO_VISION_SERVER_URL to enable)")
+		lines = append(lines, "- Vision summary: unavailable (set NEURO_VISION_URL to enable)")
 	}
 
 	return strings.Join(lines, "\n"), nil

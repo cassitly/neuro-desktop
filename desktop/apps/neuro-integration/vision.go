@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,9 +21,118 @@ type visionRequest struct {
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 }
 
-// visionServerURL returns the configured vision endpoint, if any.
+// maxVisionImageBytes matches nd-vision-server's limit, so a screenshot that fits
+// is always sent inline (the server does not read paths unless it is told to).
+const maxVisionImageBytes = 8 << 20
+
+// visionServerURL returns the configured vision endpoint, if any. NEURO_VISION_URL
+// is the canonical name; NEURO_VISION_SERVER_URL is still read so older setups keep
+// working.
 func visionServerURL() string {
+	if url := strings.TrimSpace(os.Getenv("NEURO_VISION_URL")); url != "" {
+		return url
+	}
 	return strings.TrimSpace(os.Getenv("NEURO_VISION_SERVER_URL"))
+}
+
+// visionToken is the optional bearer token the vision server expects.
+func visionToken() string {
+	return strings.TrimSpace(os.Getenv("NEURO_VISION_TOKEN"))
+}
+
+// visionStatus is what the dashboard shows about the vision server. It is a live
+// probe, not a configuration echo.
+type visionStatus struct {
+	Configured bool   `json:"configured"`
+	URL        string `json:"url,omitempty"`
+	Reachable  bool   `json:"reachable"`
+	HTTPStatus int    `json:"http_status,omitempty"`
+	LatencyMS  int64  `json:"latency_ms,omitempty"`
+	Backend    string `json:"backend,omitempty"`
+	Error      string `json:"error,omitempty"`
+	CheckedAt  string `json:"checked_at,omitempty"`
+}
+
+var (
+	visionProbeMu    sync.Mutex
+	visionProbeCache visionStatus
+	visionProbeAt    time.Time
+)
+
+const visionProbeTTL = 10 * time.Second
+
+// healthURLFor derives the health endpoint from the configured describe URL:
+// http://host:8610/describe -> http://host:8610/health.
+func healthURLFor(describeURL string) (string, error) {
+	parsed, err := url.Parse(describeURL)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("NEURO_VISION_URL must be an http:// or https:// URL")
+	}
+	parsed.Path = "/health"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
+// probeVisionServer asks the configured vision server for its health. Results
+// are cached briefly so a dashboard that polls does not hammer the server.
+func probeVisionServer(force bool) visionStatus {
+	visionProbeMu.Lock()
+	defer visionProbeMu.Unlock()
+
+	if !force && time.Since(visionProbeAt) < visionProbeTTL && visionProbeCache.CheckedAt != "" {
+		return visionProbeCache
+	}
+
+	status := visionStatus{CheckedAt: time.Now().UTC().Format(time.RFC3339)}
+	describeURL := visionServerURL()
+	if describeURL == "" {
+		visionProbeCache, visionProbeAt = status, time.Now()
+		return status
+	}
+	status.Configured = true
+	status.URL = describeURL
+
+	healthURL, err := healthURLFor(describeURL)
+	if err != nil {
+		status.Error = err.Error()
+		visionProbeCache, visionProbeAt = status, time.Now()
+		return status
+	}
+
+	started := time.Now()
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	req, _ := http.NewRequest(http.MethodGet, healthURL, nil)
+	if token := visionToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	status.LatencyMS = time.Since(started).Milliseconds()
+	if err != nil {
+		status.Error = "not reachable: " + err.Error()
+		visionProbeCache, visionProbeAt = status, time.Now()
+		return status
+	}
+	defer resp.Body.Close()
+
+	status.HTTPStatus = resp.StatusCode
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode == http.StatusOK {
+		status.Reachable = true
+		var health struct {
+			Backend string `json:"backend"`
+		}
+		if json.Unmarshal(body, &health) == nil {
+			status.Backend = health.Backend
+		}
+	} else {
+		status.Error = fmt.Sprintf("health check returned %d", resp.StatusCode)
+	}
+	visionProbeCache, visionProbeAt = status, time.Now()
+	return status
 }
 
 func summarizeWithVisionServer(serverURL string, screenshotPath string, prompt string) (string, error) {
@@ -31,7 +142,7 @@ func summarizeWithVisionServer(serverURL string, screenshotPath string, prompt s
 	}
 
 	encodedImage := ""
-	if len(fileBytes) <= 2*1024*1024 {
+	if len(fileBytes) <= maxVisionImageBytes {
 		encodedImage = base64.StdEncoding.EncodeToString(fileBytes)
 	}
 
@@ -57,7 +168,16 @@ func summarizeWithVisionServer(serverURL string, screenshotPath string, prompt s
 		Timeout: 20 * time.Second,
 	}
 
-	resp, err := httpClient.Post(serverURL, "application/json", bytes.NewReader(requestBody))
+	req, err := http.NewRequest(http.MethodPost, serverURL, bytes.NewReader(requestBody))
+	if err != nil {
+		return "", fmt.Errorf("vision request could not be built: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token := visionToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("vision request failed: %w", err)
 	}

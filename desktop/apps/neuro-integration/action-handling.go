@@ -70,11 +70,9 @@ func (n *NDIntegration) registerActions() error {
 	if registerGame {
 		specs = append(specs, gameActionSpecs()...)
 	}
-	// Same for the shell: on a headless machine it is the main capability.
-	specs = append(specs, ShellActionSpecs...)
-	// The guide is always registered: it is the cheapest way to make a small
-	// model pick the right action.
-	specs = append(specs, guideActionSpecs()...)
+	// The shell, the guide, and the permission request are registered in every
+	// mode (see alwaysRegisteredSpecs).
+	specs = append(specs, alwaysRegisteredSpecs()...)
 
 	for _, spec := range specs {
 		if !specAllowed(spec, reserved) {
@@ -85,6 +83,11 @@ func (n *NDIntegration) registerActions() error {
 			integration: n,
 			spec:        spec,
 		})
+	}
+
+	// Tools from running MCP servers survive a mode switch.
+	if n.mcp != nil {
+		handlers = append(handlers, n.mcp.handlers(n)...)
 	}
 
 	if len(skipped) > 0 {
@@ -218,6 +221,20 @@ type CatalogItem struct {
 	Homepage    string   `json:"homepage,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
 	LaunchHints []string `json:"launch_hints,omitempty"`
+
+	// Publisher, Commit and Signature make an item installable. Commit pins the
+	// git revision that gets fetched; Signature is ed25519 over the item's JSON
+	// (see catalog_trust.go). Publisher names the key that must have signed it.
+	Publisher string `json:"publisher,omitempty"`
+	Commit    string `json:"commit,omitempty"`
+	Signature string `json:"signature,omitempty"`
+
+	// MCP, when set, makes this an MCP server extension (see mcp.go).
+	MCP *CatalogMCP `json:"mcp,omitempty"`
+
+	// Raw is the item exactly as it appeared in the index. It is what the
+	// signature covers, so it is never serialised back out.
+	Raw json.RawMessage `json:"-"`
 }
 
 func catalogFilePath() string {
@@ -237,6 +254,18 @@ func loadCatalogIndex(catalogPath string) (CatalogIndex, error) {
 	var index CatalogIndex
 	if err := json.Unmarshal(data, &index); err != nil {
 		return CatalogIndex{}, fmt.Errorf("catalog file is invalid JSON")
+	}
+
+	// Keep each item's exact bytes for signature checks.
+	var raw struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(data, &raw); err == nil {
+		for i := range index.Items {
+			if i < len(raw.Items) {
+				index.Items[i].Raw = raw.Items[i]
+			}
+		}
 	}
 
 	return index, nil

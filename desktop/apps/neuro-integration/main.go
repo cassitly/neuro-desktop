@@ -59,6 +59,8 @@ func NewNDIntegration(opts IntegrationOptions) (*NDIntegration, error) {
 		stats:           newBridgeStats(),
 		stop:            newStopSwitch(),
 		audit:           newAuditor(),
+		requests:        newRequestBook(),
+		mcp:             newMCPManager(),
 		startedAt:       time.Now(),
 	}
 
@@ -135,6 +137,9 @@ func (n *NDIntegration) Start() error {
 	if err := n.registerActions(); err != nil {
 		return err
 	}
+	// Enabled MCP servers start in the background; their tools are added to
+	// Neuro as each one comes up.
+	go n.syncMCPServers()
 
 	// Last: a compact how-to-use-me sheet. Weak models rely on it, and it is
 	// silent so it does not disturb the conversation.
@@ -143,6 +148,8 @@ func (n *NDIntegration) Start() error {
 }
 
 func (n *NDIntegration) Close() error {
+	n.stopAllMCPServers()
+
 	if err := n.client.SendContext(
 		"Neuro Desktop integration is shutting down. WebSocket will close.",
 		true,
@@ -159,6 +166,12 @@ func (n *NDIntegration) Close() error {
 }
 
 func main() {
+	// `neuro-integration catalog ...` is an operator tool (keygen, sign, verify),
+	// not the bridge. It never starts a connection.
+	if len(os.Args) > 1 && os.Args[1] == "catalog" {
+		os.Exit(runCatalogCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	wsURLFlag := flag.String("ws-url", "", "Neuro API websocket URL")

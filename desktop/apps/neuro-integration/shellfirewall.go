@@ -230,7 +230,7 @@ func shellTimeoutSeconds(requested float64) float64 {
 // policyDenialMessage explains a refusal in the shape a small model can act on:
 // which scope, how to turn it on, and what to do instead.
 func policyDenialMessage(action string, policy *PermissionPolicy) string {
-	scope := actionScope[action]
+	scope, _ := scopeForAction(action)
 	if scope == "" {
 		return fmt.Sprintf(
 			"Action %q is denied by the permission policy (explicit deny list). "+
@@ -242,6 +242,9 @@ func policyDenialMessage(action string, policy *PermissionPolicy) string {
 		"Vedal can allow it in the dashboard under Permissions → %s scope.", scopeName)
 	if scope == ScopeShell {
 		fix += " The shell scope also needs NEURO_SHELL_ALLOWLIST to name the program."
+	}
+	if policy.ScopeRequestable(scope) {
+		fix += fmt.Sprintf(" You can ask for it: call request_permission with scope %q, a one-sentence reason and minutes, then wait for the decision message.", scopeName)
 	}
 
 	return fmt.Sprintf(

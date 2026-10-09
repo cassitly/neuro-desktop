@@ -43,6 +43,12 @@ type NDIntegration struct {
 	// audit records action decisions when NEURO_AUDIT_LOG is configured.
 	audit *auditor
 
+	// requests holds Neuro's permission requests and the operator's decisions.
+	requests *requestBook
+
+	// mcp runs the enabled MCP servers and tracks the tools they expose.
+	mcp *mcpManager
+
 	startedAt time.Time
 }
 
@@ -67,9 +73,18 @@ func (n *NDIntegration) policy() *PermissionPolicy {
 	return n.permissions
 }
 
+// setPolicy swaps the live policy. Operator approvals survive the swap, because
+// the grant store belongs to the running bridge rather than to the policy file.
 func (n *NDIntegration) setPolicy(policy *PermissionPolicy) {
 	n.permissionsMu.Lock()
 	defer n.permissionsMu.Unlock()
+	if policy != nil {
+		if n.permissions != nil && n.permissions.grants != nil {
+			policy.grants = n.permissions.grants
+		} else if policy.grants == nil {
+			policy.grants = newGrantStore()
+		}
+	}
 	n.permissions = policy
 }
 

@@ -23,7 +23,31 @@ const (
 	ScopeGame PermissionScope = "game"
 	// ScopeShell covers running command lines (headless machines, terminal work).
 	ScopeShell PermissionScope = "shell"
+	// ScopeExtensions covers listing, installing, enabling, and removing catalog
+	// extensions. It is explicit consent: listing the actions does not enable it.
+	ScopeExtensions PermissionScope = "extensions"
 )
+
+// scopeDescriptions are the one-line explanations the dashboard shows next to
+// each switch. They are part of the operator's decision, so keep them literal.
+var scopeDescriptions = map[PermissionScope]string{
+	ScopeInput:      "Keyboard and mouse input, window management",
+	ScopeGame:       "The high-level game interface (play a game with no integration)",
+	ScopeShell:      "Run command lines (explicit consent; also needs NEURO_SHELL_ALLOWLIST)",
+	ScopeFilesystem: "Open file manager and similar file-level shortcuts",
+	ScopeProcess:    "Task manager, close apps, run dialog",
+	ScopeNetwork:    "Browse the extension catalog (read-only)",
+	ScopeSystem:     "Lock, settings, power menu, launching programs (explicit consent)",
+	ScopeVision:     "Screenshots, desktop context and game observation (read-only)",
+	ScopeExtensions: "Install, enable, disable and remove extensions (explicit consent)",
+}
+
+// alwaysAllowed actions are never refused by the policy itself. Neuro must be
+// able to ask for a permission it lacks. The deny list and NEURO_DENY_ACTIONS
+// still apply, so the operator can switch the request path off.
+var alwaysAllowed = map[string]bool{
+	string(CmdRequestPermission): true,
+}
 
 // ScopeLimits are the per-scope knobs the dashboard exposes. Only the rate
 // limit is enforced today; it is persisted so a policy survives a round trip
@@ -33,8 +57,12 @@ type ScopeLimits struct {
 }
 
 type ScopeConfig struct {
-	Allowed bool        `json:"allowed"`
-	Limits  ScopeLimits `json:"limits,omitempty"`
+	Allowed bool `json:"allowed"`
+	// Requestable lets Neuro ask the operator for this scope with
+	// request_permission. It grants nothing by itself, and switching it off also
+	// ends any approval that was given for the scope.
+	Requestable bool        `json:"requestable,omitempty"`
+	Limits      ScopeLimits `json:"limits,omitempty"`
 }
 
 // UnmarshalJSON accepts both the documented shape ({"allowed": true}) and the
@@ -51,14 +79,18 @@ func (s *ScopeConfig) UnmarshalJSON(data []byte) error {
 	}
 
 	var raw struct {
-		Allowed *flexibleBool `json:"allowed"`
-		Limits  ScopeLimits   `json:"limits"`
+		Allowed     *flexibleBool `json:"allowed"`
+		Requestable *flexibleBool `json:"requestable"`
+		Limits      ScopeLimits   `json:"limits"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("a scope must be true/false or {\"allowed\": true/false}")
 	}
 	if raw.Allowed != nil {
 		s.Allowed = bool(*raw.Allowed)
+	}
+	if raw.Requestable != nil {
+		s.Requestable = bool(*raw.Requestable)
 	}
 	if raw.Limits.MaxActionsPerMinute < 0 {
 		return fmt.Errorf("max_actions_per_minute must not be negative")
@@ -100,6 +132,9 @@ type PermissionPolicy struct {
 	// hardDeny comes from NEURO_DENY_ACTIONS and outranks both lists: it is the
 	// operator's "not even if the dashboard says so".
 	hardDeny map[string]bool
+	// grants are operator approvals of requests. This is runtime state, not
+	// policy: setPolicy carries it across dashboard saves.
+	grants *grantStore
 }
 
 type permissionPolicyFile struct {
@@ -147,11 +182,11 @@ var actionScope = map[string]PermissionScope{
 	string(CmdGetCatalogItem):      ScopeNetwork,
 	string(CmdGetDesktopContext):   ScopeVision,
 	string(CmdSendDesktopContext):  ScopeVision,
-	string(CmdListInstalledExts):   ScopeFilesystem,
-	string(CmdInstallExtension):    ScopeFilesystem,
-	string(CmdUninstallExtension):  ScopeFilesystem,
-	string(CmdEnableExtension):     ScopeFilesystem,
-	string(CmdDisableExtension):    ScopeFilesystem,
+	string(CmdListInstalledExts):   ScopeExtensions,
+	string(CmdInstallExtension):    ScopeExtensions,
+	string(CmdUninstallExtension):  ScopeExtensions,
+	string(CmdEnableExtension):     ScopeExtensions,
+	string(CmdDisableExtension):    ScopeExtensions,
 	string(CmdGetStatus):           ScopeVision,
 	string(CmdShutdownGracefully):  ScopeSystem,
 	string(CmdShutdownImmediately): ScopeSystem,
@@ -187,6 +222,7 @@ func defaultPermissionPolicy() *PermissionPolicy {
 		DefaultAllow: false,
 		allowed:      map[string]struct{}{},
 		denied:       map[string]struct{}{},
+		grants:       newGrantStore(),
 		scopes: map[PermissionScope]ScopeConfig{
 			ScopeInput:      {Allowed: true},
 			ScopeFilesystem: {Allowed: false},
@@ -195,8 +231,9 @@ func defaultPermissionPolicy() *PermissionPolicy {
 			ScopeSystem:     {Allowed: false},
 			ScopeVision:     {Allowed: true},
 			ScopeGame:       {Allowed: true},
-			// A default install must not hand out a shell.
-			ScopeShell: {Allowed: false},
+			// A default install must not hand out a shell or extension installs.
+			ScopeShell:      {Allowed: false},
+			ScopeExtensions: {Allowed: false},
 		},
 	}
 }
@@ -254,8 +291,8 @@ func (p *PermissionPolicy) ScopeAllowed(scope PermissionScope) bool {
 	if p == nil {
 		return false
 	}
-	if cfg, ok := p.scopes[scope]; ok {
-		return cfg.Allowed
+	if _, ok := p.scopes[scope]; ok {
+		return p.scopeOn(scope)
 	}
 	return p.DefaultAllow
 }
@@ -278,9 +315,7 @@ func (p *PermissionPolicy) ScopeConfigs() map[PermissionScope]ScopeConfig {
 	if p == nil {
 		return out
 	}
-	for _, scope := range []PermissionScope{
-		ScopeInput, ScopeGame, ScopeShell, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision,
-	} {
+	for _, scope := range allScopes() {
 		out[scope] = p.scopes[scope]
 	}
 	return out
@@ -291,7 +326,7 @@ func (p *PermissionPolicy) ScopeConfigs() map[PermissionScope]ScopeConfig {
 // that merely lists the action (or sets default_allow) does not enable them.
 func scopeRequiresExplicitConsent(scope PermissionScope) bool {
 	switch scope {
-	case ScopeShell, ScopeSystem:
+	case ScopeShell, ScopeSystem, ScopeExtensions:
 		return true
 	}
 	return false
@@ -299,10 +334,24 @@ func scopeRequiresExplicitConsent(scope PermissionScope) bool {
 
 func knownScope(scope PermissionScope) bool {
 	switch scope {
-	case ScopeInput, ScopeGame, ScopeShell, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision:
+	case ScopeInput, ScopeGame, ScopeShell, ScopeFilesystem, ScopeProcess, ScopeNetwork, ScopeSystem, ScopeVision, ScopeExtensions:
 		return true
 	}
 	return false
+}
+
+// scopeForAction returns the permission scope an action belongs to. MCP tools
+// are not in the static table (their names come from the server at runtime), so
+// they map by prefix to the extensions scope. Every scope lookup goes through
+// here so that a dynamic name can never fall through to default_allow.
+func scopeForAction(action string) (PermissionScope, bool) {
+	if scope, ok := actionScope[action]; ok {
+		return scope, true
+	}
+	if strings.HasPrefix(action, mcpActionPrefix) {
+		return ScopeExtensions, true
+	}
+	return "", false
 }
 
 func (p *PermissionPolicy) IsAllowed(action string) bool {
@@ -316,14 +365,15 @@ func (p *PermissionPolicy) IsAllowed(action string) bool {
 		return false
 	}
 
+	if alwaysAllowed[action] {
+		return true
+	}
+
 	// The dangerous scopes are checked before the explicit allow list: a bare
 	// allow-list entry (or default_allow) must not hand out a shell or system
 	// control. The operator has to turn those scopes on deliberately.
-	if scope, ok := actionScope[action]; ok && scopeRequiresExplicitConsent(scope) {
-		if cfg, ok := p.scopes[scope]; ok {
-			return cfg.Allowed
-		}
-		return false
+	if scope, ok := scopeForAction(action); ok && scopeRequiresExplicitConsent(scope) {
+		return p.scopeOn(scope)
 	}
 
 	// Explicit allow list wins next.
@@ -332,11 +382,41 @@ func (p *PermissionPolicy) IsAllowed(action string) bool {
 	}
 
 	// Scope gates: Vedal toggles capability categories in the management UI.
-	if scope, ok := actionScope[action]; ok {
-		if cfg, ok := p.scopes[scope]; ok {
-			return cfg.Allowed
+	if scope, ok := scopeForAction(action); ok {
+		if _, configured := p.scopes[scope]; configured {
+			return p.scopeOn(scope)
 		}
 	}
 
 	return p.DefaultAllow
+}
+
+// scopeOn reports whether a configured scope is on: the operator's switch, or an
+// approval of a request that is still in force while the scope is requestable.
+func (p *PermissionPolicy) scopeOn(scope PermissionScope) bool {
+	if p == nil {
+		return false
+	}
+	cfg, ok := p.scopes[scope]
+	if !ok {
+		return false
+	}
+	return cfg.Allowed || p.grantedFor(scope)
+}
+
+// ScopeRequestable reports whether Neuro may ask the operator for the scope.
+func (p *PermissionPolicy) ScopeRequestable(scope PermissionScope) bool {
+	if p == nil {
+		return false
+	}
+	cfg, ok := p.scopes[scope]
+	return ok && cfg.Requestable
+}
+
+// grantedFor reports whether an approved request currently lifts the scope.
+func (p *PermissionPolicy) grantedFor(scope PermissionScope) bool {
+	if !p.ScopeRequestable(scope) {
+		return false
+	}
+	return p.grants.activeFor(scope)
 }
