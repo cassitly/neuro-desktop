@@ -1,200 +1,148 @@
-import { useEffect, useMemo, useState } from "react";
+import RuntimePanel from "./RuntimePanel";
+import { useCallback, useEffect, useState } from "react";
+import GamesPanel from "./GamesPanel";
 import PermissionsPage from "./PermissionsPage";
-import type { ExtensionState, NDBootstrap } from "./types";
+import SignIn from "./SignIn";
+import {
+  ApiError,
+  api,
+  setAdminToken,
+  type CatalogItem,
+  type ConfigPayload,
+  type InstalledExtension,
+  type RelayStatus,
+  type StatusPayload,
+} from "./api";
 
-type PluginInstallMethod = "metadata_only" | "git_clone" | "mcp_endpoint";
+type Tab = "extensions" | "games" | "permissions" | "settings";
 
-type Extension = {
-  id: string;
-  name: string;
-  category: "core" | "extension";
-  description: string;
-  repo?: string;
-  tags: string[];
-  defaultEnabled?: boolean;
-  installMethod: PluginInstallMethod;
-  requiresRelay?: boolean;
+const INSTALL_MODE_LABELS: Record<string, string> = {
+  metadata_only: "Metadata only (records the install)",
+  git_clone: "GitHub clone into the plugin directory",
+  mcp_endpoint: "MCP endpoint (external server)",
 };
 
-type Tab = "extensions" | "permissions" | "settings";
-
-const EXTENSIONS: Extension[] = [
-  {
-    id: "neuro-desktop",
-    name: "Neuro Desktop",
-    category: "core",
-    description: "Main Windows control runtime and desktop action bridge.",
-    repo: "https://github.com/cassitly/neuro-desktop",
-    tags: ["core", "windows", "runtime"],
-    defaultEnabled: true,
-    installMethod: "metadata_only",
-  },
-  {
-    id: "neuro-relay",
-    name: "Neuro Relay",
-    category: "core",
-    description: "Multiplexes multiple Neuro integrations and game endpoints.",
-    repo: "https://github.com/recassity/neuro-relay",
-    tags: ["core", "relay", "multiplex"],
-    defaultEnabled: false,
-    installMethod: "git_clone",
-  },
-  {
-    id: "nd-vision-server",
-    name: "ND Vision Server",
-    category: "extension",
-    description: "External model inference service for screenshot summarization.",
-    repo: "https://github.com/Ubuntufanboy/neuro-desktop",
-    tags: ["vision", "context", "experimental"],
-    defaultEnabled: false,
-    installMethod: "git_clone",
-  },
-  {
-    id: "mcp-bridge",
-    name: "MCP Bridge",
-    category: "extension",
-    description: "Model Context Protocol bridge for tool/plugin servers. Not installed by default.",
-    repo: "https://github.com/modelcontextprotocol/servers",
-    tags: ["mcp", "plugins", "optional"],
-    defaultEnabled: false,
-    installMethod: "mcp_endpoint",
-  },
-];
-
-const STORAGE_KEY = "nd_extension_state_v1";
-
-function getBootstrapState(): Record<string, ExtensionState> | null {
-  const raw = (window.__ND_BOOTSTRAP as NDBootstrap | undefined)?.extensionState;
-  if (!raw || typeof raw !== "object") {
-    return null;
-  }
-  return raw;
-}
-
-function withDefaultExtensions(
-  incoming: Record<string, ExtensionState>,
-): Record<string, ExtensionState> {
-  const merged: Record<string, ExtensionState> = {};
-  for (const extension of EXTENSIONS) {
-    const existing = incoming[extension.id];
-    if (existing) {
-      merged[extension.id] = existing;
-      continue;
-    }
-
-    const coreInstalled = extension.category === "core";
-    merged[extension.id] = {
-      installed: coreInstalled,
-      enabled: coreInstalled ? true : Boolean(extension.defaultEnabled),
-    };
-  }
-  return merged;
-}
-
-function loadInitialState(): Record<string, ExtensionState> {
-  const bootstrap = getBootstrapState();
-  if (bootstrap) {
-    return withDefaultExtensions(bootstrap);
-  }
-
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      throw new Error("missing");
-    }
-    const parsed = JSON.parse(raw) as Record<string, ExtensionState>;
-    if (parsed && typeof parsed === "object") {
-      return withDefaultExtensions(parsed);
-    }
-  } catch {
-    // fallback defaults below
-  }
-
-  return withDefaultExtensions({});
-}
-
-function installMethodLabel(method: PluginInstallMethod): string {
-  switch (method) {
-    case "git_clone":
-      return "GitHub Clone";
-    case "mcp_endpoint":
-      return "MCP Endpoint";
-    default:
-      return "Metadata Only";
-  }
-}
-
 export default function App() {
-  console.log("App component rendering");
   const [showSplash, setShowSplash] = useState(true);
-  const [selectedId, setSelectedId] = useState<string>("neuro-desktop");
-  const [state, setState] = useState<Record<string, ExtensionState>>(() =>
-    loadInitialState(),
-  );
   const [activeTab, setActiveTab] = useState<Tab>("extensions");
+  const [status, setStatus] = useState<StatusPayload | null>(null);
+  const [config, setConfig] = useState<ConfigPayload | null>(null);
+  const [extensions, setExtensions] = useState<InstalledExtension[]>([]);
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [installMode, setInstallMode] = useState<string>("");
+  const [extensionDir, setExtensionDir] = useState<string>("");
+  const [selectedId, setSelectedId] = useState<string>("");
+  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  // "ok" shows the dashboard. "signin" and "setup" show the gate instead, and
+  // the reason is the server's own text when it gave one.
+  const [gate, setGate] = useState<{ kind: "ok" } | { kind: "signin" | "setup"; reason?: string }>({
+    kind: "ok",
+  });
+  const signedOut = gate.kind !== "ok";
+
+  const load = useCallback(async () => {
+    try {
+      const [statusPayload, extensionsPayload, configPayload] = await Promise.all([
+        api.status(),
+        api.extensions(),
+        api.config().catch(() => null),
+      ]);
+      setStatus(statusPayload);
+      setExtensions(extensionsPayload.installed);
+      setCatalog(extensionsPayload.catalog);
+      setInstallMode(extensionsPayload.install_mode);
+      setExtensionDir(extensionsPayload.extension_dir);
+      setConfig(configPayload);
+      setGate({ kind: "ok" });
+      setSelectedId((current) => {
+        if (current && (extensionsPayload.installed.some((item) => item.id === current) || extensionsPayload.catalog.some((item) => item.id === current))) {
+          return current;
+        }
+        return extensionsPayload.installed[0]?.id ?? extensionsPayload.catalog[0]?.id ?? "";
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        setGate({ kind: "signin" });
+        return;
+      }
+      if (error instanceof ApiError && error.status === 503) {
+        setGate({ kind: "setup", reason: error.message });
+        return;
+      }
+      setMessage({
+        kind: "error",
+        text:
+          error instanceof ApiError
+            ? `${error.message} — the dashboard talks to the Go bridge over HTTP; make sure it is running.`
+            : "Could not reach the bridge",
+      });
+    }
+  }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setShowSplash(false), 2100);
+    const timer = window.setTimeout(() => setShowSplash(false), 900);
     return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    window.ndHost?.send("save_extension_state", state);
-  }, [state]);
-
-  const selected = useMemo(
-    () => EXTENSIONS.find((item) => item.id === selectedId) ?? EXTENSIONS[0],
-    [selectedId],
-  );
-
-  const selectedState = state[selected.id] ?? { installed: false, enabled: false };
-  const coreServices = EXTENSIONS.filter((item) => item.category === "core");
-  const plugins = EXTENSIONS.filter((item) => item.category === "extension");
-  const installedCount = Object.values(state).filter((item) => item.installed).length;
-  const enabledCount = Object.values(state).filter(
-    (item) => item.installed && item.enabled,
-  ).length;
-
-  function updateState(next: Record<string, ExtensionState>) {
-    setState(next);
-  }
-
-  function installSelected() {
-    const next = {
-      ...state,
-      [selected.id]: { installed: true, enabled: true },
-    };
-    updateState(next);
-  }
-
-  function uninstallSelected() {
-    if (selected.category === "core") {
+    // Signed out: stop polling. Polling would send a rejected request every few
+    // seconds, and the audit log would fill with them. Signing in calls load() again.
+    if (signedOut) {
       return;
     }
+    void load();
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => window.clearInterval(timer);
+  }, [load, signedOut]);
 
-    const next = {
-      ...state,
-      [selected.id]: { installed: false, enabled: false },
-    };
-    updateState(next);
-  }
-
-  function toggleEnabled() {
-    if (!selectedState.installed) {
-      return;
+  async function extensionAction(id: string, action: "install" | "enable" | "disable" | "uninstall") {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const result = await api.extensionAction(id, action);
+      setMessage({ kind: "ok", text: result.message || `${action} ok` });
+      await load();
+    } catch (error) {
+      setMessage({
+        kind: "error",
+        text:
+          error instanceof ApiError
+            ? `${action} failed: ${error.message}`
+            : `${action} failed`,
+      });
+    } finally {
+      setBusy(false);
     }
-    const next = {
-      ...state,
-      [selected.id]: {
-        ...selectedState,
-        enabled: !selectedState.enabled,
-      },
-    };
-    updateState(next);
   }
 
-  const isNativeShell = Boolean(window.__ND_BOOTSTRAP?.nativeHost);
+  const installedById = new Map(extensions.map((item) => [item.id, item]));
+  const catalogById = new Map(catalog.map((item) => [item.id, item]));
+  const allIds = [
+    ...extensions.map((item) => item.id),
+    ...catalog.filter((item) => !installedById.has(item.id)).map((item) => item.id),
+  ];
+  const selected = (
+    installedById.get(selectedId) ??
+    (catalogById.get(selectedId)
+      ? {
+          id: selectedId,
+          enabled: false,
+          name: catalogById.get(selectedId)?.name,
+          description: catalogById.get(selectedId)?.description,
+          type: catalogById.get(selectedId)?.type,
+          repository: catalogById.get(selectedId)?.repository,
+          source: "catalog",
+        }
+      : undefined)
+  ) as InstalledExtension | undefined;
+  const selectedInstalled = installedById.has(selectedId);
+
+  const core = extensions.filter((item) => item.type === "desktop-integration" || item.id === "neuro-desktop");
+  const installedPlugins = extensions.filter((item) => !core.includes(item));
+
+  const relay: RelayStatus | undefined = status?.relay;
+  const executorOnline = Boolean(status?.executor.connected);
 
   if (showSplash) {
     return (
@@ -203,10 +151,14 @@ export default function App() {
         <div className="splash-content">
           <h1>Neuro Desktop</h1>
           <p>Integration Manager</p>
-          <span>2026.3</span>
+          <span>{status?.version ?? ""}</span>
         </div>
       </div>
     );
+  }
+
+  if (gate.kind !== "ok") {
+    return <SignIn mode={gate.kind} reason={gate.reason} onSignedIn={() => void load()} />;
   }
 
   return (
@@ -215,212 +167,271 @@ export default function App() {
         <div className="titlebar-left">
           <h1>Neuro Desktop</h1>
           <nav className="titlebar-nav">
-            <button
-              className={`nav-tab ${activeTab === "extensions" ? "active" : ""}`}
-              onClick={() => setActiveTab("extensions")}
-            >
-              Extensions
-            </button>
-            <button
-              className={`nav-tab ${activeTab === "permissions" ? "active" : ""}`}
-              onClick={() => setActiveTab("permissions")}
-            >
-              Permissions
-            </button>
-            <button
-              className={`nav-tab ${activeTab === "settings" ? "active" : ""}`}
-              onClick={() => setActiveTab("settings")}
-            >
-              Settings
-            </button>
+            {(["extensions", "games", "permissions", "settings"] as Tab[]).map((tab) => (
+              <button
+                key={tab}
+                className={`nav-tab ${activeTab === tab ? "active" : ""}`}
+                onClick={() => setActiveTab(tab)}
+              >
+                {tab === "settings" ? "Status" : tab[0].toUpperCase() + tab.slice(1)}
+              </button>
+            ))}
           </nav>
         </div>
         <div className="titlebar-right">
-          <span className="status-indicator">●</span>
+          <span className={`status-indicator ${executorOnline ? "online" : "offline"}`}>●</span>
           <span className="status-text">
-            {installedCount} installed, {enabledCount} enabled
+            {status
+              ? `bridge ${status.version} · executor ${executorOnline ? "online" : "offline"} · ${
+                  status.actions.actions_received ?? 0
+                } actions`
+              : "connecting to the bridge…"}
           </span>
         </div>
       </header>
 
-      <main
-        className={`manager-main ${activeTab === "extensions" ? "manager-main--extensions" : "manager-main--single"}`}
-      >
-        {activeTab === "extensions" && (
-          <>
-            <aside className="manager-sidebar">
-              <section>
-                <h2>Core Services</h2>
-                {coreServices.map((item, index) => {
-                  const itemState = state[item.id];
-                  return (
-                    <button
-                      key={item.id}
-                      className={`sidebar-item ${selected.id === item.id ? "selected" : ""}`}
-                      style={{ animationDelay: `${index * 0.04}s` }}
-                      onClick={() => setSelectedId(item.id)}
-                    >
-                      <div>
-                        <strong>{item.name}</strong>
-                        <small>{itemState?.enabled ? "Active" : "Installed"}</small>
-                      </div>
-                    </button>
-                  );
-                })}
-              </section>
+      {message && (
+        <div className={message.kind === "ok" ? "save-notice" : "scope-warning"}>
+          {message.kind === "ok" ? "✅" : "⚠️"} {message.text}
+        </div>
+      )}
 
-              <section>
-                <h2>Extensions</h2>
-                {plugins.map((item, index) => {
-                  const itemState = state[item.id];
-                  const status = itemState?.installed
-                    ? itemState.enabled
-                      ? "Enabled"
-                      : "Installed"
-                    : "Not installed";
-                  return (
-                    <button
-                      key={item.id}
-                      className={`sidebar-item ${selected.id === item.id ? "selected" : ""}`}
-                      style={{ animationDelay: `${index * 0.05 + 0.12}s` }}
-                      onClick={() => setSelectedId(item.id)}
-                    >
-                      <div>
-                        <strong>{item.name}</strong>
-                        <small>{status}</small>
-                      </div>
-                    </button>
-                  );
-                })}
-              </section>
-            </aside>
+      {activeTab === "permissions" && <PermissionsPage />}
 
-            <section className="manager-panel">
+      {activeTab === "games" && <GamesPanel executor={status?.executor ?? null} />}
+
+      {activeTab === "extensions" && (
+        <>
+        <RuntimePanel />
+        <main className="manager-main manager-main--extensions">
+          <aside className="manager-sidebar">
+            <section>
+              <h2>Core Services</h2>
+              {core.map((item, index) => (
+                <button
+                  key={item.id}
+                  className={`sidebar-item ${selectedId === item.id ? "selected" : ""}`}
+                  style={{ animationDelay: `${index * 0.04}s` }}
+                  onClick={() => setSelectedId(item.id)}
+                >
+                  <div>
+                    <strong>{item.name || item.id}</strong>
+                    <small>{item.enabled ? "Active" : "Installed"}</small>
+                  </div>
+                </button>
+              ))}
+            </section>
+
+            <section>
+              <h2>Extensions</h2>
+              {installedPlugins.map((item, index) => (
+                <button
+                  key={item.id}
+                  className={`sidebar-item ${selectedId === item.id ? "selected" : ""}`}
+                  style={{ animationDelay: `${index * 0.05 + 0.12}s` }}
+                  onClick={() => setSelectedId(item.id)}
+                >
+                  <div>
+                    <strong>{item.name || item.id}</strong>
+                    <small>
+                    {item.enabled ? "Enabled" : "Disabled"} · signature {item.signature_state ?? item.trust ?? "unknown"}
+                  </small>
+                  </div>
+                </button>
+              ))}
+              {catalog
+                .filter((item) => !installedById.has(item.id))
+                .map((item) => (
+                  <button
+                    key={item.id}
+                    className={`sidebar-item ${selectedId === item.id ? "selected" : ""}`}
+                    onClick={() => setSelectedId(item.id)}
+                  >
+                    <div>
+                      <strong>{item.name}</strong>
+                      <small>Not installed · signature {item.signature_state ?? "unknown"}</small>
+                    </div>
+                  </button>
+                ))}
+              {allIds.length === 0 && (
+                <p className="hint">
+                  No catalog entries. Check the catalog path in Status.
+                </p>
+              )}
+            </section>
+          </aside>
+
+          <section className="manager-panel">
+            {selected ? (
+              <>
+                <div className="panel-header">
+                  <div>
+                    <h1>{selected.name || selected.id}</h1>
+                    <p>{selected.description || "No description in the catalog."}</p>
+                  </div>
+                  {selected.repository && (
+                    <a href={selected.repository} target="_blank" rel="noreferrer">
+                      Open Repository ↗
+                    </a>
+                  )}
+                </div>
+
+                <div className="status-row">
+                  <span className={`pill ${selectedInstalled ? "ok" : "warn"}`}>
+                    {selectedInstalled ? "Installed" : "Not Installed"}
+                  </span>
+                  <span className={`pill ${selected.enabled ? "ok" : "idle"}`}>
+                    {selected.enabled ? "Enabled" : "Disabled"}
+                  </span>
+                  <span className="pill neutral">{INSTALL_MODE_LABELS[installMode] ?? installMode}</span>
+                </div>
+
+                <div className="button-row">
+                  <button
+                    className="primary"
+                    onClick={() => void extensionAction(selected.id, "install")}
+                    disabled={busy || selectedInstalled}
+                  >
+                    Install
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={() =>
+                      void extensionAction(selected.id, selected.enabled ? "disable" : "enable")
+                    }
+                    disabled={busy || !selectedInstalled}
+                  >
+                    {selected.enabled ? "Disable" : "Enable"}
+                  </button>
+                  <button
+                    className="danger"
+                    onClick={() => void extensionAction(selected.id, "uninstall")}
+                    disabled={busy || !selectedInstalled}
+                  >
+                    Uninstall
+                  </button>
+                </div>
+
+                <div className="meta-grid">
+                  <article>
+                    <h3>Installed At</h3>
+                    <p>{selected.installed_at || "not installed"}</p>
+                  </article>
+                  <article>
+                    <h3>Source</h3>
+                    <p>{selected.source || "—"}</p>
+                  </article>
+                  <article>
+                    <h3>Path</h3>
+                    <p>{selected.path || extensionDir}</p>
+                  </article>
+                  <article>
+                    <h3>Type</h3>
+                    <p>{selected.type || "extension"}</p>
+                  </article>
+                </div>
+
+                <p className="hint">
+                  Extensions are recorded in the bridge's extension state file and listed to Neuro as
+                  installed plugins. Installation obeys the install mode above and the filesystem
+                  permission scope.
+                </p>
+              </>
+            ) : (
               <div className="panel-header">
                 <div>
-                  <h1>{selected.name}</h1>
-                  <p>{selected.description}</p>
+                  <h1>Nothing selected</h1>
+                  <p>Pick an extension on the left, or add one to the catalog.</p>
                 </div>
-                <a href={selected.repo} target="_blank" rel="noreferrer">
-                  Open Repository ↗
-                </a>
               </div>
+            )}
+          </section>
+        </main>
+        </>
+      )}
 
-              <div className="status-row">
-                <span className={`pill ${selectedState.installed ? "ok" : "warn"}`}>
-                  {selectedState.installed ? "Installed" : "Not Installed"}
-                </span>
-                <span className={`pill ${selectedState.enabled ? "ok" : "idle"}`}>
-                  {selectedState.enabled ? "Enabled" : "Disabled"}
-                </span>
-                <span className="pill neutral">{installMethodLabel(selected.installMethod)}</span>
-              </div>
-
-              <div className="option-row">
-                <label>
-                  <input type="radio" checked={selected.installMethod === "metadata_only"} readOnly />
-                  Metadata only
-                </label>
-                <label>
-                  <input type="radio" checked={selected.installMethod === "git_clone"} readOnly />
-                  GitHub clone
-                </label>
-                <label>
-                  <input type="radio" checked={selected.installMethod === "mcp_endpoint"} readOnly />
-                  MCP endpoint
-                </label>
-              </div>
-
+      {activeTab === "settings" && (
+        <section className="settings-panel">
+          <h1>Bridge Status</h1>
+          <div className="settings-grid">
+            <article>
+              <h3>Runtime</h3>
+              <p>Version {status?.version ?? "unknown"}</p>
+              <p>Uptime {status ? Math.round(status.uptime / 60) : 0} minutes</p>
+              <p>Started {status?.started_at ?? "—"}</p>
+            </article>
+            <article>
+              <h3>Executor</h3>
+              <p>{executorOnline ? `Connected (${status?.executor.remote})` : "Not connected"}</p>
+              <p>
+                {status?.executor.completed_commands ?? 0} commands, {status?.executor.failed_commands ?? 0} failed
+              </p>
+              {status?.executor.last_error && <p className="denied">{status.executor.last_error}</p>}
+            </article>
+            <article>
+              <h3>Relay / coexistence</h3>
+              <p>{relay?.enabled ? `Enabled → ${relay.url}` : "Disabled"}</p>
+              <p>
+                {relay?.registered ? "Registered" : "Not registered"} · {relay?.peer_count ?? 0} peer(s)
+              </p>
+              {relay?.peers && Object.keys(relay.peers).length > 0 && (
+                <ul className="list-items">
+                  {Object.entries(relay.peers).map(([name, kind]) => (
+                    <li key={name}>
+                      <code>{name}</code>
+                      <span>{kind}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {relay?.reserved_actions && relay.reserved_actions.length > 0 && (
+                <p>Reserved for other integrations: {relay.reserved_actions.join(", ")}</p>
+              )}
+              {relay?.last_error && <p className="denied">{relay.last_error}</p>}
+            </article>
+            <article>
+              <h3>Paths</h3>
+              {config &&
+                Object.entries(config.paths).map(([name, path]) => (
+                  <p key={name}>
+                    <strong>{name}:</strong> {path}
+                  </p>
+                ))}
+            </article>
+            <article>
+              <h3>Dashboard token</h3>
+              <p>
+                Every request to this dashboard is checked against the token from{" "}
+                <code>neuro-integration setup</code>, including requests from this machine.
+              </p>
+              <p>
+                <strong>Source:</strong> {status?.admin.token_source ?? "unknown"}
+              </p>
               <div className="button-row">
                 <button
-                  onClick={installSelected}
-                  disabled={selectedState.installed}
-                  className="primary"
-                >
-                  Install
-                </button>
-                <button
-                  onClick={toggleEnabled}
-                  disabled={!selectedState.installed}
                   className="secondary"
+                  onClick={() => {
+                    setAdminToken("");
+                    setMessage({ kind: "ok", text: "Signed out of this browser session." });
+                    void load();
+                  }}
                 >
-                  {selectedState.enabled ? "Disable" : "Enable"}
-                </button>
-                <button
-                  onClick={uninstallSelected}
-                  disabled={selected.category === "core" || !selectedState.installed}
-                  className="danger"
-                >
-                  Uninstall
+                  Sign out
                 </button>
               </div>
-
-              <div className="meta-grid">
-                <article>
-                  <h3>Tags</h3>
-                  <p>{selected.tags.join(", ")}</p>
-                </article>
-                <article>
-                  <h3>Relay Dependency</h3>
-                  <p>{selected.requiresRelay ? "Requires Neuro Relay" : "No relay requirement"}</p>
-                </article>
-                <article>
-                  <h3>Installed Extensions</h3>
-                  <p>{installedCount} total, {enabledCount} enabled</p>
-                </article>
-                <article>
-                  <h3>Minimize Mode</h3>
-                  <p>
-                    {isNativeShell
-                      ? "Native shell enabled (minimize goes to system tray)."
-                      : "Browser mode fallback active."}
+            </article>
+            <article>
+              <h3>Features</h3>
+              {config &&
+                Object.entries(config.features).map(([name, enabled]) => (
+                  <p key={name}>
+                    <strong>{name}:</strong> {enabled ? "on" : "off"}
                   </p>
-                </article>
-              </div>
-            </section>
-          </>
-        )}
-
-        {activeTab === "permissions" && <PermissionsPage />}
-
-        {activeTab === "settings" && (
-          <section className="settings-panel">
-            <h1>Settings</h1>
-            <div className="settings-grid">
-              <article>
-                <h3>Runtime</h3>
-                <p>Configure Neuro Desktop runtime behavior and process management.</p>
-              </article>
-              <article>
-                <h3>Network</h3>
-                <p>Configure WebSocket URLs, relay settings, and network policies.</p>
-              </article>
-              <article>
-                <h3>Vision</h3>
-                <p>Configure vision server URL and context capture settings.</p>
-              </article>
-              <article>
-                <h3>About</h3>
-                <p>Neuro Desktop v0.0.3b-dev | Integration Manager 2026.3</p>
-              </article>
-            </div>
-          </section>
-        )}
-      </main>
-
-      <footer className="manager-footer">
-        <button className="linkish" onClick={() => window.ndHost?.send("open_logs")}>
-          Open Logs...
-        </button>
-        <div className="footer-actions">
-          <button className="secondary" onClick={() => window.ndHost?.send("open_config")}>
-            Settings
-          </button>
-          <button className="primary" onClick={() => window.ndHost?.send("quit_nd")}>
-            Quit Neuro Desktop
-          </button>
-        </div>
-      </footer>
+                ))}
+            </article>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

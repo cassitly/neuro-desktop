@@ -3,19 +3,45 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
-# Headless runners must never drive a real display / mouse / keyboard.
+# Headless runners must never drive a real display / mouse / keyboard. The
+# controller treats these exactly like a command-line-only OS, so CI doubles as
+# the headless regression test.
 env:
   NEURO_HEADLESS: "1"
   PYAUTOGUI_FAILSAFE: "0"
 
 jobs:
+  repo-checks:
+    name: Repository checks (JSON, catalog, docs)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run repository checks
+        run: python3 desktop/tools/ci/repo_checks.py
+
   build-and-test:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # The server needs no cgo. Test binaries linked through the external C
+      # linker fail to load on current macOS runners ("missing LC_UUID"), so
+      # these steps build without cgo. The race detector needs cgo, so that
+      # step turns it back on.
+      CGO_ENABLED: "0"
 
     steps:
       - name: Checkout
@@ -26,15 +52,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -43,33 +65,125 @@ jobs:
           cache: "npm"
           cache-dependency-path: desktop/frontend/package-lock.json
 
-      - name: Rust unit tests (no display)
-        run: cargo test --manifest-path desktop/apps/neuro-desktop/Cargo.toml
-        env:
-          # Ensure no accidental X11/Wayland use during unit tests.
-          DISPLAY: ""
-          WAYLAND_DISPLAY: ""
-
-      - name: Rust format check
-        run: cargo fmt --manifest-path desktop/apps/neuro-desktop/Cargo.toml -- --check
-
+      # ---------------------------------------------------------------
+      # Go server: required.
+      # ---------------------------------------------------------------
+      # Run inside the module and let gofmt walk it: `mapfile` does not exist in
+      # the bash that ships with macOS, and `find` on Windows can be a different
+      # program. This form works in every runner's bash.
       - name: Go format check
+        working-directory: desktop/apps/neuro-integration
         shell: bash
         run: |
-          mapfile -t files < <(find desktop/apps/neuro-integration -name '*.go' ! -path '*/dist/*')
-          unformatted="$(gofmt -l "${files[@]}")"
+          unformatted="$(gofmt -l . ../neuro-dashboard ../neuro-client-go)"
           if [[ -n "$unformatted" ]]; then
             echo "Unformatted Go files:"
             echo "$unformatted"
             exit 1
           fi
 
+      - name: Go build
+        working-directory: desktop/apps/neuro-integration
+        run: go build ./...
+
+      - name: Go vet
+        working-directory: desktop/apps/neuro-integration
+        run: go vet ./...
+
       - name: Go tests (neuro-integration)
         working-directory: desktop/apps/neuro-integration
-        run: go test ./...
+        run: go test -count=1 ./...
 
+      # The dashboard is a separate program: a small stdlib-only module with its
+      # own tests (token pass-through, only /api and /health forwarded, no-store,
+      # 502 when the server is down).
+      - name: Go vet and tests (neuro-dashboard)
+        working-directory: desktop/apps/neuro-dashboard
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+
+      # The Go client is the start of the port of the Python client (slice 1: the
+      # executor link, the headless rules, get_status, shell_command, lifecycle). It is
+      # not shipped yet. Its tests include a check that the command list matches the
+      # Python agent's, so a command cannot be missing from one side silently.
+      - name: Go vet and tests (neuro-client-go)
+        working-directory: desktop/apps/neuro-client-go
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+
+      - name: Go cross-compile (neuro-client-go, windows, darwin, linux)
+        working-directory: desktop/apps/neuro-client-go
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in windows/amd64 darwin/amd64 darwin/arm64 linux/amd64; do
+            goos="${target%%/*}"
+            goarch="${target##*/}"
+            echo "building $goos/$goarch"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -o /tmp/nd-client-go-"$goos"-"$goarch" .
+          done
+
+      # The server has OS-specific branches (paths, platform keys, tray/shell
+      # hints). Compiling for the three shipped platforms on every change is how
+      # a Windows-only syntax/API mistake is caught without a Windows box.
+      - name: Go cross-compile (windows, darwin, linux)
+        working-directory: desktop/apps/neuro-integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in windows/amd64 darwin/amd64 darwin/arm64 linux/amd64; do
+            goos="${target%%/*}"
+            goarch="${target##*/}"
+            echo "building $goos/$goarch"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -o /tmp/nd-server-"$goos"-"$goarch" .
+          done
+
+      # The race detector needs cgo, which only the Linux runner provides by
+      # default. This is where the concurrent executor-hub / relay code is
+      # actually exercised.
+      - name: Go tests with the race detector
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: desktop/apps/neuro-integration
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 ./...
+
+      # The dev bundle is built with -tags neurodev, which is the only build where
+      # NEURO_EXTENSIONS_ALLOW_UNSIGNED means anything. Run the suite that way too,
+      # so the escape hatch's own tests cannot silently rot.
+      - name: Go tests, dev build (-tags neurodev)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: desktop/apps/neuro-integration
+        run: go test -count=1 -tags neurodev ./...
+
+      # First-run onboarding, end to end, on the real binary: setup creates both
+      # secrets relay-first, prints the dashboard token exactly once, a re-run keeps
+      # everything, and the check passes. Ubuntu only: the script uses GNU stat.
+      - name: Setup smoke test (relay first, then the dashboard token)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: desktop/apps/neuro-integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o /tmp/nd-setup-smoke .
+          workdir="$(mktemp -d)"
+          cd "$workdir"
+          /tmp/nd-setup-smoke setup > first.out
+          /tmp/nd-setup-smoke setup --check
+          test "$(stat -c %a relay-token)" = "600"
+          test "$(stat -c %a dashboard-token)" = "600"
+          test "$(grep -cE '^        [A-Za-z0-9_-]{43}$' first.out)" = "1"
+          /tmp/nd-setup-smoke setup > again.out
+          test "$(grep -cE '^        [A-Za-z0-9_-]{43}$' again.out)" = "0"
+          echo "setup smoke test passed"
+
+      # ---------------------------------------------------------------
+      # Python controller: required, and deliberately run twice below.
+      # ---------------------------------------------------------------
       - name: Python unit tests (parser only — no pyautogui display)
-        run: python -m unittest discover desktop/backend/python/tests
+        run: python -m unittest discover desktop/backend/python/tests -t desktop/backend/python -v
         env:
           DISPLAY: ""
           WAYLAND_DISPLAY: ""
@@ -87,14 +201,432 @@ jobs:
           npm ci
           npm run build
 
-      # process-handler: compile + unit tests only. Skip spawning GUI/desktop
-      # binaries or any input simulation on headless CI runners.
-      - name: Configure process-handler tests
-        run: cmake -S desktop/apps/process-handler -B desktop/apps/process-handler/build-ci -DBUILD_TESTS=ON
+      # The bridge serves the bundle from /ui/, so every asset URL must stay
+      # relative. An absolute "/assets/..." URL breaks the dashboard there.
+      - name: Frontend bundle uses relative asset URLs
+        shell: bash
+        run: |
+          if ! grep -q 'src="./assets/' desktop/frontend/dist/index.html; then
+            echo "dist/index.html does not reference a relative bundle:"
+            cat desktop/frontend/dist/index.html
+            exit 1
+          fi
 
-      - name: Build process-handler tests
-        run: cmake --build desktop/apps/process-handler/build-ci --config Release --parallel
 
-      - name: Run process-handler unit tests
-        run: ctest --test-dir desktop/apps/process-handler/build-ci -C Release --output-on-failure -E 'FullLifecycle'
-        # FullLifecycle spawns real processes; keep message/validator unit tests.
+  # The server and the agent are two languages and two processes; a unit test on
+  # each side cannot see a protocol regression between them. This job starts
+  # both for real and asks the dashboard what it sees.
+  agent-e2e:
+    name: Server + agent end to end
+    runs-on: ubuntu-latest
+    env:
+      # The dashboard API needs a token. CI sets a fixed one: the server accepts
+      # NEURO_ADMIN_TOKEN on its own (no setup run needed), and the calls below send it.
+      NEURO_ADMIN_TOKEN: ci-dashboard-token-0123456789-abcdef
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Build the server
+        working-directory: desktop/apps/neuro-integration
+        run: go build -o /tmp/neuro-integration .
+
+      - name: Start the server
+        env:
+          NEURO_HEADLESS: "1"
+          NEURO_EXECUTOR_LISTEN: 127.0.0.1:9876
+          NEURO_ADMIN_LISTEN: 127.0.0.1:8399
+          NEURO_PERMISSIONS_FILE: ${{ runner.temp }}/permissions.json
+          NEURO_SHELL_ALLOWLIST: echo
+        run: |
+          cp desktop/apps/neuro-integration/permissions.example.json "$NEURO_PERMISSIONS_FILE"
+          nohup /tmp/neuro-integration --ws-url ws://127.0.0.1:8000 > /tmp/server.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8399/health >/dev/null; then exit 0; fi
+            sleep 0.5
+          done
+          echo "server did not come up:"; cat /tmp/server.log; exit 1
+
+      - name: Start the agent and check that the server sees it
+        env:
+          NEURO_HEADLESS: "1"
+          PYTHONPATH: desktop/backend/python
+        run: |
+          set -euo pipefail
+          python -m controller.agent --bridge 127.0.0.1:9876 > /tmp/agent.log 2>&1 &
+          for _ in $(seq 1 30); do
+            status="$(curl -fsS -H "X-ND-Token: $NEURO_ADMIN_TOKEN" http://127.0.0.1:8399/api/status)"
+            if echo "$status" | grep -q '"connected": *true'; then
+              echo "$status" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['executor']['connected'] is True; print('executor connected, profile:', d['executor'].get('remote'))"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "the agent never showed up as connected"; cat /tmp/agent.log; cat /tmp/server.log; exit 1
+
+      - name: The agent's telemetry is what the dashboard shows
+        run: |
+          curl -fsS -H "X-ND-Token: $NEURO_ADMIN_TOKEN" http://127.0.0.1:8399/api/actions | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['actions']), 'actions exposed')"
+
+      - name: Logs on failure
+        if: failure()
+        run: |
+          echo "--- server ---"; tail -50 /tmp/server.log || true
+          echo "--- agent ---"; tail -50 /tmp/agent.log || true
+
+  python-cli-only:
+    name: Python controller on a CLI-only install (stdlib only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Intentionally no pip install: this is the "headless, command-line-only
+      # OS" case, where the GUI libraries are absent. The controller must still
+      # import, load its policy and run shell commands.
+      - name: Run the test suite without GUI dependencies
+        env:
+          PYTHONPATH: desktop/backend/python
+          NEURO_HEADLESS: "1"
+          DISPLAY: ""
+          WAYLAND_DISPLAY: ""
+        run: python -m unittest discover desktop/backend/python/tests -t desktop/backend/python -v
+
+  # ---------------------------------------------------------------
+  # Neuro Relay host (Go, `neuro-integration relay`). The protocol tests run
+  # the bridge's own relay client against the host; the smoke test runs the
+  # built binary the way an operator would.
+  # ---------------------------------------------------------------
+  relay-host:
+    name: Neuro Relay host (protocol tests and a live smoke test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Relay protocol tests (race detector)
+        working-directory: desktop/apps/neuro-integration
+        run: go test -race -count=1 -run 'Relay' -v ./
+
+      - name: Build the bridge binary
+        working-directory: desktop/apps/neuro-integration
+        run: go build -o /tmp/nd-bridge .
+
+      - name: The relay refuses the upstream sample token
+        run: |
+          set +e
+          NEURO_RELAY_AUTH_TOKEN=super-secret-token timeout 15 /tmp/nd-bridge relay \
+            --listen 127.0.0.1:18765 --health 127.0.0.1:18766 --token-file /tmp/relay-token-refused
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" = "2"
+
+      - name: Start the relay with a generated token and check /health
+        run: |
+          set -euo pipefail
+          rm -f /tmp/relay-token-ci
+          /tmp/nd-bridge relay --listen 127.0.0.1:18765 --health 127.0.0.1:18766 \
+            --token-file /tmp/relay-token-ci > /tmp/relay.log 2>&1 &
+          echo $! > /tmp/relay.pid
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:18766/health > /tmp/health.json; then break; fi
+            sleep 0.25
+          done
+          cat /tmp/health.json
+          grep -q '"ok":true' /tmp/health.json
+          test "$(stat -c %a /tmp/relay-token-ci)" = "600"
+          grep -q "generated a new relay token" /tmp/relay.log
+
+      - name: Stop the relay
+        if: always()
+        run: |
+          if [ -f /tmp/relay.pid ]; then kill "$(cat /tmp/relay.pid)" || true; fi
+
+      - name: Relay log on failure
+        if: failure()
+        run: cat /tmp/relay.log || true
+
+  # ---------------------------------------------------------------
+  # MCP bridge: fake-server tests on every run, and the real npm reference
+  # server (@modelcontextprotocol/server-memory, pinned) through npx.
+  # ---------------------------------------------------------------
+  mcp:
+    name: MCP bridge (fake server, then the real reference server)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: MCP tests with the fake server (race detector)
+        working-directory: desktop/apps/neuro-integration
+        run: go test -race -count=1 -run 'MCP' -v ./
+
+      - name: MCP test against the real npm reference server
+        working-directory: desktop/apps/neuro-integration
+        env:
+          NDTEST_REAL_MCP: "1"
+        run: go test -count=1 -run 'TestMCPRealReferenceServer' -v ./
+
+  # ---------------------------------------------------------------
+  # Vision: the bridge's client, and the nd-vision-server Python package.
+  # ---------------------------------------------------------------
+  vision:
+    name: Vision (bridge client and nd-vision-server)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Bridge vision client tests
+        working-directory: desktop/apps/neuro-integration
+        run: go test -count=1 -run 'Vision' -v ./
+
+      - name: Install the optional image backend (Pillow)
+        run: python -m pip install -q pillow
+
+      - name: nd-vision-server tests
+        working-directory: desktop/apps/nd-vision-server
+        run: python -m unittest discover -s tests -t . -v
+
+  # ---------------------------------------------------------------
+  # Signed catalog: the shipped index must verify with the bridge's own
+  # `catalog verify`, and the trust rules have their own tests.
+  # ---------------------------------------------------------------
+  catalog-verify:
+    name: Signed catalog (verify the shipped index)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Build the bridge (it also contains the catalog tool)
+        working-directory: desktop/apps/neuro-integration
+        run: go build -o /tmp/nd-bridge .
+
+      - name: Verify the shipped catalog signatures
+        working-directory: desktop
+        run: /tmp/nd-bridge catalog verify --index catalog/index.json --publishers catalog/publishers.json
+
+      - name: Catalog trust and shipped-catalog tests
+        working-directory: desktop/apps/neuro-integration
+        run: go test -count=1 -run 'Catalog|Sign|Tamper|Publisher|Canonical|Keygen|Signing|Extension' -v ./
+
+  # ---------------------------------------------------------------
+  # Small-model eval: recorded weak-model calls with the verdict and the
+  # corrective text they must get, plus the escape hatch and the example policy.
+  # ---------------------------------------------------------------
+  weak-model-eval:
+    name: Small-model eval (recorded calls, escape hatch, example policy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Run the eval
+        working-directory: desktop/apps/neuro-integration
+        run: go test -count=1 -run 'WeakModel|RefusalsName|EscapeHatch|ResetOutcome|ExamplePolicy' -v ./
+
+  # ---------------------------------------------------------------
+  # Release bundle: build the dashboard and the bundle exactly as a release
+  # does, then check that the server can serve the dashboard from the bundle
+  # folder and that the shipped catalog verifies from inside it.
+  # ---------------------------------------------------------------
+  bundle:
+    name: Release bundle (build, then serve the dashboard from it)
+    runs-on: ubuntu-latest
+    env:
+      NEURO_ADMIN_TOKEN: ci-dashboard-token-0123456789-abcdef
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: desktop/apps/neuro-integration/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Build the dashboard and the bundle
+        working-directory: desktop
+        env:
+          NEURO_BUNDLE_SKIP_VENV: "1"
+          # neuro-client is built (and smoke-tested) by its own job below.
+          NEURO_BUNDLE_SKIP_CLIENT: "1"
+        run: |
+          set -euo pipefail
+          (cd frontend && npm ci && npm run build)
+          ./scripts/bundle/prod.sh
+
+      - name: The bundle has what the launcher needs
+        working-directory: desktop/dist/neuro-desktop
+        run: |
+          set -euo pipefail
+          test -x neuro-integration
+          test -x neuro-dashboard
+          test -f start.sh && bash -n start.sh
+          test -f permissions.json
+          test -f frontend/index.html
+          test -f catalog/index.json && test -f catalog/publishers.json
+          ./neuro-integration catalog verify --index catalog/index.json --publishers catalog/publishers.json
+
+      - name: Serve the dashboard from the bundle folder
+        working-directory: desktop/dist/neuro-desktop
+        run: |
+          set -euo pipefail
+          NEURO_ADMIN_LISTEN=127.0.0.1:8311 NEURO_EXECUTOR_LISTEN=127.0.0.1:9911 \
+            NEURO_UI_DIR="$PWD/frontend" NEURO_PERMISSIONS_FILE="$PWD/permissions.json" \
+            NEURO_AUDIT_LOG=/tmp/bundle-audit.log ./neuro-integration > /tmp/bundle-server.log 2>&1 &
+          echo $! > /tmp/bundle-server.pid
+          # The split-machine dashboard program, pointed at that server.
+          ./neuro-dashboard --server http://127.0.0.1:8311 --listen 127.0.0.1:8312 > /tmp/bundle-dashboard.log 2>&1 &
+          echo $! > /tmp/bundle-dashboard.pid
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8311/health -o /dev/null; then break; fi
+            sleep 0.25
+          done
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8312/ui/ -o /tmp/ui.html; then break; fi
+            sleep 0.25
+          done
+          grep -q 'src="./assets/' /tmp/ui.html
+          # The server's API answers with the token; the dashboard forwards it.
+          curl -sf -H "X-ND-Token: $NEURO_ADMIN_TOKEN" http://127.0.0.1:8311/api/runtime | grep -q '"state": "running"'
+          curl -sf -H "X-ND-Token: $NEURO_ADMIN_TOKEN" http://127.0.0.1:8312/api/runtime | grep -q '"state": "running"'
+          # Without the token the dashboard must refuse, not answer.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8312/api/runtime)" = "401"
+
+      - name: Stop the server and the dashboard
+        if: always()
+        run: |
+          for f in /tmp/bundle-dashboard.pid /tmp/bundle-server.pid; do
+            if [ -f "$f" ]; then kill "$(cat "$f")" || true; fi
+          done
+
+      - name: Server and dashboard logs on failure
+        if: failure()
+        run: cat /tmp/bundle-server.log /tmp/bundle-dashboard.log 2>/dev/null || true
+
+  # ---------------------------------------------------------------
+  # Release gate: one check that branch protection can require. It fails if any
+  # other job did not succeed, including jobs that were skipped.
+  # ---------------------------------------------------------------
+  # ---------------------------------------------------------------
+  # neuro-client, the program for the PC Neuro controls: the Python agent packaged
+  # with PyInstaller. Built on Linux here. The Windows build is not run by CI yet
+  # (docs/PRODUCTION_TODO.md).
+  # ---------------------------------------------------------------
+  client-build:
+    name: neuro-client (PyInstaller) builds and runs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build neuro-client
+        working-directory: desktop
+        run: ./scripts/build-client.sh
+
+      - name: The packaged program starts and reports a missing server
+        working-directory: desktop/dist/neuro-client
+        run: |
+          set -euo pipefail
+          ./neuro-client --help | grep -q -- '--bridge'
+          # Nothing listens on port 1. The program must say so and exit 1, not hang.
+          set +e
+          timeout 30 ./neuro-client --bridge 127.0.0.1:1 --once > /tmp/client.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/client.log
+          test "$code" = "1"
+          grep -q "giving up" /tmp/client.log
+
+  release-gate:
+    name: Release gate (every required job succeeded)
+    if: always()
+    needs: [repo-checks, build-and-test, agent-e2e, python-cli-only, relay-host, mcp, vision, catalog-verify, weak-model-eval, bundle, client-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          results = json.loads(os.environ["RESULTS"])
+          bad = {name: r["result"] for name, r in results.items() if r["result"] != "success"}
+          for name, r in sorted(results.items()):
+              print(f"{name}: {r['result']}")
+          if bad:
+              print("not successful:", bad)
+              sys.exit(1)
+          print(f"all {len(results)} required jobs succeeded")
+          PY

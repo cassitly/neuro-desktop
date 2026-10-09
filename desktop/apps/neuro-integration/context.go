@@ -84,15 +84,12 @@ func (n *NDIntegration) fetchDesktopStatus(captureScreenshot bool) (map[string]i
 		ClearAfter: false,
 	}
 
-	resp, err := n.sendToRust(cmd)
+	resp, err := n.sendToExecutor(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("ipc error: %w", err)
 	}
 	if !resp.Success {
-		if resp.Error != "" {
-			return nil, fmt.Errorf(resp.Error)
-		}
-		return nil, fmt.Errorf("get_status failed")
+		return nil, fmt.Errorf("get_status failed: %s", nonEmptyOr(resp.Error, "executor returned no detail"))
 	}
 
 	if resp.Data == nil {
@@ -147,8 +144,10 @@ func buildDesktopContextMessage(status map[string]interface{}, visionSummary str
 		lines = append(lines, fmt.Sprintf("- Running processes sample: %s", strings.Join(runningProcesses, ", ")))
 	}
 
-	if screenshotPath, ok := status["screenshot_path"].(string); ok && strings.TrimSpace(screenshotPath) != "" {
-		lines = append(lines, fmt.Sprintf("- Screenshot path: %s", screenshotPath))
+	if shot, ok, shotErr := screenshotPNG(status); shotErr != nil {
+		lines = append(lines, fmt.Sprintf("- Screenshot: unusable (%v)", shotErr))
+	} else if ok {
+		lines = append(lines, fmt.Sprintf("- Screenshot: captured (PNG, %d KB)", len(shot)/1024))
 	}
 
 	if strings.TrimSpace(visionSummary) != "" {
@@ -165,9 +164,12 @@ func (n *NDIntegration) getDesktopContext(captureScreenshot bool) (string, error
 	}
 
 	visionSummary := ""
-	if visionServerURL := strings.TrimSpace(os.Getenv("NEURO_VISION_SERVER_URL")); visionServerURL != "" {
-		if screenshotPath, ok := status["screenshot_path"].(string); ok && strings.TrimSpace(screenshotPath) != "" {
-			summary, visionErr := summarizeWithVisionServer(visionServerURL, screenshotPath)
+	if serverURL := visionServerURL(); serverURL != "" {
+		shot, ok, shotErr := screenshotPNG(status)
+		if shotErr != nil {
+			log.Printf("Vision skipped: %v", shotErr)
+		} else if ok {
+			summary, visionErr := summarizeWithVisionServer(serverURL, shot, "")
 			if visionErr != nil {
 				log.Printf("Vision summarize failed: %v", visionErr)
 			} else {

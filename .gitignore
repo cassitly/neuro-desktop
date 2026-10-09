@@ -1,6 +1,5 @@
 .venv/
 dist/
-target/
 
 __pycache__/
 
@@ -9,10 +8,15 @@ build/
 .idea/
 _external/
 desktop/apps/neuro-integration/*.exe
+desktop/apps/neuro-integration/integration-code
+desktop/apps/neuro-integration/integration-code.exe
 desktop/apps/neuro-integration/dist/*.exe
-desktop/apps/neuro-desktop/target/**/*.exe
 desktop/dist/**/*.exe
-desktop/apps/process-handler/build-*/
-desktop/apps/process-handler/build-ci/
-desktop/apps/process-handler/build-ci-tests/
-desktop/frontend/package-lock.json
+
+# Runtime state written by the bridge (installed extensions, relay and dashboard tokens). Never commit it.
+**/catalog/extensions-state.json
+relay-token
+**/relay-token
+dashboard-token
+**/dashboard-token
+*.tsbuildinfo

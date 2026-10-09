@@ -1,19 +1,57 @@
+import io
 import time
 import threading
 from typing import List, Tuple, Optional, Dict, Any
 import os
 import sys
 
-import pyautogui
-import psutil
-from pynput import mouse
-import mss
-from PIL import Image
+try:
+    import psutil
+except ImportError:  # pragma: no cover - minimal/CLI-only installs
+    psutil = None
+
+from .gui_stub import (
+    NoDisplayError,
+    is_headless,
+    load_mss,
+    load_pyautogui,
+    load_pygetwindow,
+    load_pynput_mouse,
+)
+
+# Each of these is a real library on a desktop session and a graceful stand-in
+# (or None) on a machine without one. Importing them must never crash: a
+# command-line-only box still runs the shell capability and reports status.
+pyautogui = load_pyautogui()
+pynput_mouse = load_pynput_mouse()
+mss = load_mss()
+gw = load_pygetwindow()
 
 try:
-    import pygetwindow as gw
-except ImportError:  # pragma: no cover - optional dependency
-    gw = None
+    from PIL import Image
+except ImportError:  # pragma: no cover - pillow is a hard dependency of the executor
+    Image = None
+
+# A screenshot is sent to the server as PNG inside one JSON line. These bounds keep
+# that line well under the executor's 8 MiB limit, even for a large or busy screen.
+SCREENSHOT_MAX_SIDE = 1600
+SCREENSHOT_MAX_BYTES = 3 * 1024 * 1024
+
+
+def _fit_within(image, max_side: int):
+    """Scale an image down so its longest side is at most max_side pixels."""
+    width, height = image.size
+    longest = max(width, height)
+    if longest <= max_side:
+        return image
+    scale = max_side / float(longest)
+    return image.resize((max(1, round(width * scale)), max(1, round(height * scale))))
+
+
+def _encode_png(image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 class DesktopMonitor:
@@ -28,7 +66,8 @@ class DesktopMonitor:
         max_action_history: int = 1000,
         headless: bool = False,
     ):
-        self.track_mouse = track_mouse and not headless
+        self.headless = headless
+        self.track_mouse = track_mouse and not headless and pynput_mouse is not None
         self.headless = headless
         self.max_mouse_history = max_mouse_history
         self.max_action_history = max_action_history
@@ -87,7 +126,7 @@ class DesktopMonitor:
                 if len(self.mouse_history) > self.max_mouse_history:
                     self.mouse_history.pop(0)
 
-        self._mouse_listener = mouse.Listener(on_move=on_move)
+        self._mouse_listener = pynput_mouse.Listener(on_move=on_move)
         self._mouse_listener.daemon = True
         self._mouse_listener.start()
 
@@ -135,21 +174,33 @@ class DesktopMonitor:
         except Exception as exc:
             raise RuntimeError(f"Cannot read screen size (display unavailable): {exc}") from exc
 
-    def capture_screen(self) -> Image.Image:
-        if self.headless:
-            raise RuntimeError("Screenshot unavailable in headless mode")
+    def capture_screen(self) -> "Image.Image":
+        if self.headless or mss is None:
+            raise NoDisplayError(
+                "Screenshot unavailable: this machine has no display session, so there is "
+                "nothing to capture. Use shell_command or desktop context instead."
+            )
         with mss.mss() as sct:
             monitor = sct.monitors[1]
             screenshot = sct.grab(monitor)
             return Image.frombytes("RGB", screenshot.size, screenshot.rgb)
 
-    def capture_screen_to_file(self, path: str) -> str:
-        image = self.capture_screen()
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        image.save(path)
-        return path
+    def capture_screen_png(
+        self, max_side: int = SCREENSHOT_MAX_SIDE, max_bytes: int = SCREENSHOT_MAX_BYTES
+    ) -> bytes:
+        """Capture the screen as PNG bytes, scaled to fit the executor's line limit.
+
+        The bytes are returned in the status reply. They are never written to a
+        path that the server could then open.
+        """
+        if Image is None:
+            raise NoDisplayError("Screenshot unavailable: Pillow is not installed on this machine.")
+        image = _fit_within(self.capture_screen(), max_side)
+        data = _encode_png(image)
+        while len(data) > max_bytes and max(image.size) > 320:
+            image = _fit_within(image, int(max(image.size) * 0.75))
+            data = _encode_png(image)
+        return data
 
     def get_platform(self) -> str:
         if sys.platform.startswith("win"):
@@ -159,7 +210,27 @@ class DesktopMonitor:
         return "linux"
 
     def get_running_processes(self) -> List[str]:
-        return [p.name() for p in psutil.process_iter(attrs=["name"])]
+        if psutil is not None:
+            return [p.name() for p in psutil.process_iter(attrs=["name"])]
+
+        # Minimal installs (a CLI-only image with stdlib only): read /proc where
+        # that exists, otherwise report nothing rather than failing the status call.
+        if sys.platform.startswith("linux"):
+            names: List[str] = []
+            try:
+                for entry in os.listdir("/proc"):
+                    if not entry.isdigit():
+                        continue
+                    try:
+                        with open(f"/proc/{entry}/comm", "r", encoding="utf-8") as handle:
+                            names.append(handle.read().strip())
+                    except OSError:
+                        continue
+            except OSError:
+                return []
+            return [name for name in names if name]
+
+        return []
 
     def shutdown(self):
         if self._mouse_listener:
