@@ -971,7 +971,13 @@ func (n *NDIntegration) buildGameObservation(vision bool, prompt string) (string
 	if summary != "" {
 		lines = append(lines, fmt.Sprintf("- Vision summary: %s", summary))
 	} else if vision {
-		lines = append(lines, "- Vision summary: unavailable (set NEURO_VISION_URL to enable)")
+		// Say which case it is: a missing URL and a server that failed need
+		// different fixes, and the hint must not send the operator the wrong way.
+		if visionServerURL() == "" {
+			lines = append(lines, "- Vision summary: unavailable (set NEURO_VISION_URL to enable)")
+		} else {
+			lines = append(lines, "- Vision summary: unavailable (the vision server did not answer; its state is on the dashboard)")
+		}
 	}
 
 	return strings.Join(lines, "\n"), nil

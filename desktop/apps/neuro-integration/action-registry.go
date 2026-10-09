@@ -59,7 +59,8 @@ const (
 	// Raw input primitives the game layer needs (relative look, held keys,
 	// key combinations, held mouse buttons, and a safety release-everything).
 	// Self-documentation for small models.
-	CmdDesktopGuide CommandType = "desktop_guide"
+	CmdDesktopGuide  CommandType = "desktop_guide"
+	CmdResetControls CommandType = "reset_controls"
 
 	// Shell capability (headless-friendly: this is what Neuro can do on a
 	// command-line-only machine). Guarded by the `shell` scope and the shell
@@ -349,6 +350,7 @@ var ShellActionSpecs = []actionSpec{
 func alwaysRegisteredSpecs() []actionSpec {
 	specs := append([]actionSpec{}, ShellActionSpecs...)
 	specs = append(specs, guideActionSpecs()...)
+	specs = append(specs, escapeHatchSpecs()...)
 	return append(specs, permissionRequestSpecs()...)
 }
 
@@ -360,7 +362,7 @@ var LLActionSpecs = []actionSpec{
 	},
 	{
 		Name:        CmdMouseMove,
-		Description: "Move mouse cursor to specific coordinates",
+		Description: "Move mouse cursor to specific coordinates in screen pixels. Example: {\"x\": 640, \"y\": 360}",
 		Schema: neuro.WrapSchema(map[string]interface{}{
 			"x": map[string]interface{}{
 				"type":        "integer",
@@ -384,7 +386,7 @@ var LLActionSpecs = []actionSpec{
 	},
 	{
 		Name:        CmdMouseClick,
-		Description: "Click mouse button at current cursor position",
+		Description: "Click mouse button at current cursor position. Example: {\"button\": \"left\"}",
 		Schema: neuro.WrapSchema(map[string]interface{}{
 			"button": map[string]interface{}{
 				"type":        "string",
@@ -406,7 +408,7 @@ var LLActionSpecs = []actionSpec{
 	},
 	{
 		Name:        CmdTypeText,
-		Description: "Type text using keyboard",
+		Description: "Type text using keyboard. Example: {\"text\": \"hello\"}",
 		Schema: neuro.WrapSchema(map[string]interface{}{
 			"text": map[string]interface{}{
 				"type":        "string",
@@ -427,7 +429,7 @@ var LLActionSpecs = []actionSpec{
 	},
 	{
 		Name:        CmdKeyPress,
-		Description: "Press a specific keyboard key",
+		Description: "Press a specific keyboard key. Example: {\"key\": \"enter\"}",
 		Schema: neuro.WrapSchema(map[string]interface{}{
 			"key": map[string]interface{}{
 				"type":        "string",
@@ -472,7 +474,7 @@ var LLActionSpecs = []actionSpec{
 	},
 	{
 		Name:        CmdClearActionQueue,
-		Description: "Clear queued actions",
+		Description: "Clear queued actions that have not run yet. Example: {}",
 		Schema:      nil,
 	},
 }
@@ -553,6 +555,15 @@ func (a *IPCProxyAction) Validate(data json.RawMessage) (interface{}, neuro.Exec
 	if a.spec.Name == CmdDesktopGuide {
 		topic, _ := params["topic"].(string)
 		return nil, a.integration.desktopGuide(topic)
+	}
+
+	if a.spec.Name == CmdResetControls {
+		// Like every input action: accept now, do the work in Execute, and
+		// report the outcome as context (see Execute).
+		a.integration.audit.record("action", map[string]interface{}{
+			"action": name, "decision": "accepted",
+		})
+		return pendingWork{reset: true}, neuro.NewSuccessResult("accepted")
 	}
 
 	// Fast in-process actions: answer Neuro immediately (API best practice).
@@ -689,6 +700,9 @@ type pendingWork struct {
 	gameObserve *gameObserveRequest
 	// gameActionName is the Neuro action that produced this work.
 	gameActionName string
+	// reset is the escape hatch (reset_controls): clear queued inputs, then
+	// release every held key and button.
+	reset bool
 }
 
 func scriptIntentFor(name CommandType) string {
@@ -756,6 +770,18 @@ func (a *IPCProxyAction) Execute(state interface{}) {
 		result = a.executeGameCommands(work)
 	case work.scriptIntent != "":
 		result = a.integration.executeScriptIntent(work.scriptIntent)
+	case work.reset:
+		// The model cannot see the outcome of an accepted action, so the escape
+		// hatch always reports what happened, success or not.
+		result = a.integration.resetControls()
+		if !result.Successful {
+			a.integration.stats.noteFailure(a.GetName())
+		}
+		_ = a.integration.client.SendContext(
+			fmt.Sprintf("## %s\n\n%s", a.GetName(), result.Message),
+			true,
+		)
+		return
 	case work.cmd != nil:
 		resp, err := a.integration.sendToExecutor(*work.cmd)
 		if err != nil {
@@ -853,7 +879,7 @@ func buildIPCCommand(
 		x, xOK := params["x"].(float64)
 		y, yOK := params["y"].(float64)
 		if !xOK || !yOK {
-			return IPCCommand{}, fmt.Errorf("x and y are required numbers")
+			return IPCCommand{}, fmt.Errorf("move_mouse_to needs numeric x and y in screen pixels, for example {\"x\": 640, \"y\": 360}")
 		}
 		return IPCCommand{
 			Type: CmdMouseMove,
@@ -882,7 +908,7 @@ func buildIPCCommand(
 	case CmdTypeText:
 		text, ok := params["text"].(string)
 		if !ok || text == "" {
-			return IPCCommand{}, fmt.Errorf("text is required")
+			return IPCCommand{}, fmt.Errorf("type_text needs a non-empty \"text\" string, for example {\"text\": \"hello\"}")
 		}
 		return IPCCommand{
 			Type: CmdTypeText,
@@ -896,7 +922,7 @@ func buildIPCCommand(
 	case CmdKeyPress:
 		key, ok := params["key"].(string)
 		if !ok || key == "" {
-			return IPCCommand{}, fmt.Errorf("key is required")
+			return IPCCommand{}, fmt.Errorf("key_press needs a \"key\" name, for example {\"key\": \"enter\"}. Call desktop_guide for the other key names")
 		}
 		return IPCCommand{
 			Type: CmdKeyPress,
@@ -910,7 +936,7 @@ func buildIPCCommand(
 	case CmdRunScript:
 		script, ok := params["script"].(string)
 		if !ok || script == "" {
-			return IPCCommand{}, fmt.Errorf("script is required")
+			return IPCCommand{}, fmt.Errorf("run_script needs a non-empty \"script\" string. Call desktop_guide if you are unsure what to put in it")
 		}
 		return IPCCommand{
 			Type: CmdRunScript,
@@ -931,7 +957,7 @@ func buildIPCCommand(
 	case CmdShellCommand:
 		command, ok := params["command"].(string)
 		if !ok || strings.TrimSpace(command) == "" {
-			return IPCCommand{}, fmt.Errorf("command is required")
+			return IPCCommand{}, fmt.Errorf("shell_command needs a non-empty \"command\" string, for example {\"command\": \"echo hello\"}. Call desktop_guide with topic shell for the rules")
 		}
 		cmdParams := map[string]interface{}{
 			"command": strings.TrimSpace(command),
@@ -961,7 +987,7 @@ func buildIPCCommand(
 		}, nil
 	}
 
-	return IPCCommand{}, fmt.Errorf("unknown action: %s", action)
+	return IPCCommand{}, fmt.Errorf("unknown action %q. Call desktop_guide to see the actions that are available now", action)
 }
 
 // numericParam reads a JSON number (or numeric string) parameter.

@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/url"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -31,10 +29,11 @@ import (
 //     intermediary socket so Neuro-OS watchers can see it and drive it. That
 //     registration is what this file implements.
 //
-// The earlier shipped code spawned `neuro-relay -name X -neuro-url Y
-// -emulated-addr Z`, flags that the real relay does not have: its configuration
-// lives in a YAML file. Here the supervisor runs an explicit command template
-// (or nothing at all) and only health-checks the socket.
+// Neuro Desktop does not start, supervise, or spawn a relay process. The relay
+// runs separately: the Go host in this binary (`neuro-integration relay`, see
+// relay_host.go) or the upstream Python relay. Both speak the same intermediary
+// socket, which is all this file uses. (An earlier version could start a relay
+// process from an environment variable; that was removed with the Go host.)
 type RelayConfig struct {
 	Enabled         bool
 	IntermediaryURL string
@@ -43,13 +42,6 @@ type RelayConfig struct {
 	// ReservedActions are action names owned by another integration. They are
 	// left unregistered so Neuro Desktop cannot shadow a game integration.
 	ReservedActions []string
-	// Command launches the relay process when Neuro Desktop should host it.
-	Command []string
-	// BackupCommand is tried when Command fails, for Python-style installs.
-	// %config% is replaced with the config path.
-	ConfigPath string
-	// Restart limits.
-	MaxRestarts int
 }
 
 func relayConfigFromEnv() RelayConfig {
@@ -58,8 +50,6 @@ func relayConfigFromEnv() RelayConfig {
 		IntermediaryURL: strings.TrimSpace(os.Getenv("NEURO_RELAY_URL")),
 		Token:           strings.TrimSpace(os.Getenv("NEURO_RELAY_TOKEN")),
 		Name:            nonEmptyOr(strings.TrimSpace(os.Getenv("NEURO_RELAY_NAME")), "Neuro Desktop"),
-		ConfigPath:      strings.TrimSpace(os.Getenv("NEURO_RELAY_CONFIG")),
-		MaxRestarts:     getEnvInt("NEURO_RELAY_MAX_RESTARTS", 5),
 	}
 
 	if cfg.IntermediaryURL == "" {
@@ -68,10 +58,6 @@ func relayConfigFromEnv() RelayConfig {
 			addr = "127.0.0.1:8765"
 		}
 		cfg.IntermediaryURL = "ws://" + strings.TrimPrefix(addr, "ws://")
-	}
-
-	if raw := strings.TrimSpace(os.Getenv("NEURO_RELAY_COMMAND")); raw != "" {
-		cfg.Command = splitCommandLine(raw)
 	}
 
 	cfg.ReservedActions = append(cfg.ReservedActions, reservedActionsFromEnv()...)
@@ -94,43 +80,19 @@ func reservedActionsFromEnv() []string {
 	return out
 }
 
-// splitCommandLine splits a command template on spaces, honouring double quotes.
-func splitCommandLine(raw string) []string {
-	var out []string
-	var current strings.Builder
-	inQuotes := false
-
-	for _, r := range raw {
-		switch {
-		case r == '"':
-			inQuotes = !inQuotes
-		case r == ' ' && !inQuotes:
-			if current.Len() > 0 {
-				out = append(out, current.String())
-				current.Reset()
-			}
-		default:
-			current.WriteRune(r)
-		}
-	}
-	if current.Len() > 0 {
-		out = append(out, current.String())
-	}
-	return out
-}
-
 func (c RelayConfig) endpoint() string {
 	return strings.TrimSuffix(c.IntermediaryURL, "/")
 }
 
 // RelayState is the observable status of the relay link.
+// errRelayUnreachable marks a failed dial: the relay is not listening (yet).
+var errRelayUnreachable = errors.New("relay dial failed")
+
 type RelayState struct {
 	mu         sync.Mutex
 	cfg        RelayConfig
-	cmd        *exec.Cmd
 	connected  bool
 	registered bool
-	restarts   int
 	lastError  string
 	lastEvent  string
 	lastSeen   time.Time
@@ -156,20 +118,17 @@ func newRelayState(cfg RelayConfig) *RelayState {
 
 // RelayStatus is the JSON shape used by the dashboard.
 type RelayStatus struct {
-	Enabled      bool                `json:"enabled"`
-	URL          string              `json:"url,omitempty"`
-	Connected    bool                `json:"connected"`
-	Registered   bool                `json:"registered"`
-	PeerCount    int                 `json:"peer_count"`
-	Peers        map[string]string   `json:"peers,omitempty"`
-	PeerActions  map[string][]string `json:"peer_actions,omitempty"`
-	Restarts     int                 `json:"process_restarts"`
-	LastError    string              `json:"last_error,omitempty"`
-	LastEvent    string              `json:"last_event,omitempty"`
-	LastSeen     string              `json:"last_seen,omitempty"`
-	ManagedByUs  bool                `json:"process_managed_here"`
-	Reserved     []string            `json:"reserved_actions,omitempty"`
-	SupervisedBy string              `json:"supervised_by,omitempty"`
+	Enabled     bool                `json:"enabled"`
+	URL         string              `json:"url,omitempty"`
+	Connected   bool                `json:"connected"`
+	Registered  bool                `json:"registered"`
+	PeerCount   int                 `json:"peer_count"`
+	Peers       map[string]string   `json:"peers,omitempty"`
+	PeerActions map[string][]string `json:"peer_actions,omitempty"`
+	LastError   string              `json:"last_error,omitempty"`
+	LastEvent   string              `json:"last_event,omitempty"`
+	LastSeen    string              `json:"last_seen,omitempty"`
+	Reserved    []string            `json:"reserved_actions,omitempty"`
 }
 
 func (r *RelayState) status() RelayStatus {
@@ -181,16 +140,14 @@ func (r *RelayState) status() RelayStatus {
 	defer r.mu.Unlock()
 
 	out := RelayStatus{
-		Enabled:     r.cfg.Enabled,
-		URL:         r.cfg.IntermediaryURL,
-		Connected:   r.connected,
-		Registered:  r.registered,
-		PeerCount:   len(r.peers),
-		Restarts:    r.restarts,
-		LastError:   r.lastError,
-		LastEvent:   r.lastEvent,
-		ManagedByUs: r.cmd != nil,
-		Reserved:    append([]string{}, r.cfg.ReservedActions...),
+		Enabled:    r.cfg.Enabled,
+		URL:        r.cfg.IntermediaryURL,
+		Connected:  r.connected,
+		Registered: r.registered,
+		PeerCount:  len(r.peers),
+		LastError:  r.lastError,
+		LastEvent:  r.lastEvent,
+		Reserved:   append([]string{}, r.cfg.ReservedActions...),
 	}
 	if len(r.peers) > 0 {
 		out.Peers = map[string]string{}
@@ -206,9 +163,6 @@ func (r *RelayState) status() RelayStatus {
 	}
 	if !r.lastSeen.IsZero() {
 		out.LastSeen = r.lastSeen.UTC().Format(time.RFC3339)
-	}
-	if r.cmd != nil {
-		out.SupervisedBy = "neuro-integration"
 	}
 	return out
 }
@@ -326,130 +280,28 @@ func (r *RelayState) isSelf(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(r.cfg.Name))
 }
 
-func (r *RelayState) isRunning() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.cmd != nil && r.cmd.Process != nil
-}
-
-// Start brings up the optional relay process. It is deliberately tolerant: a
-// relay that cannot be launched must not stop Neuro Desktop from working as a
-// direct Neuro integration.
+// Start begins the client loop that keeps the intermediary link up. It is
+// tolerant: a relay that is not running must not stop Neuro Desktop from working
+// as a direct Neuro integration.
 func (r *RelayState) Start() error {
 	if r == nil || !r.cfg.Enabled {
 		return nil
 	}
-
-	if len(r.cfg.Command) > 0 {
-		if err := r.startProcess(); err != nil {
-			log.Printf("Relay process could not be started (%v); continuing against %s if it is already running",
-				err, r.cfg.IntermediaryURL)
-		}
-	}
-
 	go r.clientLoop()
 	return nil
 }
 
-func (r *RelayState) startProcess() error {
-	r.mu.Lock()
-	if r.cmd != nil {
-		r.mu.Unlock()
-		return fmt.Errorf("relay process already running")
-	}
-	command := append([]string{}, r.cfg.Command...)
-	r.mu.Unlock()
-
-	if len(command) == 0 {
-		return fmt.Errorf("no relay command configured")
-	}
-
-	// %config% lets operators point at the relay's real YAML config instead of
-	// inventing CLI flags the relay does not support.
-	for i, arg := range command {
-		if strings.Contains(arg, "%config%") {
-			if r.cfg.ConfigPath == "" {
-				return fmt.Errorf("relay command needs %%config%% but NEURO_RELAY_CONFIG is unset")
-			}
-			command[i] = strings.ReplaceAll(arg, "%config%", r.cfg.ConfigPath)
-		}
-	}
-
-	cmd := exec.Command(command[0], command[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	r.mu.Lock()
-	r.cmd = cmd
-	r.restarts++
-	r.mu.Unlock()
-
-	log.Printf("Relay process started (pid %d): %s", cmd.Process.Pid, strings.Join(command, " "))
-	return nil
-}
-
+// Stop ends the client loop. It does not touch any relay process, because
+// Neuro Desktop does not run one.
 func (r *RelayState) Stop() {
 	if r == nil {
 		return
 	}
-
 	select {
 	case <-r.stop:
 	default:
 		close(r.stop)
 	}
-
-	r.mu.Lock()
-	cmd := r.cmd
-	r.cmd = nil
-	r.mu.Unlock()
-
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		log.Printf("Relay process stopped")
-	}
-}
-
-// waitForSocket makes the client retry until the relay is actually accepting
-// connections (a freshly spawned relay needs a moment to bind).
-func (r *RelayState) waitForSocket(timeout time.Duration) error {
-	if r == nil {
-		return fmt.Errorf("relay disabled")
-	}
-
-	parsed, err := url.Parse(r.cfg.endpoint())
-	if err != nil {
-		return err
-	}
-	host := parsed.Host
-	if host == "" {
-		host = parsed.Path
-	}
-	if !strings.Contains(host, ":") {
-		host += ":80"
-	}
-
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		select {
-		case <-r.stop:
-			return fmt.Errorf("relay stopped")
-		default:
-		}
-		conn, err := net.DialTimeout("tcp", host, 750*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		lastErr = err
-		time.Sleep(500 * time.Millisecond)
-	}
-	return fmt.Errorf("relay socket %s not reachable: %w", host, lastErr)
 }
 
 func (r *RelayState) clientLoop() {
@@ -463,20 +315,14 @@ func (r *RelayState) clientLoop() {
 		default:
 		}
 
-		if err := r.waitForSocket(15 * time.Second); err != nil {
-			r.noteEvent("unreachable", err)
-			if !r.sleep(backoff) {
-				close(r.done)
-				return
-			}
-			backoff = nextBackoff(backoff, 30*time.Second)
-			continue
-		}
-
 		err := r.runSession()
 		r.setConnectionState(false, false)
 		if err != nil && !r.isStopping() && !isExpectedClose(err) {
-			r.noteEvent("disconnected", err)
+			if errors.Is(err, errRelayUnreachable) {
+				r.noteEvent("unreachable", err)
+			} else {
+				r.noteEvent("disconnected", err)
+			}
 		}
 		if !r.sleep(backoff) {
 			close(r.done)
@@ -563,7 +409,7 @@ func (r *RelayState) runSession() error {
 
 	conn, _, err := dialer.Dial(r.cfg.endpoint(), nil)
 	if err != nil {
-		return fmt.Errorf("relay dial failed: %w", err)
+		return fmt.Errorf("%w: %v", errRelayUnreachable, err)
 	}
 	defer func() { _ = conn.Close() }()
 
@@ -785,24 +631,10 @@ func (r *RelayState) executeRelayCommand(from string, cmd map[string]interface{}
 		return
 	}
 
-	// The operator brake outranks the policy here too: a watcher must not be
-	// able to drive the desktop while it is paused or killed.
-	if reason := integration.stop.blockReason(name); reason != "" {
-		integration.stats.noteDenied(name)
-		integration.audit.record("relay_command", map[string]interface{}{
-			"action": name, "from": from, "decision": "refused", "reason": "stopped",
-		})
+	// Same gates as Neuro's actions: the operator brake, the policy, then the
+	// per-scope rate limit. See denyRelayCommand.
+	if reason := integration.denyRelayCommand(name, from); reason != "" {
 		log.Printf("Relay: refused %q from %q (%s)", name, from, reason)
-		return
-	}
-
-	policy := integration.policy()
-	if policy != nil && !policy.IsAllowed(name) {
-		integration.stats.noteDenied(name)
-		integration.audit.record("relay_command", map[string]interface{}{
-			"action": name, "from": from, "decision": "refused", "reason": "policy",
-		})
-		log.Printf("Relay: refused %q from %q (denied by policy)", name, from)
 		return
 	}
 
@@ -928,4 +760,37 @@ func actionNamesFrom(raw interface{}) []string {
 
 	sort.Strings(names)
 	return names
+}
+
+// denyRelayCommand applies the gates a watcher command must pass before it can
+// run, in order: the operator brake (pause or kill), the permission policy, and
+// the per-scope rate limit shared with Neuro. It returns the refusal reason, or
+// "" when the command may run. A refusal is counted and written to the audit log.
+func (n *NDIntegration) denyRelayCommand(name, from string) string {
+	refuse := func(reason, detail string) string {
+		n.stats.noteDenied(name)
+		n.audit.record("relay_command", map[string]interface{}{
+			"action": name, "from": from, "decision": "refused", "reason": reason,
+		})
+		return detail
+	}
+
+	if reason := n.stop.blockReason(name); reason != "" {
+		return refuse("stopped", reason)
+	}
+
+	policy := n.policy()
+	if policy == nil {
+		return ""
+	}
+	if !policy.IsAllowed(name) {
+		return refuse("policy", "denied by policy")
+	}
+	scope, _ := scopeForAction(name)
+	if limit := policy.ScopeRateLimit(scope); limit > 0 {
+		if allowed, _ := n.rate.allow(scope, limit, time.Now()); !allowed {
+			return refuse("rate_limit", "rate limit for "+string(scope))
+		}
+	}
+	return ""
 }

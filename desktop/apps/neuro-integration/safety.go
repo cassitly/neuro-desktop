@@ -35,6 +35,7 @@ var safeDuringStop = map[string]bool{
 	string(CmdGameStatus):         true,
 	string(CmdGameEndSession):     true,
 	string(CmdDesktopGuide):       true,
+	string(CmdResetControls):      true,
 }
 
 // hardDeniedActions comes from the environment and is merged into every policy:

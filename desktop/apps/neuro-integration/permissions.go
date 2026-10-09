@@ -45,8 +45,13 @@ var scopeDescriptions = map[PermissionScope]string{
 // alwaysAllowed actions are never refused by the policy itself. Neuro must be
 // able to ask for a permission it lacks. The deny list and NEURO_DENY_ACTIONS
 // still apply, so the operator can switch the request path off.
+// alwaysAllowed actions never need a scope, a grant, or a switch. They read
+// help or release input and cannot start anything, so a restrictive policy
+// must not be able to lock Neuro out of its own recovery path.
 var alwaysAllowed = map[string]bool{
 	string(CmdRequestPermission): true,
+	string(CmdDesktopGuide):      true,
+	string(CmdResetControls):     true,
 }
 
 // ScopeLimits are the per-scope knobs the dashboard exposes. Only the rate

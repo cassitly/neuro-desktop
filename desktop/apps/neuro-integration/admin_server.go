@@ -50,6 +50,7 @@ func (a *AdminServer) routes() *http.ServeMux {
 
 	mux.HandleFunc("/health", a.handleHealth)
 	mux.HandleFunc("/api/status", a.handleStatus)
+	mux.HandleFunc("/api/runtime", a.handleRuntime)
 	mux.HandleFunc("/api/permissions", a.guard(a.handlePermissions))
 	mux.HandleFunc("/api/permissions/schema", a.handlePermissionSchema)
 	mux.HandleFunc("/api/actions", a.handleActions)

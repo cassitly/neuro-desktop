@@ -103,6 +103,7 @@ Everyday actions:
 - key_combo {keys: ["ctrl","c"]} -> keys pressed together.
 - run_script {script} -> several lines at once; see the script section below.
 - desktop_guide -> this text.
+- reset_controls -> the escape hatch: clears queued inputs and releases every held key and button. Use it when something is stuck. It takes no parameters.
 - list_catalog_items / find_catalog_items -> extensions and plugins.
 - desktop_context -> what the desktop looks like right now (may include a screenshot).
 `)
@@ -243,4 +244,50 @@ func (n *NDIntegration) sendStartupGuide() {
 	if err := n.client.SendContext(n.startupGuide(), true); err != nil {
 		log.Printf("Failed to send the startup guide: %v", err)
 	}
+}
+
+// escapeHatchSpecs is the one action a model can always reach for when it is
+// stuck. It takes no parameters, so a small model cannot get the call wrong.
+func escapeHatchSpecs() []actionSpec {
+	return []actionSpec{
+		{
+			Name:        CmdResetControls,
+			Description: "Escape hatch: use this when something is stuck, a queued input keeps running, or you are unsure what to do. It clears queued inputs that have not run yet, releases every held key and mouse button, and reports the result. It takes no parameters and starts nothing. Example: {}",
+			Schema:      nil,
+		},
+	}
+}
+
+// resetControls is the escape hatch. Queued inputs are cleared first, so
+// nothing runs after the release, and then every held key and button is
+// released. It starts nothing and enables no scope, which is why it is always
+// allowed (alwaysAllowed) and still runs while the bridge is stopped
+// (safeDuringStop).
+func (n *NDIntegration) resetControls() neuro.ExecutionResult {
+	queue := IPCCommand{Type: CmdClearActionQueue, ExecuteNow: true, ClearAfter: true}
+	queueResult := neuro.NewSuccessResult("Cleared queued inputs.")
+	if resp, err := n.sendToExecutor(queue); err != nil {
+		queueResult = neuro.NewFailureResult(fmt.Sprintf("Could not clear queued inputs: %v.", err))
+	} else if !resp.Success {
+		queueResult = neuro.NewFailureResult(nonEmptyOr(resp.Error, "Could not clear queued inputs") + ".")
+	}
+	return combineResetResults(queueResult, n.releaseAllInput())
+}
+
+// combineResetResults builds the outcome of reset_controls. It says what
+// worked and what did not. When something failed it says what that means for
+// the next input, because a model cannot act on "partly worked" alone.
+func combineResetResults(queueResult, releaseResult neuro.ExecutionResult) neuro.ExecutionResult {
+	const next = " Next: call desktop_guide if you are unsure what to do, and send one action at a time."
+	if queueResult.Successful && releaseResult.Successful {
+		return neuro.NewSuccessResult("Controls reset: queued inputs are cleared and every held key and button is released." + next)
+	}
+	var problems []string
+	if !queueResult.Successful {
+		problems = append(problems, "Queued inputs may still run ("+queueResult.Message+").")
+	}
+	if !releaseResult.Successful {
+		problems = append(problems, "Held keys or buttons may still be down ("+releaseResult.Message+").")
+	}
+	return neuro.NewFailureResult("Controls reset only partly worked. " + strings.Join(problems, " ") + next)
 }

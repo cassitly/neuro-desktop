@@ -168,6 +168,10 @@ func (n *NDIntegration) Close() error {
 func main() {
 	// `neuro-integration catalog ...` is an operator tool (keygen, sign, verify),
 	// not the bridge. It never starts a connection.
+	// `neuro-integration relay ...` runs the Neuro Relay intermediary (see relay_host.go).
+	if len(os.Args) > 1 && os.Args[1] == "relay" {
+		os.Exit(runRelayCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "catalog" {
 		os.Exit(runCatalogCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}

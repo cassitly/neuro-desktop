@@ -36,9 +36,9 @@ const (
 //     timeout, so a silent bridge looked like a broken connection and every
 //     client reconnected on a timer; the churn showed up as a growing
 //     `total_connections` counter.
-//   - Optional shared-secret token: the hub listens on 0.0.0.0 by default so
-//     that a second PC can be controlled, so an unauthenticated executor
-//     socket would be a remote-control hole.
+//   - Shared-secret token. The hub defaults to 127.0.0.1:9876, and Start refuses
+//     any other address without a token: an unauthenticated executor socket
+//     that anyone on the network can reach would receive Neuro's commands.
 type ExecutorHub struct {
 	addr  string
 	token string
@@ -202,6 +202,12 @@ func NewExecutorHub(addr string, token string) *ExecutorHub {
 }
 
 func (h *ExecutorHub) Start() error {
+	// Fail closed. Without a token every client that reaches the port is taken
+	// as the executor, and the executor receives Neuro's commands. So the hub
+	// refuses to listen beyond loopback until a token is set.
+	if !h.tokenRequired() && !addrIsLoopbackString(h.addr) {
+		return fmt.Errorf("refusing to listen on %s without NEURO_EXECUTOR_TOKEN: any machine that can reach it would receive Neuro's commands. Set NEURO_EXECUTOR_TOKEN, or listen on 127.0.0.1", h.addr)
+	}
 	ln, err := net.Listen("tcp", h.addr)
 	if err != nil {
 		return fmt.Errorf("executor hub listen %s: %w", h.addr, err)
@@ -229,7 +235,13 @@ func (h *ExecutorHub) tokenRequired() bool {
 }
 
 func (h *ExecutorHub) addrIsLoopback() bool {
-	host, _, err := net.SplitHostPort(h.addr)
+	return addrIsLoopbackString(h.addr)
+}
+
+// addrIsLoopbackString reports whether host:port names only this machine. An
+// empty host (":9876") means every interface, so it is not loopback.
+func addrIsLoopbackString(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return false
 	}

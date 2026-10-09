@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -347,4 +348,29 @@ func TestExecutorHubReplacementClosesPreviousClient(t *testing.T) {
 	if info.Connections != 2 {
 		t.Fatalf("total_connections = %d, want 2", info.Connections)
 	}
+}
+
+// Without a token the hub would accept any client as the executor, and the
+// executor receives Neuro's commands. A hub that is reachable from the network
+// must therefore refuse to start without a token. Nothing is bound here.
+func TestExecutorHubRefusesANetworkListenWithoutAToken(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:9876", ":9876", "192.168.1.20:9876"} {
+		hub := NewExecutorHub(addr, "")
+		err := hub.Start()
+		if err == nil {
+			hub.Close()
+			t.Fatalf("%s: a hub with no token must not listen beyond loopback", addr)
+		}
+		if !strings.Contains(err.Error(), "NEURO_EXECUTOR_TOKEN") {
+			t.Fatalf("%s: the refusal must name the setting: %v", addr, err)
+		}
+	}
+}
+
+func TestExecutorHubLoopbackWithoutATokenStillStarts(t *testing.T) {
+	hub := NewExecutorHub("127.0.0.1:0", "")
+	if err := hub.Start(); err != nil {
+		t.Fatalf("a loopback hub without a token is the single-machine default: %v", err)
+	}
+	hub.Close()
 }
