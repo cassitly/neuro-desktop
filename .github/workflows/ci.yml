@@ -60,11 +60,14 @@ jobs:
       # ---------------------------------------------------------------
       # Go server: required.
       # ---------------------------------------------------------------
+      # Run inside the module and let gofmt walk it: `mapfile` does not exist in
+      # the bash that ships with macOS, and `find` on Windows can be a different
+      # program. This form works in every runner's bash.
       - name: Go format check
+        working-directory: desktop/apps/neuro-integration
         shell: bash
         run: |
-          mapfile -t files < <(find desktop/apps/neuro-integration -name '*.go' ! -path '*/dist/*')
-          unformatted="$(gofmt -l "${files[@]}")"
+          unformatted="$(gofmt -l .)"
           if [[ -n "$unformatted" ]]; then
             echo "Unformatted Go files:"
             echo "$unformatted"
