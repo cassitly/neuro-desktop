@@ -36,18 +36,24 @@ project was consolidated to Go + Python (and what was removed), and
 ## Quick start
 
 ```bash
-# 1. Server (on the PC that runs Neuro)
+# 1. Server (on the PC that runs Neuro). Set up once: this prints the dashboard token.
 cd desktop/apps/neuro-integration
 go build -o neuro-integration .
+./neuro-integration setup
 NEURO_SDK_WS_URL=ws://127.0.0.1:8000 ./neuro-integration
 
 # 2. Agent (on the PC Neuro should control — same machine in dev)
 cd desktop/backend/python
 python3 -m controller.agent --bridge 127.0.0.1:9876
 
-# 3. Dashboard
+# 3. Dashboard: sign in with the token from step 1
 xdg-open http://127.0.0.1:8300/ui/      # macOS: open, Windows: start
 ```
+
+`setup` creates the relay token (`relay-token`, shared by the relay host and the
+server) and the dashboard token (`dashboard-token`, which keeps only its hash). It
+is safe to run again, and `setup --check` changes nothing. The bundle's `start.sh`
+and `start.bat` run it on every start.
 
 Everything can also be built and staged in one step:
 
@@ -88,22 +94,25 @@ desktop/
 | --- | --- |
 | `NEURO_SDK_WS_URL` / `-ws-url` | Neuro API websocket (`ws://localhost:8000` by default) |
 | `NEURO_ADMIN_LISTEN` | dashboard address (`127.0.0.1:8300`) |
-| `NEURO_ADMIN_TOKEN` | token required for destructive dashboard calls |
+| `NEURO_ADMIN_TOKEN` | optional override of the dashboard token; at least 16 characters, and it must equal the token `setup` printed. Every `/api` route needs the token, loopback included |
+| `NEURO_DASHBOARD_TOKEN_FILE` | where the dashboard token's SHA-256 hash is kept (`./dashboard-token`, mode 0600). `setup` writes it |
 | `NEURO_EXECUTOR_LISTEN` / `-executor-listen` | hub address agents connect to (`127.0.0.1:9876`) |
-| `NEURO_EXECUTOR_TOKEN` | shared secret every agent must present |
+| `NEURO_EXECUTOR_TOKEN` | shared secret every agent must present. Required before the hub listens beyond loopback. It is sent in plain TCP (see `docs/SAFETY.md`, section 6) |
 | `NEURO_IPC_FILE` | file-IPC fallback path for a co-located agent |
 | `NEURO_PERMISSIONS_FILE` | policy file (see `config/permissions.example.json`) |
 | `NEURO_HEADLESS` | `1`/`true` on a machine with no display session |
 | `NEURO_SHELL_ALLOWLIST` | programs the shell action may run (`ls,echo,python3`) |
 | `NEURO_DENY_ACTIONS` | actions that never run (`type_text`) |
 | `NEURO_AUDIT_LOG` | JSON-lines audit file |
-| `NEURO_RELAY_ENABLED` / `NEURO_RELAY_URL` / `NEURO_RELAY_TOKEN` | connect the server to a relay as an integration (`neuro-integration relay`, or the upstream relay) |
-| `NEURO_RELAY_LISTEN` / `NEURO_RELAY_AUTH_TOKEN` / `NEURO_RELAY_TOKEN_FILE` | the relay host's socket, token, and the file a generated token is written to (mode 0600) |
+| `NEURO_RELAY_ENABLED` / `NEURO_RELAY_URL` | connect the server to a relay as an integration (`neuro-integration relay`, or the upstream relay) |
+| `NEURO_RELAY_TOKEN` | optional. The server's relay token comes from the relay token file; if this is set it must equal that file, or the link stays off. For the upstream relay, point `NEURO_RELAY_TOKEN_FILE` at a file holding its `intermediary.auth_token` |
+| `NEURO_RELAY_TOKEN_FILE` | the relay token shared by the relay host and the server (`./relay-token`, mode 0600). `setup` creates it |
+| `NEURO_RELAY_LISTEN` / `NEURO_RELAY_AUTH_TOKEN` | the relay host's socket, and an optional token override for the host (it must equal the file) |
 | `NEURO_RELAY_HEALTH_LISTEN` / `NEURO_RELAY_NEURO_URL` / `NEURO_RELAY_NEURO_OS_TOKEN` | the relay host's health endpoint, the optional Neuro link for `direct_to_neuro`, and the enhanced watcher token |
 | `NEURO_VISION_URL` / `NEURO_VISION_TOKEN` | the vision service `game_observe` calls (`NEURO_VISION_SERVER_URL` is still read as an alias) |
 | `NEURO_CATALOG_FILE` / `NEURO_PUBLISHERS_FILE` | the signed extension index and the publisher keys the server trusts |
 | `NEURO_EXTENSION_DIR` / `NEURO_EXTENSION_INSTALL_MODE` | where installed extensions live, and `metadata_only` (default) or `git_clone` |
-| `NEURO_EXTENSIONS_ALLOW_UNSIGNED` | **dangerous**: install extensions whose signature does not verify. Leave it unset |
+| `NEURO_EXTENSIONS_ALLOW_UNSIGNED` | **dangerous, development builds only** (`go build -tags neurodev`, which `dev.sh` uses): install extensions whose signature does not verify. A release build ignores it and logs once that it is ignored. Leave it unset |
 | `NEURO_GAME_PROFILES_DIR`, `NEURO_CATALOG_FILE` | game profiles and catalog index |
 | `NEURO_RELAY_*` | optional Neuro Relay participation (see `docs/RELAY.md`) |
 | `NEURO_VISION_URL` | vision server used by `game_observe` |
@@ -141,7 +150,8 @@ timeout.
 
 ```bash
 # server (Go)
-cd desktop/apps/neuro-integration && go test ./...          # add -race when cgo is available
+cd desktop/apps/neuro-integration && go test -race ./...    # -race needs cgo (CI runs it on Linux)
+cd desktop/apps/neuro-integration && go test -race -tags neurodev ./...   # the dev-only switch's tests
 
 # agent + safety rules (Python, no third-party deps needed)
 cd desktop/backend/python && python3 -m unittest discover -s tests -t .
@@ -165,9 +175,13 @@ explored) on a machine with no display and without touching anything.
 | `/api/status` shows `executor.connected: false` | No agent connected. Start `python3 -m controller.agent --bridge 127.0.0.1:9876`, or use `NEURO_IPC_FILE` file IPC. |
 | `executor.replaced_connections` climbing | Two agents are running against one hub; the newer one wins. Kill the extra process. |
 | Actions fail with "no display session" | The agent is on a machine without a GUI session. Use `shell_command`, or run the agent on the desktop PC. |
-| `relay rejected the registration` | The token must match on both sides: `NEURO_RELAY_AUTH_TOKEN` for `neuro-integration relay`, or `intermediary.auth_token` for the upstream relay. The relay's log says `invalid auth token`. |
+| `relay rejected the registration` | The token must match on both sides. The server reads the relay token file that `setup` writes. The relay host reads the same file (or `NEURO_RELAY_AUTH_TOKEN`). For the upstream relay, it is `intermediary.auth_token`. The relay's log says `invalid auth token`. |
+| `relay link disabled: NEURO_RELAY_TOKEN differs from the relay token file` | Unset `NEURO_RELAY_TOKEN`, or copy the file's value into it. Run `setup --check` to see every mismatch. |
+| `no relay token: run neuro-integration setup` | No relay token file exists yet. Run `neuro-integration setup`. |
 | Shell action says the command is not allow-listed | Add the program to `NEURO_SHELL_ALLOWLIST`; the output names the pattern that blocked it. |
-| Dashboard shows 403 on a write | Set `X-ND-Token`/`Bearer`/`?token=` from `NEURO_ADMIN_TOKEN` when the dashboard is not on loopback. |
+| Dashboard answers `503`: "the dashboard has no token yet" | Run `neuro-integration setup`, then sign in with the token it prints. |
+| Dashboard answers `503` with "does not match the dashboard token" | `NEURO_ADMIN_TOKEN` disagrees with the stored token. Unset it, or set it to the printed token. |
+| Dashboard answers `401` | The token is wrong or missing. Send it in the `X-ND-Token` header or as a Bearer token. A `?token=` query parameter is not read. |
 
 ## Removed
 

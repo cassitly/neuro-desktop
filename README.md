@@ -81,12 +81,23 @@ and `docs/RELAY.md` covers coexisting with other integrations.
 ### Split-machine quick start
 
 ```bash
-# PC that runs Neuro (server)
+# PC that runs Neuro (server). Set up once: setup prints the dashboard token ONCE.
+./neuro-integration setup
+
+# The hub refuses to listen beyond loopback without a token. Use a long random value.
+export NEURO_EXECUTOR_TOKEN="$(openssl rand -hex 24)"
 ./neuro-integration --ws-url ws://localhost:8000 --executor-listen 0.0.0.0:9876
 
-# PC Neuro should control (agent) — graphical session, NO sudo
-cd desktop/backend/python && python3 -m controller.agent --bridge <server-lan-ip>:9876
+# PC Neuro should control (agent) — graphical session, NO sudo.
+# Give the agent the same NEURO_EXECUTOR_TOKEN value.
+cd desktop/backend/python && python3 -m controller.agent --bridge <server-lan-ip>:9876 --token "$NEURO_EXECUTOR_TOKEN"
 ```
+
+The executor token and the agent's commands cross the network in plain TCP for now.
+Use this only on a network you trust. Or keep the hub on loopback and tunnel it:
+run `ssh -L 9876:127.0.0.1:9876 user@<server>` on the agent PC and point the agent at
+`127.0.0.1:9876`. Encrypting this link is an open item in
+[docs/PRODUCTION_TODO.md](docs/PRODUCTION_TODO.md).
 
 The same machine is the default: run the agent with no arguments (loopback hub)
 or point `NEURO_IPC_FILE` at a shared path for file IPC.
@@ -109,10 +120,18 @@ http://127.0.0.1:8300/ui/
   `Save` applies the policy to the running bridge immediately.
 - **Status** — version, executor connection, relay peers, reserved actions, paths.
 
-Writes are guarded by `NEURO_ADMIN_TOKEN`. The dashboard pages served to a local
-browser carry the token as `window.__ND_BOOTSTRAP`; from another machine, paste it
-into the Status tab. Reads stay open on loopback so `curl http://127.0.0.1:8300/api/status`
-works while debugging.
+Every dashboard request needs the dashboard token, reads included. Run
+`neuro-integration setup` once. It prints the token and keeps only its hash. The
+sign-in page asks for the token, and the browser keeps it for that browser session
+only. The token is never written into a page or a URL. There is no exception for
+loopback: a script on this machine sends the token too, in the `X-ND-Token` header:
+
+```bash
+curl -s -H "X-ND-Token: <dashboard token>" http://127.0.0.1:8300/api/status
+```
+
+Only `/health` answers without the token. A server that has not been set up answers
+`503` and says to run `setup`.
 
 Try it without a display, a Windows box, or pyautogui — the repo ships a protocol
 simulator that never touches your real mouse or keyboard:
@@ -121,9 +140,10 @@ simulator that never touches your real mouse or keyboard:
 # Terminal 1: pretend to be the executor (reports "Minecraft" as the active window)
 python3 desktop/tools/fake-executor/fake_executor.py --addr 127.0.0.1:9876
 
-# Terminal 2: the bridge + dashboard
+# Terminal 2: the bridge + dashboard (set up once; sign in with the printed token)
 cd desktop/apps/neuro-integration
-NEURO_UI_DIR=../frontend/dist NEURO_ADMIN_TOKEN=demo go run .
+go run . setup
+NEURO_UI_DIR=../frontend/dist go run .
 ```
 
 ### Playing games
@@ -172,9 +192,8 @@ export NEURO_HEADLESS=1                    # optional: auto-detected when DISPLA
 export NEURO_SHELL_ALLOWLIST="ls,cat,python3,git"   # programs Neuro may run (empty = none)
 export NEURO_SHELL_TIMEOUT=20              # seconds per command (max 120)
 export NEURO_SHELL_CWD=/srv/work
-export NEURO_ADMIN_TOKEN="pick-a-secret"   # required before exposing the dashboard
 
-cd desktop/apps/neuro-integration && go run .
+cd desktop/apps/neuro-integration && go run . setup && go run .   # setup prints the dashboard token once
 ```
 
 What changes on a headless machine:
@@ -252,8 +271,10 @@ node --version
 
 1. Download the latest release archive
 2. Extract it anywhere
-3. Run `start.bat` (Windows) or `./start.sh` (Linux/macOS): that starts the
-   server, the local agent and the dashboard together
+3. Run `start.bat` (Windows) or `./start.sh` (Linux/macOS): that runs the one-time
+   setup, then starts the server, the local agent and the dashboard together. The
+   first start prints the dashboard token once. Copy it; you type it into the
+   dashboard's sign-in page
 
 **Option 2: Build from Source**
 
@@ -270,15 +291,20 @@ cd neuro-desktop/desktop
 ### First Run
 
 ```bash
-# 1. Server + dashboard (PC that runs Neuro)
-cd desktop/apps/neuro-integration && go build -o neuro-integration . && ./neuro-integration
+# 1. Server + dashboard (PC that runs Neuro). Set up once, then start.
+cd desktop/apps/neuro-integration && go build -o neuro-integration .
+./neuro-integration setup          # creates the relay token and PRINTS the dashboard token once
+./neuro-integration                # starts the server and the dashboard
 
 # 2. Agent (PC Neuro should control; the same machine in a dev setup)
 cd desktop/backend/python && python3 -m controller.agent --bridge 127.0.0.1:9876
 
-# 3. Dashboard
-#    http://127.0.0.1:8300/ui/
+# 3. Dashboard: http://127.0.0.1:8300/ui/ — sign in with the token from step 1
 ```
+
+`setup` is safe to run again: it keeps the tokens that exist, and `setup --check`
+only checks them. Lost the dashboard token? `./neuro-integration setup --rotate-dashboard`
+makes a new one. A running server keeps the old token until it restarts.
 
 Or stage the whole thing at once: `./scripts/bundle/dev.sh` (Linux/macOS) /
 `.\scripts\bundle\dev.ps1` (Windows). The server prints every connection attempt,
@@ -352,13 +378,14 @@ configuration file to edit. The full list is in [desktop/README.md](desktop/READ
 # Linux / macOS
 export NEURO_SDK_WS_URL=ws://localhost:8000     # the Neuro API (the default)
 export NEURO_ADMIN_LISTEN=127.0.0.1:8300        # the dashboard (the default)
-export NEURO_EXECUTOR_TOKEN=change-me           # the secret every agent presents
+export NEURO_EXECUTOR_TOKEN="$(openssl rand -hex 24)"   # the secret every agent presents
+# Optional: NEURO_ADMIN_TOKEN must equal the dashboard token that setup printed.
 ```
 
 ```powershell
 # Windows (PowerShell)
 $env:NEURO_SDK_WS_URL = "ws://localhost:8000"
-$env:NEURO_EXECUTOR_TOKEN = "change-me"
+$env:NEURO_EXECUTOR_TOKEN = "a-long-random-value"
 ```
 
 ## Development
@@ -410,11 +437,17 @@ YAML config:
 
 ```bash
 export NEURO_RELAY_ENABLED=true
-export NEURO_RELAY_URL="ws://127.0.0.1:8765"     # relay intermediary socket
-export NEURO_RELAY_TOKEN="super-secret-token"    # intermediary.auth_token
+export NEURO_RELAY_URL="ws://127.0.0.1:8765"                 # relay intermediary socket
+export NEURO_RELAY_TOKEN_FILE="$HOME/upstream-relay-token"   # a file holding the upstream intermediary.auth_token
 export NEURO_RELAY_NAME="Neuro Desktop"
 export NEURO_RESERVED_ACTIONS="minecraft_place_block,osu_click"
 ```
+
+Keep the upstream token in its own file (mode 0600). Do not use the upstream sample,
+`super-secret-token`, which is refused. You can also run `neuro-integration setup`
+with `NEURO_RELAY_TOKEN_FILE` pointing at a file that does not exist yet. It creates
+the file with a new token, and you copy that value into the upstream
+`intermediary.auth_token`.
 
 There are two ways to coexist, and they are complementary:
 
@@ -441,14 +474,14 @@ Neuro Relay's intermediary (the socket integrations and Neuro-OS watchers connec
 
 ```bash
 cd desktop/apps/neuro-integration
-# Relay: integrations and watchers connect here (ws)
-NEURO_RELAY_AUTH_TOKEN=change-me-to-a-long-random-value \
-  go run . relay --listen 127.0.0.1:8765 --health 127.0.0.1:8766
+go run . setup                       # once: writes ./relay-token (mode 0600), shared with the server
+go run . relay --listen 127.0.0.1:8765 --health 127.0.0.1:8766   # integrations and watchers connect here (ws)
 ```
 
-- With no `NEURO_RELAY_AUTH_TOKEN`, the host generates a token, stores it in `NEURO_RELAY_TOKEN_FILE` (default `./relay-token`, mode 0600), and logs where it is. The sample token from the upstream project is refused.
+- The host reads its token from the relay token file (default `./relay-token`, or `NEURO_RELAY_TOKEN_FILE`). If the file does not exist, the host creates it. The server reads the same file, so nothing is copied by hand. The sample token from the upstream project is refused, and so is any token shorter than 16 characters.
+- `NEURO_RELAY_AUTH_TOKEN` overrides the file for the host. Leave it unset, or set it to the file's value; `setup --check` reports a difference.
 - `GET /health` on the health address reports the connected integrations, the watchers, and whether the optional Neuro link is up. It shows names and counts only.
-- The bridge connects as a relay client with `NEURO_RELAY_ENABLED=true`, `NEURO_RELAY_URL=ws://127.0.0.1:8765`, and `NEURO_RELAY_TOKEN` set to the same value. The dashboard's Extensions page shows the live relay state.
+- The bridge connects as a relay client with `NEURO_RELAY_ENABLED=true` and `NEURO_RELAY_URL=ws://127.0.0.1:8765`. It takes its token from the same file, so `NEURO_RELAY_TOKEN` is not needed. If you set it, it must equal the file, or the relay link stays off and the dashboard says why. The dashboard's Extensions page shows the live relay state.
 - Browsers are refused (any request with an `Origin` header), binary frames are refused, and each connection has a frame-rate limit.
 - A watcher with `NEURO_RELAY_NEURO_OS_TOKEN` (a second, enhanced token) can send `direct_to_neuro` messages, but only when the host has `NEURO_RELAY_NEURO_URL` set to a Neuro API server.
 
@@ -474,22 +507,22 @@ docs/                          # architecture, safety, capabilities, relay, depl
 
 ### Development Workflow
 
-```bash
-# 1. Setup development environment
-.\scripts\setup-dev.ps1
+Paths below are relative to `desktop/`.
 
-# 2. Build all components
+```bash
+# 1. Build the server and the dashboard (Windows: .\scripts\build-all.ps1)
 make all
 
-# 3. Run in development mode
-.\scripts\bundle\dev.ps1
+# 2. Run in development mode: a -tags neurodev build, set up, then started
+./scripts/bundle/dev.sh            # Windows: .\scripts\bundle\dev.ps1
 
-# 4. Run tests
-(cd apps/neuro-integration && go test ./...)   # server tests, including the relay, MCP, vision and catalog suites
+# 3. Run tests. CI runs these too, plus the repository checks.
+(cd apps/neuro-integration && go test -race -count=1 ./... && go test -race -count=1 -tags neurodev ./...)   # the second run covers the dev-only unsigned-extension switch
 python3 -m unittest discover backend/python/tests -t backend/python   # agent tests
+python3 tools/ci/repo_checks.py    # repository checks
 
-# 5. Build production bundle
-.\scripts\bundle\prod.ps1
+# 4. Build the release bundle (no -tags neurodev)
+./scripts/bundle/prod.sh           # Windows: .\scripts\bundle\prod.ps1
 ```
 
 ### Adding New Actions
@@ -548,12 +581,20 @@ sudo chown -R "$USER:$USER" frontend/dist dist backend/python/.venv
 ./scripts/bundle/dev.sh
 ```
 
-**"Go integration binary not found"**
+**The dashboard says the server has no token (`503`), or the token is refused (`401`)**
 ```bash
-# Rebuild Go integration
-cd apps/neuro-integration
-go build -o neuro-integration.exe .
-cp neuro-integration.exe ../neuro-desktop/target/release/
+cd desktop/apps/neuro-integration
+./neuro-integration setup --check   # says what is missing or does not match; changes nothing
+./neuro-integration setup           # only if no token exists yet
+```
+The sign-in page takes the token that `setup` printed. If it was lost, `setup --rotate-dashboard`
+makes a new one, and the server must be restarted to use it.
+
+**The server binary is missing or out of date**
+```bash
+# Rebuild the server
+cd desktop/apps/neuro-integration
+go build -o neuro-integration .     # Windows: go build -o neuro-integration.exe .
 ```
 
 **"Failed to initialize Python controller"**

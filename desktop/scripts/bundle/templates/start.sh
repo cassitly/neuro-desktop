@@ -24,7 +24,11 @@ if [[ ! -x "$SERVER_BIN" ]]; then
   exit 1
 fi
 
-echo "Dashboard: http://127.0.0.1:8300/ui/"
+# First-run step. It is idempotent: it prints the dashboard token only the first
+# time, and a failed check stops the launch here with the reason printed.
+"$SERVER_BIN" setup
+
+echo "Dashboard: http://127.0.0.1:8300/ui/ (sign in with the dashboard token)"
 
 if [[ "${NEURO_NO_AGENT:-0}" != "1" ]] && command -v python3 >/dev/null 2>&1; then
   python3 -m controller.agent --bridge "${NEURO_AGENT_BRIDGE:-127.0.0.1:9876}" &

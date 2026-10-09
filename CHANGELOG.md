@@ -8,6 +8,11 @@ This project aims to follow semantic versioning once stable releases begin.
 
 ### Added
 
+- **Setup** (`neuro-integration setup`, with `--check` and `--rotate-dashboard`): the first-run step. It creates the relay token that the relay host and the server share (`relay-token`, mode 0600), then the dashboard token. The dashboard token is printed once, and only its SHA-256 hash is stored (`dashboard-token`, mode 0600). Running it again keeps what exists. Exit codes: 0 complete, 1 something to fix, 2 bad usage. `setup_test.go` covers the first run, a second run, rotation, and the mismatch checks.
+- **Dashboard sign-in**: the dashboard shows a sign-in page until the server accepts the dashboard token. `GET /api/session` checks a token. The browser keeps the token in `sessionStorage`, for that browser session only.
+- **Development build tag** `neurodev`: the unsigned-extension switch is compiled in only when the tag is set. `dev.sh` and `dev.ps1` build with it. `/api/config` features now report `dev_build` and `unsigned_extensions_allowed`.
+- **CI**: a `Go tests, dev build (-tags neurodev)` step and a `Setup smoke test` step, both on Linux. The smoke test runs `setup` twice and checks the file modes.
+- `.gitignore` covers `dashboard-token`, so the hash is not committed by accident.
 - CI `bundle` job: builds the release bundle, checks that it contains what the launcher needs, verifies the shipped catalog from inside it, and serves the dashboard from the bundle folder. The release gate requires it.
 - `desktop/apps/nd-vision-server/README.md` and `requirements.txt`: the vision HTTP contract, its backends, and the optional Pillow and tesseract.
 
@@ -53,6 +58,11 @@ This project aims to follow semantic versioning once stable releases begin.
 
 ### Changed
 
+- **Security:** every `/api` route except `/health` needs the dashboard token, with no exception for loopback. The token travels in the `X-ND-Token` header or as a Bearer token. A `?token=` query parameter is not read. The shell is served with no token and with `Cache-Control: no-store`. Before, reads were open on loopback, and the token was injected into the page as `window.__ND_BOOTSTRAP`.
+- **Relay token source:** the relay host and the server read one file, `NEURO_RELAY_TOKEN_FILE` (default `./relay-token`). `NEURO_RELAY_TOKEN` and `NEURO_RELAY_AUTH_TOKEN` are overrides, and each must equal the file. A missing or disagreeing token leaves the relay link off and says why; the rest of the server keeps running. A relay token file that is present but invalid is reported and never overwritten.
+- `NEURO_ADMIN_TOKEN` is now an override of the stored dashboard token. It must be at least 16 characters, and it must match the stored token when both exist.
+- **Unsigned extensions:** `NEURO_EXTENSIONS_ALLOW_UNSIGNED` works only in a development build. A release build ignores it and logs once that it is ignored.
+- Docs: the README, `desktop/README.md`, DEPLOYMENT, RELAY, SAFETY, TROUBLESHOOTING, ARCHITECTURE, CAPABILITIES, LLM_GUIDE, PRODUCTION_TODO, and the bundle's README and launchers describe the setup flow and the token rules. Stale references are gone: a Rust `target/release` path, a `setup-dev.ps1` that does not exist, and the `NEURO_ADMIN_TOKEN=demo` examples.
 - **Security:** the executor hub refuses to listen beyond loopback without `NEURO_EXECUTOR_TOKEN`. Before, a hub with no token accepted any client as the executor, and that client received Neuro's commands. Only a warning was logged.
 - **Security:** watcher commands that arrive through the relay share the per-scope rate limit with Neuro's actions. Before, they skipped it. The gates are in one place (`denyRelayCommand`) and are tested.
 - `reset_controls` now goes through the same accept-then-execute path as other input actions, and it reports its outcome to Neuro whether it worked or not.
@@ -86,6 +96,7 @@ This project aims to follow semantic versioning once stable releases begin.
 
 ### Fixed
 
+- Issue #16 (Nakashireyumi/neuro-desktop): the relay and the server no longer depend on a token copied by hand. `setup` writes the one file that both read, and `setup --check` says when they disagree.
 - Windows: the audit log is opened per write, so nothing holds it locked; a relay host refusal is no longer reported as a connection reset, because the host waits for the client to read it first.
 - macOS: the test binaries are built without cgo, which the server does not need. They no longer fail to load (`missing LC_UUID`).
 - CI: the Go format check no longer depends on `mapfile` or `find`, and sources keep LF line endings on every platform (`.gitattributes`).

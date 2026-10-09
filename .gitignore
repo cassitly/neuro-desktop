@@ -13,8 +13,10 @@ desktop/apps/neuro-integration/integration-code.exe
 desktop/apps/neuro-integration/dist/*.exe
 desktop/dist/**/*.exe
 
-# Runtime state written by the bridge (installed extensions, relay tokens). Never commit it.
+# Runtime state written by the bridge (installed extensions, relay and dashboard tokens). Never commit it.
 **/catalog/extensions-state.json
 relay-token
 **/relay-token
+dashboard-token
+**/dashboard-token
 *.tsbuildinfo

@@ -49,7 +49,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -71,6 +70,7 @@ const (
 	relayFramesPerSecond     = 50
 	relayMinTokenLength      = 16
 	relayDefaultTokenFile    = "./relay-token"
+	relayTokenFileEnv        = "NEURO_RELAY_TOKEN_FILE"
 	relayUpstreamSampleToken = "super-secret-token"
 )
 
@@ -205,9 +205,52 @@ func validateRelayToken(token string) error {
 	return nil
 }
 
-// resolveRelayToken returns the token to use. With no token configured it
-// generates one and stores it in tokenFile (mode 0600), so a fresh install is
-// never open with a known password.
+// relayTokenFilePath is the file that holds the relay token. The relay host
+// writes it and the server reads it, so both sides always use the same value.
+func relayTokenFilePath() string {
+	return envOr(relayTokenFileEnv, relayDefaultTokenFile)
+}
+
+// readRelayTokenFile returns the token in a relay token file. A missing file is
+// reported as os.ErrNotExist. A file with a bad token is an error, and it is
+// never silently replaced: the operator may have put that value there on purpose.
+func readRelayTokenFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(string(data))
+	if err := validateRelayToken(token); err != nil {
+		return "", fmt.Errorf("%s: %w (delete the file to generate a new token)", path, err)
+	}
+	return token, nil
+}
+
+// ensureRelayTokenFile returns the token in path, generating and storing one
+// (mode 0600) when the file does not exist yet. created says which happened.
+func ensureRelayTokenFile(path string) (token string, created bool, err error) {
+	existing, err := readRelayTokenFile(path)
+	if err == nil {
+		return existing, false, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", false, err
+	}
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", false, err
+	}
+	token = hex.EncodeToString(raw)
+	if err := writeSecretFile(path, token+"\n"); err != nil {
+		return "", false, fmt.Errorf("could not write the generated relay token to %s: %w", path, err)
+	}
+	return token, true, nil
+}
+
+// resolveRelayToken returns the token the relay host should use. An explicitly
+// configured token wins. Otherwise the token in tokenFile is used, and one is
+// generated there when the file does not exist, so a fresh install is never
+// open with a known password. The second result is the file in use, if any.
 func resolveRelayToken(configured, tokenFile string) (string, string, error) {
 	if configured != "" {
 		if err := validateRelayToken(configured); err != nil {
@@ -215,24 +258,9 @@ func resolveRelayToken(configured, tokenFile string) (string, string, error) {
 		}
 		return configured, "", nil
 	}
-	if data, err := os.ReadFile(tokenFile); err == nil {
-		existing := strings.TrimSpace(string(data))
-		if validateRelayToken(existing) == nil {
-			return existing, tokenFile, nil
-		}
-	}
-	raw := make([]byte, 24)
-	if _, err := rand.Read(raw); err != nil {
+	token, _, err := ensureRelayTokenFile(tokenFile)
+	if err != nil {
 		return "", "", err
-	}
-	token := hex.EncodeToString(raw)
-	if dir := filepath.Dir(tokenFile); dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return "", "", err
-		}
-	}
-	if err := os.WriteFile(tokenFile, []byte(token+"\n"), 0o600); err != nil {
-		return "", "", fmt.Errorf("could not write the generated relay token to %s: %w", tokenFile, err)
 	}
 	return token, tokenFile, nil
 }
@@ -632,17 +660,25 @@ func runRelayCommand(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	listen := fs.String("listen", envOr("NEURO_RELAY_LISTEN", "127.0.0.1:8765"), "address for integrations and watchers (ws)")
 	health := fs.String("health", envOr("NEURO_RELAY_HEALTH_LISTEN", "127.0.0.1:8766"), "address for GET /health (empty to disable)")
-	tokenFile := fs.String("token-file", envOr("NEURO_RELAY_TOKEN_FILE", relayDefaultTokenFile), "where a generated token is stored")
+	tokenFile := fs.String("token-file", relayTokenFilePath(), "the relay token file (created if missing, mode 0600)")
 	neuroURL := fs.String("neuro-url", envOr("NEURO_RELAY_NEURO_URL", ""), "optional Neuro API url for direct_to_neuro (enhanced watchers)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
 	logger := log.New(stderr, "[relay] ", log.LstdFlags)
-	token, generatedAt, err := resolveRelayToken(strings.TrimSpace(os.Getenv("NEURO_RELAY_AUTH_TOKEN")), *tokenFile)
+	configuredToken := strings.TrimSpace(os.Getenv("NEURO_RELAY_AUTH_TOKEN"))
+	token, tokenPath, err := resolveRelayToken(configuredToken, *tokenFile)
 	if err != nil {
 		fmt.Fprintf(stderr, "relay: %v\n", err)
 		return 2
+	}
+	if configuredToken != "" {
+		// The server reads the file, so a different NEURO_RELAY_AUTH_TOKEN here
+		// means the server will be refused. Say so now, where the operator is looking.
+		if fileToken, readErr := readRelayTokenFile(*tokenFile); readErr == nil && fileToken != configuredToken {
+			logger.Printf("WARNING: NEURO_RELAY_AUTH_TOKEN differs from %s; the server reads that file and will be refused. Unset NEURO_RELAY_AUTH_TOKEN or copy the file's value into it.", *tokenFile)
+		}
 	}
 	enhanced := strings.TrimSpace(os.Getenv("NEURO_RELAY_NEURO_OS_TOKEN"))
 	if enhanced != "" {
@@ -693,9 +729,8 @@ func runRelayCommand(args []string, stdout, stderr io.Writer) int {
 		logger.Printf("health on http://%s/health", hln.Addr())
 	}
 
-	if generatedAt != "" {
-		logger.Printf("no NEURO_RELAY_AUTH_TOKEN set: generated one and stored it in %s (mode 0600)", generatedAt)
-		logger.Printf("set NEURO_RELAY_TOKEN in the bridge to the value in that file")
+	if configuredToken == "" && tokenPath != "" {
+		logger.Printf("no NEURO_RELAY_AUTH_TOKEN set: using the relay token in %s (mode 0600); the server reads the same file", tokenPath)
 	}
 
 	signals := make(chan os.Signal, 1)

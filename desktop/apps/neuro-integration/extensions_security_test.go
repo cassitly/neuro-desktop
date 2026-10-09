@@ -105,8 +105,9 @@ func TestGitCloneRefusesUnsignedItem(t *testing.T) {
 }
 
 func TestGitCloneRefusesHTTPAndUnpinnedEvenWhenAllowed(t *testing.T) {
-	// The lab escape hatch lets an unsigned item through the trust gate, but the
-	// transport and pinning rules still apply.
+	// In a dev build the lab escape hatch lets an unsigned item through the trust
+	// gate, but the transport and pinning rules still apply. A release build
+	// refuses at the trust gate first, so there only the refusal is checked.
 	installFixture(t, `[
   {"id":"plain-http","name":"P","description":"x","repository":"http://example.com/p","commit":"`+commitA+`"},
   {"id":"unpinned","name":"U","description":"x","repository":"https://example.com/u"}
@@ -116,11 +117,19 @@ func TestGitCloneRefusesHTTPAndUnpinnedEvenWhenAllowed(t *testing.T) {
 		"NEURO_EXTENSIONS_ALLOW_UNSIGNED": "1",
 	})
 
-	if result := (&NDIntegration{}).installExtension("plain-http"); result.Successful || !strings.Contains(result.Message, "https") {
+	result := (&NDIntegration{}).installExtension("plain-http")
+	if result.Successful {
 		t.Fatalf("http:// repositories must be refused, got: %+v", result)
 	}
-	if result := (&NDIntegration{}).installExtension("unpinned"); result.Successful || !strings.Contains(result.Message, "pin") {
+	if extensionsDevBuild && !strings.Contains(result.Message, "https") {
+		t.Fatalf("a dev build should refuse on the transport rule, got: %+v", result)
+	}
+	result = (&NDIntegration{}).installExtension("unpinned")
+	if result.Successful {
 		t.Fatalf("an unpinned item must be refused, got: %+v", result)
+	}
+	if extensionsDevBuild && !strings.Contains(result.Message, "pin") {
+		t.Fatalf("a dev build should refuse on the pinning rule, got: %+v", result)
 	}
 }
 

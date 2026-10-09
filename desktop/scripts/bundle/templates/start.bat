@@ -2,8 +2,9 @@
 rem Neuro Desktop launcher (bundled). Installed as start.bat.
 rem
 rem Starts the server (dashboard at http://127.0.0.1:8300/ui/) and the local
-rem agent. For a split-machine setup run the server with start.bat and on the PC
-rem Neuro controls run:  cd agent && python -m controller.agent --bridge <ip>:9876
+rem agent. For a split-machine setup, set NEURO_NO_AGENT=1 and run the server with
+rem start.bat. On the PC Neuro controls run:
+rem   cd agent && python -m controller.agent --bridge <ip>:9876 --token <executor token>
 setlocal
 
 cd /d "%~dp0"
@@ -22,7 +23,16 @@ if not exist "%~dp0@SERVER@" (
   exit /b 1
 )
 
-echo Dashboard: http://127.0.0.1:8300/ui/
+rem First-run step. It is idempotent: it prints the dashboard token only the first
+rem time, and a failed check stops the launch here with the reason printed.
+"%~dp0@SERVER@" setup
+if errorlevel 1 (
+  echo Setup is not complete. Fix the FAIL lines above, then run start.bat again.
+  pause
+  exit /b 1
+)
+
+echo Dashboard: http://127.0.0.1:8300/ui/ ^(sign in with the dashboard token^)
 
 if "%NEURO_NO_AGENT%"=="1" goto run_server
 where python >nul 2>nul

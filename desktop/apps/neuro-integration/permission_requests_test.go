@@ -241,12 +241,13 @@ func TestRequestPermissionIsAlwaysAllowedByPolicy(t *testing.T) {
 
 func TestPermissionRequestAdminRoutes(t *testing.T) {
 	integration, _ := requestTestIntegration(t, true)
-	admin := NewAdminServer(integration, "127.0.0.1:8300", "")
+	admin := NewAdminServer(integration, "127.0.0.1:8300", credentialFromToken(testDashboardToken, "env"))
 	mux := admin.routes()
 
 	do := func(method, path, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-ND-Token", testDashboardToken)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		return rec

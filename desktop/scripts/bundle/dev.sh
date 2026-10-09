@@ -54,7 +54,8 @@ echo "Building the server (apps/neuro-integration)..."
 (
   cd apps/neuro-integration
   mkdir -p dist
-  go build -o "dist/$SERVER" .
+  # -tags neurodev: only development bundles accept NEURO_EXTENSIONS_ALLOW_UNSIGNED.
+  go build -tags neurodev -o "dist/$SERVER" .
 )
 cp "apps/neuro-integration/dist/$SERVER" "$DIST/$SERVER"
 
@@ -86,14 +87,18 @@ echo
 echo "=== Dev bundle complete ==="
 echo "Location: $DIST"
 echo
-echo "1. Start the server (dashboard API + Neuro client):"
-echo "     cd $DIST && NEURO_UI_DIR=\$PWD/frontend ./$SERVER --ws-url ws://localhost:8000"
+echo "1. Set up, then start the server (dashboard API + Neuro client):"
+echo "     cd $DIST && ./$SERVER setup && NEURO_UI_DIR=\$PWD/frontend ./$SERVER --ws-url ws://localhost:8000"
+echo "   setup prints the dashboard token once: copy it. It is the sign-in token."
 echo
 echo "2. Start the agent on the PC Neuro controls (same machine here):"
 echo "     cd $DIST/agent && python3 -m controller.agent --bridge 127.0.0.1:9876"
 echo
 echo "   Split machines: run step 1 with --executor-listen 0.0.0.0:9876 and set"
 echo "   NEURO_EXECUTOR_TOKEN on both sides, then point the agent at the server's IP."
+echo "   The executor link is plain TCP for now: on an untrusted network, tunnel it over SSH."
+echo "   The relay host and the server on this machine share ./relay-token, so nothing is copied."
+echo "   A relay on another machine needs the same token value: copy the file's value there."
 echo
 echo "3. Dashboard: http://127.0.0.1:8300/ui/"
 echo
@@ -112,4 +117,7 @@ export NEURO_CATALOG_FILE="$PWD/catalog/index.json"
 export NEURO_GAME_PROFILES_DIR="$PWD/catalog/games"
 export NEURO_EXTENSIONS_STATE_FILE="$PWD/catalog/extensions-state.json"
 chmod +x "$SERVER"
+# First-run step. Idempotent: it prints the dashboard token only the first time.
+# A failed check stops the launch here, with the reason printed.
+"./$SERVER" setup
 exec "./$SERVER"

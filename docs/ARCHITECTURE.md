@@ -74,6 +74,14 @@ Watcher commands from the relay take the same path, with the same gates
 * **Two languages on the machine: Go and Python**, plus the TypeScript dashboard.
   Rust and C++ were removed from the shipped path, and `tools/ci/repo_checks.py`
   fails if they come back. The history is in `CHANGELOG.md`.
+* **One setup step, one shared secret file.** `neuro-integration setup` creates the
+  relay token, which the relay host and the server both read. The dashboard never pushes
+  tokens to another process. The dashboard token is printed once and kept only as a hash.
+  This answers upstream issue Nakashireyumi/neuro-desktop#16, which asked how the UI and a
+  relay that the bundle did not ship keep their tokens in step.
+* **Development builds are separate.** The unsigned-extension switch
+  (`NEURO_EXTENSIONS_ALLOW_UNSIGNED`) compiles in only with `-tags neurodev`, which the
+  development bundle uses. A release build has no way to turn it on.
 * **The server does not start other programs.** It does not start a relay, and it
   does not supervise the agent. Operators run each process (or the bundle's
   `start.sh` / `start.bat`) and point the server at the others.
@@ -92,10 +100,12 @@ Watcher commands from the relay take the same path, with the same gates
 
 ## Security boundaries
 
-* Agent connections require the executor token (`NEURO_EXECUTOR_TOKEN`).
-* Dashboard writes need the admin token (`NEURO_ADMIN_TOKEN`) unless the
-  dashboard is on loopback.
-* The relay refuses browsers, binary frames, and weak tokens. See `docs/RELAY.md`.
+* Agent connections require the executor token (`NEURO_EXECUTOR_TOKEN`). The link is
+  plain TCP until the pinned-TLS work in `docs/PRODUCTION_TODO.md` lands.
+* Every dashboard API call needs the dashboard token that `setup` makes. There is no
+  exception for loopback. The server keeps only the token's SHA-256 hash.
+* The relay refuses browsers, binary frames, and weak tokens. Its token comes from the
+  relay token file that `setup` writes, which the server reads too. See `docs/RELAY.md`.
 * Extensions must have a valid signature from a publisher in `publishers.json`.
   See `docs/SAFETY.md`.
 
@@ -104,6 +114,7 @@ Watcher commands from the relay take the same path, with the same gates
 | Layer | Command | Where it runs |
 | --- | --- | --- |
 | Server | `go test -race ./...` | CI on Linux, Windows and macOS (race detector on Linux) |
+| Server, development build | `go test -race -tags neurodev ./...` | CI on Linux |
 | Relay, MCP, vision, catalog, eval | see `.github/workflows/ci.yml` | their own CI jobs |
 | Agent | `python3 -m unittest discover backend/python/tests` | CI, with no display |
 | Repository | `python3 desktop/tools/ci/repo_checks.py` | CI, first job |

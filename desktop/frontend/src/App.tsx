@@ -2,9 +2,9 @@ import RuntimePanel from "./RuntimePanel";
 import { useCallback, useEffect, useState } from "react";
 import GamesPanel from "./GamesPanel";
 import PermissionsPage from "./PermissionsPage";
+import SignIn from "./SignIn";
 import {
   ApiError,
-  adminToken,
   api,
   setAdminToken,
   type CatalogItem,
@@ -34,7 +34,12 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string>("");
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [tokenDraft, setTokenDraft] = useState(() => adminToken());
+  // "ok" shows the dashboard. "signin" and "setup" show the gate instead, and
+  // the reason is the server's own text when it gave one.
+  const [gate, setGate] = useState<{ kind: "ok" } | { kind: "signin" | "setup"; reason?: string }>({
+    kind: "ok",
+  });
+  const signedOut = gate.kind !== "ok";
 
   const load = useCallback(async () => {
     try {
@@ -49,6 +54,7 @@ export default function App() {
       setInstallMode(extensionsPayload.install_mode);
       setExtensionDir(extensionsPayload.extension_dir);
       setConfig(configPayload);
+      setGate({ kind: "ok" });
       setSelectedId((current) => {
         if (current && (extensionsPayload.installed.some((item) => item.id === current) || extensionsPayload.catalog.some((item) => item.id === current))) {
           return current;
@@ -56,6 +62,14 @@ export default function App() {
         return extensionsPayload.installed[0]?.id ?? extensionsPayload.catalog[0]?.id ?? "";
       });
     } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        setGate({ kind: "signin" });
+        return;
+      }
+      if (error instanceof ApiError && error.status === 503) {
+        setGate({ kind: "setup", reason: error.message });
+        return;
+      }
       setMessage({
         kind: "error",
         text:
@@ -72,10 +86,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Signed out: stop polling. Polling would send a rejected request every few
+    // seconds, and the audit log would fill with them. Signing in calls load() again.
+    if (signedOut) {
+      return;
+    }
     void load();
     const timer = window.setInterval(() => void load(), 5000);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [load, signedOut]);
 
   async function extensionAction(id: string, action: "install" | "enable" | "disable" | "uninstall") {
     setBusy(true);
@@ -136,6 +155,10 @@ export default function App() {
         </div>
       </div>
     );
+  }
+
+  if (gate.kind !== "ok") {
+    return <SignIn mode={gate.kind} reason={gate.reason} onSignedIn={() => void load()} />;
   }
 
   return (
@@ -376,26 +399,24 @@ export default function App() {
                 ))}
             </article>
             <article>
-              <h3>Admin token</h3>
+              <h3>Dashboard token</h3>
               <p>
-                {status?.admin.token_required
-                  ? "This bridge requires a token for changes."
-                  : "No token configured (loopback only)."}
+                Every request to this dashboard is checked against the token from{" "}
+                <code>neuro-integration setup</code>, including requests from this machine.
               </p>
-              <div className="list-input-row">
-                <input
-                  type="password"
-                  value={tokenDraft}
-                  onChange={(event) => setTokenDraft(event.target.value)}
-                  placeholder="NEURO_ADMIN_TOKEN"
-                />
+              <p>
+                <strong>Source:</strong> {status?.admin.token_source ?? "unknown"}
+              </p>
+              <div className="button-row">
                 <button
+                  className="secondary"
                   onClick={() => {
-                    setAdminToken(tokenDraft.trim());
-                    setMessage({ kind: "ok", text: "Token stored for this browser session." });
+                    setAdminToken("");
+                    setMessage({ kind: "ok", text: "Signed out of this browser session." });
+                    void load();
                   }}
                 >
-                  Use
+                  Sign out
                 </button>
               </div>
             </article>

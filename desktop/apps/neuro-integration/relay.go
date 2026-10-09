@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,7 +39,10 @@ type RelayConfig struct {
 	Enabled         bool
 	IntermediaryURL string
 	Token           string
-	Name            string
+	// TokenError says why the relay cannot be used (no token, or the two token
+	// sources disagree). When set, the link does not connect; the dashboard shows it.
+	TokenError string
+	Name       string
 	// ReservedActions are action names owned by another integration. They are
 	// left unregistered so Neuro Desktop cannot shadow a game integration.
 	ReservedActions []string
@@ -78,6 +82,35 @@ func reservedActionsFromEnv() []string {
 		}
 	}
 	return out
+}
+
+// resolveRelayClientToken returns the token this server presents to the relay.
+// The relay token file is the source of truth: the relay host reads the same
+// file. NEURO_RELAY_TOKEN, when set, must equal it, because two different values
+// would leave the server and the relay host disagreeing. With neither present
+// there is no token, and the caller must not connect.
+func resolveRelayClientToken(envToken, tokenFile string) (string, error) {
+	envToken = strings.TrimSpace(envToken)
+
+	fileToken, err := readRelayTokenFile(tokenFile)
+	haveFile := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	if envToken != "" {
+		if err := validateRelayToken(envToken); err != nil {
+			return "", fmt.Errorf("NEURO_RELAY_TOKEN: %w", err)
+		}
+		if haveFile && subtle.ConstantTimeCompare([]byte(envToken), []byte(fileToken)) != 1 {
+			return "", fmt.Errorf("NEURO_RELAY_TOKEN differs from the relay token file %s, so the relay would refuse this server; unset NEURO_RELAY_TOKEN (the server reads the file), or copy the file's value into it", tokenFile)
+		}
+		return envToken, nil
+	}
+	if haveFile {
+		return fileToken, nil
+	}
+	return "", nil
 }
 
 func (c RelayConfig) endpoint() string {
@@ -285,6 +318,12 @@ func (r *RelayState) isSelf(name string) bool {
 // as a direct Neuro integration.
 func (r *RelayState) Start() error {
 	if r == nil || !r.cfg.Enabled {
+		return nil
+	}
+	if r.cfg.TokenError != "" {
+		r.mu.Lock()
+		r.lastError = r.cfg.TokenError
+		r.mu.Unlock()
 		return nil
 	}
 	go r.clientLoop()

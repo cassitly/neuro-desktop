@@ -15,23 +15,23 @@ things the upstream relay gets wrong (see [Differences](#differences-from-the-up
 
 ```bash
 cd desktop/apps/neuro-integration
-NEURO_RELAY_AUTH_TOKEN="$(openssl rand -hex 24)" \
-  go run . relay --listen 127.0.0.1:8765 --health 127.0.0.1:8766
+go run . setup        # once: writes the relay token file (./relay-token, mode 0600)
+go run . relay --listen 127.0.0.1:8765 --health 127.0.0.1:8766
 ```
 
 | Flag | Env | Default | What it is |
 | --- | --- | --- | --- |
 | `--listen` | `NEURO_RELAY_LISTEN` | `127.0.0.1:8765` | where integrations and watchers connect (`ws://`) |
 | `--health` | `NEURO_RELAY_HEALTH_LISTEN` | `127.0.0.1:8766` | `GET /health`; empty disables it |
-| `--token-file` | `NEURO_RELAY_TOKEN_FILE` | `./relay-token` | where a generated token is stored (mode 0600) |
+| `--token-file` | `NEURO_RELAY_TOKEN_FILE` | `./relay-token` | the token the host and the server share (mode 0600) |
 | `--neuro-url` | `NEURO_RELAY_NEURO_URL` | empty | optional Neuro API URL, used only by `direct_to_neuro` |
-| | `NEURO_RELAY_AUTH_TOKEN` | generated | the token integrations present. Set it yourself |
+| | `NEURO_RELAY_AUTH_TOKEN` | the file's token | an override for the host. It must equal the file; `setup --check` reports a difference |
 | | `NEURO_RELAY_NEURO_OS_TOKEN` | empty | a second, *enhanced* token for watchers that may send to Neuro |
 
-With no `NEURO_RELAY_AUTH_TOKEN`, the host generates a 48-character hex token,
-writes it to the token file, and logs where it is. The upstream sample token
-(`super-secret-token`) is refused, and so is any token shorter than 16
-characters. The host exits with status 2 if the configured token is refused.
+The host reads the token file. If the file does not exist, the host creates it with
+a 48-character hex token (mode 0600). The upstream sample token (`super-secret-token`)
+is refused, and so is any token shorter than 16 characters. The host exits with
+status 2 if the token it is given is refused.
 
 The host runs in the foreground, and it stops on SIGINT or SIGTERM. Run it as a
 service if you want it to start with the machine; the bundle does not install
@@ -44,9 +44,32 @@ Set these in the server's environment (the bridge is then a relay client):
 ```bash
 NEURO_RELAY_ENABLED=true
 NEURO_RELAY_URL=ws://127.0.0.1:8765
-NEURO_RELAY_TOKEN=<the same value as NEURO_RELAY_AUTH_TOKEN>
 NEURO_RELAY_NAME=desktop          # optional; shown to watchers
 ```
+
+The server takes its token from the relay token file, the file the host reads
+(`NEURO_RELAY_TOKEN_FILE`, default `./relay-token`). Nothing is copied by hand.
+`NEURO_RELAY_TOKEN` is optional. If you set it, it must equal the file. When it
+differs, or when there is no token at all, the link stays off, and the server log and
+the dashboard say why. The server never dials with a token that disagrees with the file.
+
+### Using the upstream Python relay
+
+The upstream relay keeps its token in its own YAML (`intermediary.auth_token`), not in
+this file. Give the server that value in a file of its own:
+
+```bash
+umask 077
+printf '%s\n' '<intermediary.auth_token from authentication.yaml>' > "$HOME/upstream-relay-token"
+export NEURO_RELAY_ENABLED=true
+export NEURO_RELAY_URL=ws://127.0.0.1:8765
+export NEURO_RELAY_TOKEN_FILE="$HOME/upstream-relay-token"
+```
+
+The value must be at least 16 characters, and it must not be the upstream sample
+(`super-secret-token`). You can also run `neuro-integration setup` with
+`NEURO_RELAY_TOKEN_FILE` set to a path that does not exist yet. Setup then creates the
+file with a new token, and you copy that value into the upstream `intermediary.auth_token`.
 
 The Extensions page shows the relay state: `disabled`, `disconnected`
 (configured but not connected yet), `unreachable` (nothing listening at the
@@ -78,7 +101,7 @@ Refusals are a JSON error frame, after which the connection closes:
 
 A connection that sends a `Origin` header (any browser) is refused with HTTP 403
 before the socket upgrades. A newcomer with the same name replaces the older
-connection, and the older one is told `replaced by a newer connection`.
+connection, and the older one is told `replaced by a newer connection with the same name`.
 
 ### Integrations
 
@@ -169,6 +192,8 @@ answers.
 
 * Put the relay on loopback, or behind a firewall you control. Anything that can
   reach the socket and knows the token can register as an integration.
+* The token file is a secret. It is written with mode 0600, and `.gitignore` keeps
+  `relay-token` and `dashboard-token` out of Git. Do not copy it into a shared folder.
 * Use a random token of at least 16 characters, and do not reuse the enhanced
   token for integrations.
 * A watcher command that reaches the bridge through the relay is treated like

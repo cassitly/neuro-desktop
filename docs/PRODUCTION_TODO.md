@@ -26,11 +26,35 @@ Check these directly; this file does not keep a copy of their issue lists.
   `permissions_test.go`, `permission_requests_test.go`, `ratelimit_test.go`,
   `relay_host_test.go`. Approvals are in memory, so a restart clears them.
 
-- [ ] **UI token synchronization and relay-first onboarding** (#16). Open. The
-  dashboard shows relay state, but there is no first-run flow, and the dashboard
-  token is typed by hand in two places: the relay token into both the relay host and
-  the server, and the dashboard token separately. Next: a single
-  setup step that writes both, and a check that the two agree.
+- [x] **UI token synchronization and relay-first onboarding** (#16). The dashboard
+  pushes no tokens to other processes, and it no longer injects its token into the page.
+  `neuro-integration
+  setup` creates the relay token, which the relay host and the server share through one
+  0600 file. Then it creates the dashboard token, prints it once, and keeps only its hash.
+  `setup --check` confirms that the two sides agree. The dashboard asks for its token on a
+  sign-in page, and every `/api` route needs it. Tests: `setup_test.go`,
+  `relay_token_test.go`, `dashboard_token_test.go`, `admin_server_test.go`. CI runs a
+  setup smoke test. Not checked here: the sign-in page in a real browser, and the
+  Windows and macOS bundles.
+
+- [ ] **Three separate binaries** (proposed, not started; scope to be confirmed). The
+  dashboard, the neuro client on the controlled PC, and the server would be three
+  programs. The controlled PC would hold no admin UI and no policy, so Neuro cannot
+  change her own permissions from there.
+
+- [ ] **Authenticated reverse connections, and pinned TLS for the executor link.** The
+  design allows the server to dial the client, and it requires that connection to be
+  authenticated. The plan is a certificate fingerprint pinned on the dialing side, with
+  the executor secret sent only over that pinned channel, and the dashboard API served
+  the same way. Not built. The executor link is plain TCP today (`docs/SAFETY.md`,
+  section 6).
+
+- [ ] **Log failed dashboard sign-ins.** A `401` for a wrong dashboard token is counted in
+  memory only. It is not written to the audit log, and it is not logged.
+
+- [ ] **License file.** The README says the project is MIT-licensed and links to a
+  `LICENSE` file. The repository has no `LICENSE` file. The maintainer must add it,
+  because it needs the copyright holder's name.
 
 - [~] **Integration manager, marketplace, and signed plugin distribution** (#11/#14/#15).
   Done: a signed catalog (`desktop/catalog/index.json`), publisher keys

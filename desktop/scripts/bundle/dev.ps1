@@ -24,7 +24,8 @@ try {
     Push-Location 'apps/neuro-integration'
     try {
         New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
-        & go build -o "dist/$Server" .
+        # -tags neurodev: only development bundles accept NEURO_EXTENSIONS_ALLOW_UNSIGNED.
+        & go build -tags neurodev -o "dist/$Server" .
         if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
     }
     finally {
@@ -59,8 +60,9 @@ try {
     Write-Host ''
     Write-Host "=== Dev bundle complete: $Dist ==="
     Write-Host ''
-    Write-Host '1. Server (this window unless NEURO_BUNDLE_NO_LAUNCH=1):'
-    Write-Host "     cd $Dist ; .\$Server --ws-url ws://localhost:8000"
+    Write-Host '1. Set up, then start the server (this window unless NEURO_BUNDLE_NO_LAUNCH=1):'
+    Write-Host "     cd $Dist ; .\$Server setup ; .\$Server --ws-url ws://localhost:8000"
+    Write-Host '   setup prints the dashboard token once: copy it. It is the sign-in token.' 
     Write-Host '2. Agent on the controlled PC:'
     Write-Host '     cd dist\dev\agent ; python -m controller.agent --bridge 127.0.0.1:9876'
     Write-Host '3. Dashboard: http://127.0.0.1:8300/ui/'
@@ -78,6 +80,10 @@ try {
         $env:NEURO_PERMISSIONS_FILE = (Join-Path $PWD 'permissions.json')
         $env:NEURO_CATALOG_FILE = (Join-Path $PWD 'catalog/index.json')
         $env:NEURO_GAME_PROFILES_DIR = (Join-Path $PWD 'catalog/games')
+
+        # First-run step. Idempotent: it prints the dashboard token only the first time.
+        & ".\$Server" setup
+        if ($LASTEXITCODE -ne 0) { throw 'setup is not complete; fix the FAIL lines above' }
 
         Write-Host 'Launching the server (Ctrl-C to stop)...'
         & ".\$Server"

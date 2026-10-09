@@ -211,9 +211,11 @@ func TestMCPTrustGate(t *testing.T) {
 			t.Errorf("state %q must not run without the escape hatch", state)
 		}
 	}
+	// The escape hatch exists only in a dev build (-tags neurodev); a release
+	// build ignores the variable, so unsigned servers stay blocked there.
 	t.Setenv("NEURO_EXTENSIONS_ALLOW_UNSIGNED", "1")
-	if !mcpTrustAllowed("unsigned") {
-		t.Fatal("unsigned servers run only when the escape hatch is set")
+	if got := mcpTrustAllowed("unsigned"); got != extensionsDevBuild {
+		t.Fatalf("unsigned servers run only in a dev build with the escape hatch set (dev build: %v, got %v)", extensionsDevBuild, got)
 	}
 	if mcpTrustAllowed("invalid") {
 		t.Fatal("an invalid signature never runs, even with the escape hatch")

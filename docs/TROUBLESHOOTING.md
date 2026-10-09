@@ -9,7 +9,9 @@ executor and the C++ supervisor. Both were removed (see `CHANGELOG.md`).
 1. Open the dashboard at `http://127.0.0.1:8300/ui/` and read the **Status** tab. The
    Extensions page shows, in order: the bridge, the relay, the vision server, and the
    MCP bridge. Each shows whether it is running or reachable, and that is live state.
-2. Or ask the server directly: `curl -s http://127.0.0.1:8300/api/runtime`.
+2. Or ask the server directly. `curl -s http://127.0.0.1:8300/health` answers without a
+   token. Everything else needs the dashboard token:
+   `curl -s -H "X-ND-Token: <dashboard token>" http://127.0.0.1:8300/api/runtime`.
 3. Read the terminal that runs the server. Every refusal and error is logged there, and
    every refusal that Neuro sees is in the audit log (`NEURO_AUDIT_LOG`).
 
@@ -56,14 +58,36 @@ it is always allowed.
   `shell_command` for work on a headless machine.
 - Set `NEURO_HEADLESS=1` in CI too. The CI jobs do.
 
+## Setup, tokens, and sign-in
+
+Run `neuro-integration setup` once on the server. It creates the relay token that the
+server and the relay host share, and it prints the dashboard token once. `setup --check`
+reports every mismatch and changes nothing.
+
+| Message | Why | What to do |
+| --- | --- | --- |
+| `the dashboard has no token yet` (sign-in page, or `503` from the API) | setup has not run | run `neuro-integration setup`, then sign in with the token it prints |
+| `NEURO_ADMIN_TOKEN does not match the dashboard token in …` (`503`, and the server log) | the environment variable disagrees with the stored hash | unset `NEURO_ADMIN_TOKEN`, or set it to the printed token |
+| `invalid or missing dashboard token` (`401`) | the token typed is not the stored one | type the token that setup printed. If it is lost, run `setup --rotate-dashboard` and restart the server |
+| `the dashboard token must be at least 16 characters` | `NEURO_ADMIN_TOKEN` is too short | use the token that setup printed |
+| `… does not hold a dashboard token hash` | the hash file is damaged | run `setup --rotate-dashboard`. The old token stops working |
+| `no relay token: run neuro-integration setup` (relay link disabled) | no relay token file | run `neuro-integration setup` |
+| `NEURO_RELAY_TOKEN differs from the relay token file …` (relay link disabled) | the server's two relay sources disagree | unset `NEURO_RELAY_TOKEN`, or copy the file's value into it |
+| `… the relay token must be at least 16 characters` | the relay token file holds a weak value | delete the file, and `setup` makes a new one. Then update the other side |
+
+Sign-in is per browser session. The browser keeps the token in `sessionStorage`, so a
+new tab or a new browser session asks again. The token is read from the sign-in form and
+the `X-ND-Token` header only. A `?token=` in the URL is ignored.
+
 ## The dashboard
 
 - **It does not open.** The server is not running, or it listens somewhere else.
   The address is `NEURO_ADMIN_LISTEN` (default `127.0.0.1:8300`). Check it with
-  `curl -s http://127.0.0.1:8300/api/runtime`.
-- **A write returns 403.** The dashboard is not on loopback, so it needs the admin token
-  in the `X-ND-Token` header, as a Bearer token, or as `?token=`. The value is
-  `NEURO_ADMIN_TOKEN`. Do not put the token in a URL you share.
+  `curl -s http://127.0.0.1:8300/health`.
+- **The sign-in page says the server has no token, or the API answers `503`.** Run
+  `neuro-integration setup` on the server (see the table above).
+- **The API answers `401`.** The token is wrong or missing. Use the token that setup
+  printed. Do not put the token in a URL you share.
 - **The page loads but has no assets.** Open the dashboard at `/ui/`, not at the root.
   The bundle's asset links are relative, and CI checks that.
 
@@ -71,7 +95,7 @@ it is always allowed.
 
 | Message | Why | What to do |
 | --- | --- | --- |
-| `relay rejected the registration` (status) | the tokens do not match | `NEURO_RELAY_TOKEN` (server) must equal `NEURO_RELAY_AUTH_TOKEN` (relay host), or the upstream relay's `intermediary.auth_token` |
+| `relay rejected the registration` (status) | the tokens do not match | the server reads the relay token file that `setup` writes. The relay host reads the same file, or `NEURO_RELAY_AUTH_TOKEN` if you set it. For the upstream relay, the token is its `intermediary.auth_token`, which goes in the file named by `NEURO_RELAY_TOKEN_FILE` |
 | `invalid auth token` (from the relay) | the same as above, seen on the relay's side | the same |
 | `unreachable` (status) | nothing is listening at `NEURO_RELAY_URL` | start `neuro-integration relay`, or fix the URL |
 | `refusing the upstream sample token` | the relay was started with `super-secret-token` | choose your own token of at least 16 characters |
@@ -88,7 +112,8 @@ it is always allowed.
   changed after it was signed, or it is signed by a publisher the server does not trust.
   Check `desktop/catalog/publishers.json` and run `neuro-integration catalog verify`.
   Do not work around it by setting `NEURO_EXTENSIONS_ALLOW_UNSIGNED`. That variable
-  exists for a developer who knows what it bypasses.
+  exists for a developer who knows what it bypasses. It is honoured only in a development
+  build (`-tags neurodev`). A release build ignores it, and logs once that it is ignored.
 - **Install is refused because the scope is off.** Neuro needs the `extensions` scope
   on. Vedal turns it on, or Neuro asks for it with `request_permission`.
 - **An MCP server shows as not running.** Its runtime state is on the Extensions page.
@@ -135,7 +160,8 @@ it is always allowed.
 
 - The server logs to standard error, which is the terminal it runs in.
 - The audit log (`NEURO_AUDIT_LOG`, JSON lines) records refusals, accepted actions, and
-  relay commands. It never records tokens.
+  relay commands. It never records tokens. It does not record a failed dashboard sign-in
+  yet; the server counts those in memory only (see `docs/SAFETY.md`, section 8).
 - The relay host logs to its terminal, and `/health` shows its live state.
 
 When you report a problem, include the bridge version from the first line of the server

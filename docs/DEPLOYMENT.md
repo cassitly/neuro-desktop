@@ -41,6 +41,9 @@ cd desktop
 On Windows, use `go build -o neuro-integration.exe .` in `apps\neuro-integration`.
 `scripts/build-go.ps1` does the Go step for all three platforms.
 
+Before the first start, run `./neuro-integration setup` once (see Run). It creates the
+two secrets that the server, the relay host, and the dashboard share.
+
 ## Bundle
 
 The bundle scripts put the server, the dashboard, the agent, the catalog, and the
@@ -82,10 +85,16 @@ cd dist/neuro-desktop
 ./start.sh          # Windows: start.bat
 ```
 
+The first start runs `neuro-integration setup`. It creates the relay token
+(`relay-token`) and prints the dashboard token once. Copy that token now: it is the
+sign-in token, and the server keeps only its hash. Every later start runs the same
+step, which keeps the existing tokens and checks that they agree. If the check fails,
+the launcher stops and prints the line to fix.
+
 This starts the server and the local agent. `NEURO_NO_AGENT=1` starts only the
 server, for a split-machine setup where the agent runs elsewhere.
 
-Open the dashboard at `http://127.0.0.1:8300/ui/`.
+Open the dashboard at `http://127.0.0.1:8300/ui/` and sign in with the dashboard token.
 
 ### Split machines
 
@@ -101,6 +110,14 @@ On the server, the hub must listen on an address the desktop can reach, for exam
 `NEURO_EXECUTOR_LISTEN=0.0.0.0:9876`, and `NEURO_EXECUTOR_TOKEN` must be set. The hub
 refuses to listen beyond loopback without a token, and it says why. Allow port 9876 from
 the desktop's address only.
+
+**The executor link is not encrypted yet.** The token and every command cross the
+network as plain TCP. On an untrusted network, keep the hub on loopback and tunnel it:
+run `ssh -L 9876:127.0.0.1:9876 user@<server>` on the desktop, and point the agent at
+`127.0.0.1:9876`. TLS with a pinned certificate is an open item in
+[PRODUCTION_TODO.md](PRODUCTION_TODO.md). The server does not dial the agent: reverse
+connections are allowed in the design, and they must be authenticated, but they are not
+built yet.
 
 ### Headless (no display)
 
@@ -134,8 +151,9 @@ reach the machine from outside.
 ## The relay and the vision server (optional)
 
 - **Relay:** run `neuro-integration relay` next to the server, then set the server's
-  `NEURO_RELAY_ENABLED`, `NEURO_RELAY_URL`, and `NEURO_RELAY_TOKEN`. Details are in
-  `docs/RELAY.md`.
+  `NEURO_RELAY_ENABLED` and `NEURO_RELAY_URL`. The host and the server both read one
+  token file (`relay-token`, written by `setup`), so no token is copied by hand. Details
+  are in `docs/RELAY.md`.
 - **Vision:** run `python3 -m nd_vision` from `desktop/apps/nd-vision-server` and set
   `NEURO_VISION_URL` and `NEURO_VISION_TOKEN` on the server. Details are in that
   folder's README.
@@ -150,7 +168,9 @@ Every environment variable the server reads is listed in `desktop/README.md`
 | Variable | Set it to |
 | --- | --- |
 | `NEURO_SDK_WS_URL` | the Neuro API websocket |
-| `NEURO_ADMIN_TOKEN` | a token for dashboard writes when the dashboard is not on loopback |
+| `NEURO_ADMIN_TOKEN` | optional. The dashboard token, if you set it yourself; it must equal the token `setup` printed |
+| `NEURO_DASHBOARD_TOKEN_FILE` | where the dashboard token's hash is kept (default `./dashboard-token`) |
+| `NEURO_RELAY_TOKEN_FILE` | where the shared relay token is kept (default `./relay-token`) |
 | `NEURO_EXECUTOR_TOKEN` | the secret every agent presents |
 | `NEURO_PERMISSIONS_FILE` | the policy file (defaults to `permissions.json` in the bundle) |
 | `NEURO_SHELL_ALLOWLIST` | the programs the shell action may run |
@@ -161,14 +181,19 @@ Every environment variable the server reads is listed in `desktop/README.md`
 
 1. Stop the running processes (Ctrl-C in the terminal that runs `start.sh`).
 2. Build and bundle the new version.
-3. Keep your `permissions.json`, your audit log, and the extension state file. Copy them
-   into the new bundle, then compare the new example policy with yours.
+3. Keep your `permissions.json`, your audit log, the extension state file, and the two
+   token files (`relay-token` and `dashboard-token`). Copy them into the new bundle, then
+   compare the new example policy with yours. Without `relay-token`, the next `setup` makes
+   a new relay token, and a relay that still has the old one refuses the server until both
+   are updated. Without `dashboard-token`, the next `setup` prints a new dashboard token,
+   and the old one stops working.
 4. Start it again and check the Status tab and the Extensions page.
 
 ## Health checks
 
 ```bash
-curl -s http://127.0.0.1:8300/api/runtime       # bridge, relay, vision, and MCP state
+curl -s http://127.0.0.1:8300/health            # the server is up (the only public route)
+curl -s -H "X-ND-Token: <dashboard token>" http://127.0.0.1:8300/api/runtime   # bridge, relay, vision, and MCP state
 curl -s http://127.0.0.1:8766/health            # the relay host, if you run it
 curl -s http://127.0.0.1:8610/health            # the vision server, if you run it
 ```
@@ -177,8 +202,10 @@ The dashboard's Extensions page shows the same runtime state, live.
 
 ## Backups
 
-Back up `permissions.json`, the audit log, and the extension state file. Nothing else
-holds state. Permission approvals and pending requests are in memory, so a restart
+Back up `permissions.json`, the audit log, the extension state file, and the two token
+files. The token files are secrets, so store the backup as you would store a password:
+`relay-token` holds the token in clear, and `dashboard-token` holds only a hash of the
+dashboard token. Permission approvals and pending requests are in memory, so a restart
 clears them.
 
 ## Service installs
@@ -191,9 +218,11 @@ run as a service on a headless machine, but that has not been tested here.
 ## What is verified here, and what is not
 
 Verified in CI: the server builds for Windows, macOS, and Linux; the server and agent
-test suites pass; the dashboard builds; the release bundle builds on Linux, and the
-dashboard is served from the bundle folder; and the agent and server run end to end on
-Linux with no display.
+test suites pass, including a run with `-tags neurodev`; the dashboard builds; the release
+bundle builds on Linux, and the dashboard is served from the bundle folder; the agent and
+server run end to end on Linux with no display; and the setup smoke test runs `setup`
+twice (the relay token and the dashboard token are created with mode 0600, the second run
+keeps both, and `setup --check` passes).
 
 Not verified here: the bundle on a real Windows or macOS desktop, input and screen
 capture on a real desktop, and an installed (not built) release. Treat those as open

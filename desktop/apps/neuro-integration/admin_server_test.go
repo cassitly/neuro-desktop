@@ -45,12 +45,38 @@ func testIntegration(t *testing.T) *NDIntegration {
 	}
 }
 
+// testDashboardToken is the token the admin tests sign in with. getJSON and
+// sendJSON send it unless the test sets its own auth header. An empty
+// X-ND-Token sends no token, which is how a test asks for an anonymous request.
+const testDashboardToken = "dashboard-test-token-0123456789"
+
+// newTestAdmin serves the admin routes on an httptest server (which is a
+// loopback server). An empty token means the dashboard is not set up.
 func newTestAdmin(t *testing.T, integration *NDIntegration, token string) *httptest.Server {
 	t.Helper()
-	admin := NewAdminServer(integration, "127.0.0.1:0", token)
+	cred := dashboardCredential{}
+	if token != "" {
+		cred = credentialFromToken(token, "env")
+	}
+	admin := NewAdminServer(integration, "127.0.0.1:0", cred)
 	server := httptest.NewServer(admin.routes())
 	t.Cleanup(server.Close)
 	return server
+}
+
+// withDefaultToken copies headers and adds the test token when the caller has
+// set neither X-ND-Token nor Authorization.
+func withDefaultToken(headers map[string]string) map[string]string {
+	out := map[string]string{}
+	for name, value := range headers {
+		out[name] = value
+	}
+	_, hasToken := out["X-ND-Token"]
+	_, hasAuth := out["Authorization"]
+	if !hasToken && !hasAuth {
+		out["X-ND-Token"] = testDashboardToken
+	}
+	return out
 }
 
 func getJSON(t *testing.T, url string, headers map[string]string) (int, map[string]interface{}) {
@@ -60,7 +86,7 @@ func getJSON(t *testing.T, url string, headers map[string]string) (int, map[stri
 	if err != nil {
 		t.Fatalf("failed to build request: %v", err)
 	}
-	for name, value := range headers {
+	for name, value := range withDefaultToken(headers) {
 		request.Header.Set(name, value)
 	}
 	response, err := http.DefaultClient.Do(request)
@@ -82,7 +108,7 @@ func sendJSON(t *testing.T, method string, url string, body string, headers map[
 		t.Fatalf("failed to build request: %v", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	for name, value := range headers {
+	for name, value := range withDefaultToken(headers) {
 		request.Header.Set(name, value)
 	}
 	response, err := http.DefaultClient.Do(request)
@@ -98,7 +124,7 @@ func sendJSON(t *testing.T, method string, url string, body string, headers map[
 
 func TestAdminStatusReportsBridgeState(t *testing.T) {
 	integration := testIntegration(t)
-	server := newTestAdmin(t, integration, "")
+	server := newTestAdmin(t, integration, testDashboardToken)
 
 	status, payload := getJSON(t, server.URL+"/api/status", nil)
 	if status != http.StatusOK {
@@ -124,7 +150,7 @@ func TestAdminStatusReportsBridgeState(t *testing.T) {
 
 func TestAdminPermissionSchemaCoversGameScope(t *testing.T) {
 	integration := testIntegration(t)
-	server := newTestAdmin(t, integration, "")
+	server := newTestAdmin(t, integration, testDashboardToken)
 
 	status, payload := getJSON(t, server.URL+"/api/permissions/schema", nil)
 	if status != http.StatusOK {
@@ -159,7 +185,7 @@ func TestAdminPermissionSchemaCoversGameScope(t *testing.T) {
 
 func TestAdminPermissionUpdateAppliesLive(t *testing.T) {
 	integration := testIntegration(t)
-	server := newTestAdmin(t, integration, "")
+	server := newTestAdmin(t, integration, testDashboardToken)
 
 	policy := `{
 	  "version": "1.0.0",
@@ -200,7 +226,7 @@ func TestAdminPermissionUpdateAppliesLive(t *testing.T) {
 
 func TestAdminRejectsBrokenPolicyWithoutBreakingTheBridge(t *testing.T) {
 	integration := testIntegration(t)
-	server := newTestAdmin(t, integration, "")
+	server := newTestAdmin(t, integration, testDashboardToken)
 
 	before := integration.policy()
 
@@ -223,30 +249,31 @@ func TestAdminRejectsBrokenPolicyWithoutBreakingTheBridge(t *testing.T) {
 
 func TestAdminTokenGuardsWrites(t *testing.T) {
 	integration := testIntegration(t)
-	server := newTestAdmin(t, integration, "letmein")
+	server := newTestAdmin(t, integration, "letmein-long-enough")
 
 	policy := `{"version": "1.0.0", "default_allow": true}`
+	anonymous := map[string]string{"X-ND-Token": ""}
 
-	// Reads are allowed for local operators.
-	status, _ := getJSON(t, server.URL+"/api/status", nil)
-	if status != http.StatusOK {
-		t.Fatalf("expected status to be readable, got %d", status)
+	// The same token opens reads and writes alike.
+	if status, _ := getJSON(t, server.URL+"/api/status", map[string]string{"X-ND-Token": "letmein-long-enough"}); status != http.StatusOK {
+		t.Fatalf("expected status to be readable with the token, got %d", status)
 	}
 
-	status, _ = sendJSON(t, http.MethodPut, server.URL+"/api/permissions", policy, nil)
+	status, _ := sendJSON(t, http.MethodPut, server.URL+"/api/permissions", policy, anonymous)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without a token, got %d", status)
 	}
 
+	// Bearer is accepted as well.
 	status, _ = sendJSON(t, http.MethodPut, server.URL+"/api/permissions", policy,
-		map[string]string{"Authorization": "Bearer letmein"})
+		map[string]string{"Authorization": "Bearer letmein-long-enough"})
 	if status != http.StatusOK {
 		t.Fatalf("expected the token to be accepted, got %d", status)
 	}
 
 	// X-ND-Token is the header the dashboard sends.
 	status, _ = sendJSON(t, http.MethodPost, server.URL+"/api/extensions/some-extension/enable", "",
-		map[string]string{"X-ND-Token": "letmein"})
+		map[string]string{"X-ND-Token": "letmein-long-enough"})
 	if status == http.StatusUnauthorized {
 		t.Fatal("the X-ND-Token header should be accepted")
 	}
@@ -256,6 +283,124 @@ func TestAdminTokenGuardsWrites(t *testing.T) {
 		map[string]string{"X-ND-Token": "nope"})
 	if status != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for a wrong token, got %d", status)
+	}
+}
+
+// Loopback is not a credential. Every guarded route refuses an anonymous caller
+// even when the request comes from 127.0.0.1, which is where the httptest
+// server (and a preview proxy) appear to come from.
+func TestAdminDoesNotTrustLoopback(t *testing.T) {
+	integration := testIntegration(t)
+	server := newTestAdmin(t, integration, testDashboardToken)
+	anonymous := map[string]string{"X-ND-Token": ""}
+
+	for _, path := range []string{
+		"/api/session", "/api/status", "/api/runtime", "/api/config", "/api/actions",
+		"/api/catalog", "/api/permissions", "/api/permissions/schema", "/api/extensions",
+		"/api/games", "/api/relay", "/api/audit",
+	} {
+		status, _ := getJSON(t, server.URL+path, anonymous)
+		if status != http.StatusUnauthorized {
+			t.Errorf("%s answered %d to an anonymous loopback caller, want 401", path, status)
+		}
+	}
+}
+
+func TestAdminHealthStaysPublic(t *testing.T) {
+	integration := testIntegration(t)
+	server := newTestAdmin(t, integration, testDashboardToken)
+
+	response, err := http.Get(server.URL + "/health")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("/health should stay public, got %d", response.StatusCode)
+	}
+}
+
+// Before setup there is no token to check, so the API refuses everything rather
+// than falling back to open access.
+func TestAdminWithoutATokenRefusesEverything(t *testing.T) {
+	integration := testIntegration(t)
+	server := newTestAdmin(t, integration, "")
+
+	if status, _ := getJSON(t, server.URL+"/api/status", nil); status != http.StatusServiceUnavailable {
+		t.Fatalf("an unconfigured dashboard should answer 503, got %d", status)
+	}
+	if status, _ := sendJSON(t, http.MethodPut, server.URL+"/api/permissions", `{"default_allow": true}`, nil); status != http.StatusServiceUnavailable {
+		t.Fatalf("an unconfigured dashboard should refuse writes with 503, got %d", status)
+	}
+}
+
+// When the token cannot be loaded, the 503 says why, so the sign-in page can
+// tell the operator what to fix.
+func TestAdminSaysWhyTheTokenIsUnusable(t *testing.T) {
+	integration := testIntegration(t)
+	admin := NewAdminServer(integration, "127.0.0.1:0", dashboardCredential{})
+	admin.credentialProblem = "NEURO_ADMIN_TOKEN does not match the dashboard token in ./dashboard-token"
+	server := httptest.NewServer(admin.routes())
+	t.Cleanup(server.Close)
+
+	status, payload := getJSON(t, server.URL+"/api/status", nil)
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", status)
+	}
+	if message, _ := payload["error"].(string); !strings.Contains(message, "does not match") {
+		t.Fatalf("the 503 should carry the reason, got %v", payload)
+	}
+}
+
+// A token in the query string would end up in logs and history, so it is not read.
+func TestAdminIgnoresTokenInURL(t *testing.T) {
+	integration := testIntegration(t)
+	server := newTestAdmin(t, integration, testDashboardToken)
+
+	status, _ := getJSON(t, server.URL+"/api/status?token="+testDashboardToken, map[string]string{"X-ND-Token": ""})
+	if status != http.StatusUnauthorized {
+		t.Fatalf("a token in the URL must not be accepted, got %d", status)
+	}
+}
+
+// The shell is served to anyone who asks, so it must never carry the secret.
+func TestAdminShellCarriesNoToken(t *testing.T) {
+	integration := testIntegration(t)
+	uiDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(uiDir, "index.html"), []byte("<html><head></head><body>dashboard</body></html>"), 0644); err != nil {
+		t.Fatalf("failed to write index.html: %v", err)
+	}
+	t.Setenv("NEURO_UI_DIR", uiDir)
+	server := newTestAdmin(t, integration, testDashboardToken)
+
+	response, err := http.Get(server.URL + "/ui/")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer response.Body.Close()
+	body := new(bytes.Buffer)
+	_, _ = body.ReadFrom(response.Body)
+	if strings.Contains(body.String(), testDashboardToken) || strings.Contains(body.String(), "__ND_BOOTSTRAP") {
+		t.Fatalf("the shell must not carry a token: %q", body.String())
+	}
+	if got := response.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("the shell must not be cached, got Cache-Control %q", got)
+	}
+}
+
+func TestAdminSessionChecksTheToken(t *testing.T) {
+	integration := testIntegration(t)
+	server := newTestAdmin(t, integration, "a-dashboard-token-0001")
+
+	status, payload := getJSON(t, server.URL+"/api/session", map[string]string{"Authorization": "Bearer a-dashboard-token-0001"})
+	if status != http.StatusOK || payload["ok"] != true {
+		t.Fatalf("a good token should open the session, got %d %v", status, payload)
+	}
+	if source, _ := payload["token_source"].(string); source != "env" {
+		t.Fatalf("expected token_source env, got %v", payload["token_source"])
+	}
+	if status, _ := getJSON(t, server.URL+"/api/session", map[string]string{"Authorization": "Bearer wrong-token-000000"}); status != http.StatusUnauthorized {
+		t.Fatalf("a wrong token must be refused, got %d", status)
 	}
 }
 
@@ -269,7 +414,7 @@ func TestAdminExtensionManagement(t *testing.T) {
 	}
 	t.Setenv("NEURO_EXTENSIONS_STATE_FILE", statePath)
 
-	server := newTestAdmin(t, integration, "")
+	server := newTestAdmin(t, integration, testDashboardToken)
 
 	status, payload := getJSON(t, server.URL+"/api/extensions", nil)
 	if status != http.StatusOK {
@@ -311,7 +456,7 @@ func TestAdminExtensionManagement(t *testing.T) {
 
 func TestAdminGamesPanel(t *testing.T) {
 	integration := testIntegration(t)
-	server := newTestAdmin(t, integration, "")
+	server := newTestAdmin(t, integration, testDashboardToken)
 
 	status, payload := getJSON(t, server.URL+"/api/games", nil)
 	if status != http.StatusOK {
@@ -345,7 +490,7 @@ func TestAdminServesDashboardAssets(t *testing.T) {
 	}
 	t.Setenv("NEURO_UI_DIR", uiDir)
 
-	server := newTestAdmin(t, integration, "")
+	server := newTestAdmin(t, integration, testDashboardToken)
 
 	response, err := http.Get(server.URL + "/ui/")
 	if err != nil {
@@ -379,7 +524,7 @@ func TestAdminReleaseWithoutExecutorReportsFailure(t *testing.T) {
 	t.Setenv("NEURO_IPC_TIMEOUT_SECONDS", "1")
 
 	integration := testIntegration(t)
-	server := newTestAdmin(t, integration, "")
+	server := newTestAdmin(t, integration, testDashboardToken)
 
 	status, payload := sendJSON(t, http.MethodPost, server.URL+"/api/games/release", "", nil)
 	if status != http.StatusConflict {
@@ -393,7 +538,7 @@ func TestAdminReleaseWithoutExecutorReportsFailure(t *testing.T) {
 func TestAdminRelayStatusExposed(t *testing.T) {
 	integration := testIntegration(t)
 	integration.relay.notePeer("minecraft-integration", "integration")
-	server := newTestAdmin(t, integration, "")
+	server := newTestAdmin(t, integration, testDashboardToken)
 
 	status, payload := getJSON(t, server.URL+"/api/relay", nil)
 	if status != http.StatusOK {
@@ -466,7 +611,7 @@ func TestScopeRequiresExplicitConsent(t *testing.T) {
 // described well enough to be used without extra prompting.
 func TestActionsExposeLLMFriendlyMetadata(t *testing.T) {
 	integration := testIntegration(t)
-	server := newTestAdmin(t, integration, "")
+	server := newTestAdmin(t, integration, testDashboardToken)
 
 	status, payload := getJSON(t, server.URL+"/api/actions", nil)
 	if status != http.StatusOK {

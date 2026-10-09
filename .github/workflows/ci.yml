@@ -119,6 +119,35 @@ jobs:
           CGO_ENABLED: "1"
         run: go test -race -count=1 ./...
 
+      # The dev bundle is built with -tags neurodev, which is the only build where
+      # NEURO_EXTENSIONS_ALLOW_UNSIGNED means anything. Run the suite that way too,
+      # so the escape hatch's own tests cannot silently rot.
+      - name: Go tests, dev build (-tags neurodev)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: desktop/apps/neuro-integration
+        run: go test -count=1 -tags neurodev ./...
+
+      # First-run onboarding, end to end, on the real binary: setup creates both
+      # secrets relay-first, prints the dashboard token exactly once, a re-run keeps
+      # everything, and the check passes. Ubuntu only: the script uses GNU stat.
+      - name: Setup smoke test (relay first, then the dashboard token)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: desktop/apps/neuro-integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o /tmp/nd-setup-smoke .
+          workdir="$(mktemp -d)"
+          cd "$workdir"
+          /tmp/nd-setup-smoke setup > first.out
+          /tmp/nd-setup-smoke setup --check
+          test "$(stat -c %a relay-token)" = "600"
+          test "$(stat -c %a dashboard-token)" = "600"
+          test "$(grep -cE '^        [A-Za-z0-9_-]{43}$' first.out)" = "1"
+          /tmp/nd-setup-smoke setup > again.out
+          test "$(grep -cE '^        [A-Za-z0-9_-]{43}$' again.out)" = "0"
+          echo "setup smoke test passed"
+
       # ---------------------------------------------------------------
       # Python controller: required, and deliberately run twice below.
       # ---------------------------------------------------------------

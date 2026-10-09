@@ -58,6 +58,7 @@ echo "[1/3] Building the server (Go)..."
 
 mkdir -p apps/neuro-integration/dist
 pushd apps/neuro-integration > /dev/null
+# No -tags neurodev: a release build has no unsigned-extension escape hatch.
 go build -o "dist/$SERVER" .
 popd > /dev/null
 

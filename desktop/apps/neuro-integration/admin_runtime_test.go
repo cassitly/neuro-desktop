@@ -13,9 +13,14 @@ func TestRuntimeEndpointReportsEachComponent(t *testing.T) {
 	t.Setenv("NEURO_VISION_URL", "")
 	t.Setenv("NEURO_VISION_SERVER_URL", "")
 	integration := newTestIntegrationForAdmin(t)
-	server := newTestAdmin(t, integration, "")
+	server := newTestAdmin(t, integration, testDashboardToken)
 
-	resp, err := http.Get(server.URL + "/api/runtime")
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/runtime", nil)
+	if err != nil {
+		t.Fatalf("failed to build request: %v", err)
+	}
+	request.Header.Set("X-ND-Token", testDashboardToken)
+	resp, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}

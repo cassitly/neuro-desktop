@@ -17,7 +17,7 @@ frontend:
 	cd frontend && (test -f package-lock.json && npm ci || npm install) && npm run build
 
 test:
-	cd apps/neuro-integration && $(GO) vet ./... && $(GO) test -count=1 ./...
+	cd apps/neuro-integration && $(GO) vet ./... && $(GO) test -count=1 ./... && $(GO) test -count=1 -tags neurodev ./...
 	cd backend/python && $(PYTHON) -m unittest discover -s tests -t .
 	cd .. && $(PYTHON) desktop/tools/ci/repo_checks.py
 

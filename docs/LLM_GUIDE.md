@@ -111,7 +111,7 @@ this for each refusal case.
 # What the model will be offered, including parameter hints:
 curl -s http://127.0.0.1:8300/api/actions | python3 -m json.tool | head -40
 
-# The briefing a model gets for a game (needs the admin token off loopback):
+# The briefing a model gets for a game (needs the dashboard token, on every address):
 curl -s -H "X-ND-Token: $TOKEN" http://127.0.0.1:8300/api/games | python3 -m json.tool
 ```
 

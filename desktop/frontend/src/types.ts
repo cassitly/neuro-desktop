@@ -15,7 +15,6 @@ export type ExtensionState = {
 };
 
 export type NDBootstrap = {
-  token?: string;
   version?: string;
   api_base?: string;
   nativeHost?: boolean;

@@ -71,15 +71,9 @@ func extensionInstallMode() string {
 	return mode
 }
 
-// extensionAllowsUnsigned is the lab escape hatch: it lets git_clone fetch items
-// that have no verified signature. It is logged on every such install.
-func extensionAllowsUnsigned() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("NEURO_EXTENSIONS_ALLOW_UNSIGNED"))) {
-	case "1", "true", "yes", "on":
-		return true
-	}
-	return false
-}
+// extensionAllowsUnsigned, the lab escape hatch, is defined per build: see
+// extensions_unsigned_dev.go (-tags neurodev) and extensions_unsigned_release.go.
+// It is never true in a release build.
 
 func extensionRootPath() string {
 	root := strings.TrimSpace(os.Getenv("NEURO_EXTENSION_DIR"))

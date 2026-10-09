@@ -35,6 +35,7 @@ try {
     Push-Location 'apps/neuro-integration'
     try {
         New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
+        # No -tags neurodev: a release build has no unsigned-extension escape hatch.
         & go build -trimpath -o "dist/$Server" .
         if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
     }

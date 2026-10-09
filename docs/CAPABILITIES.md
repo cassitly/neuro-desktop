@@ -135,7 +135,7 @@ Unsupported intents on an OS fail with a clear error (e.g. macOS clipboard histo
 
 ### Working alongside other integrations
 
-- The server connects to Neuro Relay as an integration (`NEURO_RELAY_ENABLED`, `NEURO_RELAY_URL`, `NEURO_RELAY_TOKEN`). The relay can be the built-in host (`neuro-integration relay`) or the upstream Python relay.
+- The server connects to Neuro Relay as an integration (`NEURO_RELAY_ENABLED`, `NEURO_RELAY_URL`). Its token comes from the relay token file that `setup` writes, which the built-in host reads too. The relay can be the built-in host (`neuro-integration relay`) or the upstream Python relay (its token in `NEURO_RELAY_TOKEN_FILE`).
 - `TestRelayRegistrationMatchesIntermediaryProtocol` pins the client's frames to the intermediary's protocol, and `TestRelayClientAgainstTheGoHost` runs the server's own client against the built-in host in CI.
 - Not repeated after the shim was removed: a live run against the upstream Python relay with its own integrations. Re-run it by hand before relying on that combination.
 - `NEURO_RESERVED_ACTIONS` keeps another integration's action names out of the registry, so the two cannot shadow each other.
@@ -168,8 +168,9 @@ Working:
   `/api/games/session`, `/api/games/release`, `/api/games/observe`, `/api/relay`,
   `/api/control` (+`/pause`, `/resume`), `/api/audit`, `/api/status`, `/api/config`,
   and the dashboard itself at `/ui/`
-- Dashboard writes are guarded by `NEURO_ADMIN_TOKEN`; a local browser gets the
-  token injected, a remote one must paste it (Status tab)
+- Every dashboard API call needs the dashboard token that `setup` prints. The sign-in
+  page asks for it on any address. Nothing is injected into the page, and the token is
+  never read from a URL.
 - Live sync: `Save` in the Permissions tab applies the policy to the running bridge
 
 Not done:
@@ -192,6 +193,8 @@ Not done:
 - A public plugin marketplace. The catalog has one item, the `memory` MCP server, and one publisher key that the maintainer must replace before relying on the signatures.
 - A native tray. This was decided against, not postponed: the dashboard is served by the server and works headless, and a tray could not be built or verified in this environment. See `docs/PRODUCTION_TODO.md`.
 - Process supervision by the server. The server does not start other programs (no relay process, no agent). Operators start each process.
+- An encrypted executor link. The executor token and the commands travel as plain TCP. Tunnel the port over SSH on an untrusted network. Pinned TLS is open in `docs/PRODUCTION_TODO.md`.
+- Reverse connections (the server dialing the agent). They are allowed in the design, and they must be authenticated, but they are not built.
 
 ## Quick verify
 
@@ -217,9 +220,10 @@ Dashboard without a display, a GPU or pyautogui:
 # terminal A — fake executor (reports the active window from NEURO_FAKE_WINDOW)
 python3 desktop/tools/fake-executor/fake_executor.py --addr 127.0.0.1:9876
 
-# terminal B — bridge + dashboard
+# terminal B — bridge + dashboard (setup once; it prints the token to sign in with)
 cd desktop/apps/neuro-integration
-NEURO_UI_DIR=../frontend/dist NEURO_ADMIN_TOKEN=demo go run .
+go run . setup
+NEURO_UI_DIR=../frontend/dist go run .
 # then http://127.0.0.1:8300/ui/
 ```
 
@@ -236,11 +240,13 @@ python3 desktop/tools/ci/repo_checks.py
 # Relay host and client (the built-in relay, against the bridge's own client)
 cd desktop/apps/neuro-integration && go test -run Relay -v ./...
 
-# Relay, live: start the host, then point the bridge at it
-NEURO_RELAY_AUTH_TOKEN=<a long random token> go run . relay --listen 127.0.0.1:8765 --health 127.0.0.1:8766
-# in another shell, with NEURO_RELAY_ENABLED=true NEURO_RELAY_URL=ws://127.0.0.1:8765
-# and NEURO_RELAY_TOKEN set to the same token:
-curl -s http://127.0.0.1:8300/api/relay     # connected / registered true
+# Relay, live: set up once (the relay token file is shared), start the host, then the bridge
+go run . setup
+go run . relay --listen 127.0.0.1:8765 --health 127.0.0.1:8766
+# in another shell, the bridge as a relay client (no NEURO_RELAY_TOKEN needed: both read ./relay-token):
+NEURO_RELAY_ENABLED=true NEURO_RELAY_URL=ws://127.0.0.1:8765 go run .
+# and in a third shell:
+curl -s -H "X-ND-Token: <dashboard token>" http://127.0.0.1:8300/api/relay     # connected / registered true
 ```
 
 For a fake Neuro backend: see [desktop/tools/ollama-neuro/README.md](../desktop/tools/ollama-neuro/README.md).

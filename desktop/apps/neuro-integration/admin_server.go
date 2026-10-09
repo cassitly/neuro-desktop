@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,10 +24,17 @@ import (
 // policy, the plugin (extension) manager, the game registry, and the relay
 // link. It also serves the compiled dashboard, so the UI is same-origin with
 // the API instead of being a file:// page that cannot call the bridge.
+//
+// Every /api route except /health needs the dashboard token. Nothing is trusted
+// because of where the request comes from (see guard).
 type AdminServer struct {
 	integration *NDIntegration
 	addr        string
-	token       string
+	credential  dashboardCredential
+	// credentialProblem says why the dashboard token could not be loaded (for
+	// example, NEURO_ADMIN_TOKEN disagrees with the stored one). The 503 answer
+	// shows it, so the sign-in page can say what to fix.
+	credentialProblem string
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -36,11 +42,11 @@ type AdminServer struct {
 	lastErr  string
 }
 
-func NewAdminServer(integration *NDIntegration, addr string, token string) *AdminServer {
+func NewAdminServer(integration *NDIntegration, addr string, credential dashboardCredential) *AdminServer {
 	if addr == "" {
 		addr = "127.0.0.1:8300"
 	}
-	return &AdminServer{integration: integration, addr: addr, token: token}
+	return &AdminServer{integration: integration, addr: addr, credential: credential}
 }
 
 // routes wires the dashboard API. It is separate from Start so tests can serve
@@ -48,13 +54,15 @@ func NewAdminServer(integration *NDIntegration, addr string, token string) *Admi
 func (a *AdminServer) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 
+	// Public: liveness and the version only. Every other /api route is guarded.
 	mux.HandleFunc("/health", a.handleHealth)
-	mux.HandleFunc("/api/status", a.handleStatus)
-	mux.HandleFunc("/api/runtime", a.handleRuntime)
+	mux.HandleFunc("/api/session", a.guard(a.handleSession))
+	mux.HandleFunc("/api/status", a.guard(a.handleStatus))
+	mux.HandleFunc("/api/runtime", a.guard(a.handleRuntime))
 	mux.HandleFunc("/api/permissions", a.guard(a.handlePermissions))
-	mux.HandleFunc("/api/permissions/schema", a.handlePermissionSchema)
-	mux.HandleFunc("/api/actions", a.handleActions)
-	mux.HandleFunc("/api/catalog", a.handleCatalog)
+	mux.HandleFunc("/api/permissions/schema", a.guard(a.handlePermissionSchema))
+	mux.HandleFunc("/api/actions", a.guard(a.handleActions))
+	mux.HandleFunc("/api/catalog", a.guard(a.handleCatalog))
 	mux.HandleFunc("/api/extensions", a.guard(a.handleExtensions))
 	mux.HandleFunc("/api/extensions/", a.guard(a.handleExtensionAction))
 	mux.HandleFunc("/api/permission-requests", a.guard(a.handlePermissionRequests))
@@ -70,7 +78,7 @@ func (a *AdminServer) routes() *http.ServeMux {
 	mux.HandleFunc("/api/control/pause", a.guard(a.handleControlPause))
 	mux.HandleFunc("/api/control/resume", a.guard(a.handleControlResume))
 	mux.HandleFunc("/api/audit", a.guard(a.handleAudit))
-	mux.HandleFunc("/api/config", a.handleConfig)
+	mux.HandleFunc("/api/config", a.guard(a.handleConfig))
 	mux.HandleFunc("/", a.handleUI)
 	return mux
 }
@@ -96,8 +104,8 @@ func (a *AdminServer) Start() error {
 	a.listener = listener
 	a.mu.Unlock()
 
-	if !isLoopbackAddr(a.addr) && a.token == "" {
-		log.Printf("WARNING: dashboard is listening on %s without NEURO_ADMIN_TOKEN; destructive API calls are refused until a token is set", a.addr)
+	if !a.credential.configured() {
+		log.Printf("WARNING: the dashboard has no token; every API call answers 503 until you run `neuro-integration setup`")
 	}
 
 	log.Printf("Operator dashboard on http://%s/ui/", a.Addr())
@@ -115,58 +123,51 @@ func (a *AdminServer) Start() error {
 	return nil
 }
 
-func isLoopbackAddr(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
-	}
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-// guard protects the sensitive routes (policy, audit, extensions, requests,
-// relay, games, control). On loopback the operator is the local user, so reads
-// are open and writes need the token only when one is configured. On a network
-// address everything needs the token, because the audit log and the policy
-// are not for the whole LAN. Without a token there, the route refuses.
+// guard admits a request only when it carries the dashboard token. There is no
+// exception for loopback. A local process, a browser on this machine, or a proxy
+// that connects from 127.0.0.1 (a live preview, for example) is checked the same
+// way as anyone else. A dashboard that is not set up refuses with 503.
 func (a *AdminServer) guard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		destructive := r.Method != http.MethodGet && r.Method != http.MethodHead
-		loopback := isLoopbackAddr(a.addr)
-
-		if destructive || !loopback {
-			if a.token == "" {
-				if !loopback {
-					writeError(w, http.StatusForbidden,
-						"dashboard is bound to a network address; set NEURO_ADMIN_TOKEN before using it")
-					return
-				}
-			} else if !a.tokenMatches(r) {
-				a.writeAudit("rejected: bad admin token", true)
-				writeError(w, http.StatusUnauthorized, "invalid or missing admin token")
-				return
+		if !a.credential.configured() {
+			message := dashboardNotSetUpMessage
+			if a.credentialProblem != "" {
+				message = a.credentialProblem
 			}
+			writeError(w, http.StatusServiceUnavailable, message)
+			return
 		}
-
+		if !a.credential.matches(requestToken(r)) {
+			a.writeAudit("rejected: bad dashboard token", true)
+			writeError(w, http.StatusUnauthorized, "invalid or missing dashboard token")
+			return
+		}
 		next(w, r)
 	}
 }
 
-func (a *AdminServer) tokenMatches(r *http.Request) bool {
-	provided := strings.TrimSpace(r.Header.Get("X-ND-Token"))
-	if provided == "" {
-		header := strings.TrimSpace(r.Header.Get("Authorization"))
-		if strings.HasPrefix(strings.ToLower(header), "bearer ") {
-			provided = strings.TrimSpace(header[len("bearer "):])
-		}
+// requestToken reads the token from X-ND-Token or an Authorization: Bearer
+// header. A query parameter is deliberately not read: URLs end up in logs,
+// history, and referrers.
+func requestToken(r *http.Request) string {
+	if token := strings.TrimSpace(r.Header.Get("X-ND-Token")); token != "" {
+		return token
 	}
-	if provided == "" {
-		provided = strings.TrimSpace(r.URL.Query().Get("token"))
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	const bearer = "bearer "
+	if len(header) > len(bearer) && strings.EqualFold(header[:len(bearer)], bearer) {
+		return strings.TrimSpace(header[len(bearer):])
 	}
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(a.token)) == 1
+	return ""
+}
+
+// handleSession lets the dashboard check a token before it shows anything else.
+func (a *AdminServer) handleSession(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, map[string]interface{}{
+		"ok":           true,
+		"version":      Version,
+		"token_source": a.credential.source,
+	})
 }
 
 func (a *AdminServer) writeAudit(message string, isError bool) {
@@ -241,10 +242,12 @@ func (a *AdminServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"audit":   integration.audit.status(),
 		"safety":  integration.safetySnapshot(),
 		"admin": map[string]interface{}{
-			"listen":         a.addr,
-			"token_required": a.token != "",
-			"requests":       requests,
-			"last_error":     lastErr,
+			"listen":           a.addr,
+			"token_required":   true,
+			"token_configured": a.credential.configured(),
+			"token_source":     a.credential.source,
+			"requests":         requests,
+			"last_error":       lastErr,
 		},
 	}
 
@@ -811,6 +814,9 @@ func (a *AdminServer) handleConfig(w http.ResponseWriter, _ *http.Request) {
 			"relay_enabled":  a.integration.relay.status().Enabled,
 			"vision_enabled": visionServerURL() != "",
 			"executor_token": a.integration.executorHub != nil && a.integration.executorHub.tokenRequired(),
+			"dev_build":      extensionsDevBuild,
+			// Only a dev build (-tags neurodev) can ever answer true.
+			"unsigned_extensions_allowed": extensionAllowsUnsigned(),
 		},
 	})
 }
@@ -862,10 +868,9 @@ func (a *AdminServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, candidate)
 }
 
-// serveDashboardShell serves index.html, injecting the admin token when the
-// caller is already local. Without it every dashboard action would need the
-// operator to copy NEURO_ADMIN_TOKEN into the browser by hand; with it, a remote
-// browser is never handed write access it could not otherwise obtain.
+// serveDashboardShell serves index.html. It carries no token: the operator types
+// the dashboard token into the sign-in page, so a page served to any caller,
+// local or not, never contains a secret.
 func (a *AdminServer) serveDashboardShell(w http.ResponseWriter, r *http.Request, path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -873,50 +878,11 @@ func (a *AdminServer) serveDashboardShell(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	shell := string(data)
-	if token := a.dashboardToken(r); token != "" {
-		payload, err := json.Marshal(map[string]interface{}{
-			"token":      token,
-			"version":    Version,
-			"api_base":   "",
-			"nativeHost": false,
-		})
-		if err == nil {
-			snippet := "<script>window.__ND_BOOTSTRAP=" + string(payload) + ";</script>"
-			if strings.Contains(shell, "</head>") {
-				shell = strings.Replace(shell, "</head>", snippet+"</head>", 1)
-			} else {
-				shell = snippet + shell
-			}
-		}
-	}
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The shell is regenerated per request (and a rebuilt UI must not be served
 	// from the browser cache), so hashed assets aside, do not cache it.
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(shell))
-}
-
-// dashboardToken decides whether the admin token may be handed to this request.
-func (a *AdminServer) dashboardToken(r *http.Request) string {
-	if a.token == "" {
-		return ""
-	}
-	// Either the server itself is only reachable locally...
-	if isLoopbackAddr(a.addr) {
-		return a.token
-	}
-	// ...or this particular caller is local.
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		if host == "localhost" {
-			return a.token
-		}
-		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-			return a.token
-		}
-	}
-	return ""
+	_, _ = w.Write(data)
 }
 
 func resolveFrontendRoot() (string, error) {

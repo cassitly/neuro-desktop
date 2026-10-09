@@ -175,6 +175,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "catalog" {
 		os.Exit(runCatalogCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
+	// `neuro-integration setup` is the first-run step: relay token, dashboard
+	// token, and a check that the two sides agree (see setup.go).
+	if len(os.Args) > 1 && os.Args[1] == "setup" {
+		os.Exit(runSetupCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
@@ -209,6 +214,27 @@ func main() {
 	if *relayNameFlag != "" {
 		relayConfig.Name = *relayNameFlag
 	}
+	if relayConfig.Enabled {
+		// The relay token comes from the same file the relay host reads. A
+		// missing or disagreeing token disables the link and says why; the rest
+		// of the server keeps running.
+		token, tokenErr := resolveRelayClientToken(relayConfig.Token, relayTokenFilePath())
+		switch {
+		case tokenErr != nil:
+			relayConfig.TokenError = tokenErr.Error()
+		case token == "":
+			relayConfig.TokenError = "no relay token: run `neuro-integration setup` (or set NEURO_RELAY_TOKEN)"
+		}
+		relayConfig.Token = token
+	}
+
+	// The dashboard credential. Without one, the API refuses everything until
+	// `neuro-integration setup` has run; a mismatch is reported and also refused.
+	dashboardCred, credErr := loadDashboardCredential(adminToken, dashboardTokenFilePath())
+	if credErr != nil {
+		log.Printf("WARNING: dashboard token problem, the API refuses every request until it is fixed: %v", credErr)
+		dashboardCred = dashboardCredential{}
+	}
 
 	log.Printf("Starting Neuro Desktop bridge (server) v%s", Version)
 	log.Printf("- Neuro WebSocket: %s", wsURL)
@@ -216,12 +242,19 @@ func main() {
 	if executorToken != "" {
 		log.Printf("- Executor auth:   shared token required")
 	}
-	log.Printf("- Admin dashboard: http://%s/", adminListen)
+	dashboardTokenState := dashboardCred.label()
+	if credErr != nil {
+		dashboardTokenState = "UNUSABLE, see the warning above"
+	}
+	log.Printf("- Admin dashboard: http://%s/ui/ (token %s)", adminListen, dashboardTokenState)
 	log.Printf("- File IPC fallback: %s", ipcPath)
 	log.Printf("- Permissions file:  %s", permissionsPath)
 	log.Printf("- Game interface:    %s", enabledLabel(RegisterGameActionsOnStartup))
 	if relayConfig.Enabled {
 		log.Printf("- Neuro Relay:       %s (as %q)", relayConfig.IntermediaryURL, relayConfig.Name)
+		if relayConfig.TokenError != "" {
+			log.Printf("  relay link disabled: %s", relayConfig.TokenError)
+		}
 	}
 
 	integration, err := NewNDIntegration(IntegrationOptions{
@@ -250,7 +283,10 @@ func main() {
 	relay := integration.relay
 	defer relay.Stop()
 
-	admin := NewAdminServer(integration, adminListen, adminToken)
+	admin := NewAdminServer(integration, adminListen, dashboardCred)
+	if credErr != nil {
+		admin.credentialProblem = credErr.Error()
+	}
 	if err := admin.Start(); err != nil {
 		log.Printf("Warning: admin dashboard did not start: %v", err)
 	}

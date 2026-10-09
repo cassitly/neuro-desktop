@@ -5,10 +5,11 @@
  * so every call is same-origin and relative. When the UI is served from the Vite
  * dev server, `vite.config.ts` proxies /api and /health to the bridge.
  *
- * Writes are guarded by the admin token (`NEURO_ADMIN_TOKEN`). The shell pages
- * served by the bridge inject it as `window.__ND_BOOTSTRAP.token` for local
- * browsers; otherwise the operator pastes it into the Settings tab and it is
- * kept in sessionStorage only.
+ * Every API call needs the dashboard token, including reads and including calls
+ * from this machine. The operator gets the token from `neuro-integration setup`
+ * and types it into the sign-in page. It is kept in sessionStorage for this
+ * browser session only, and it is sent in the X-ND-Token header. The bridge never
+ * puts it in a page, and it is not read from the URL.
  */
 
 export type ScopeName =
@@ -43,7 +44,6 @@ export type PermissionPolicyFile = {
 };
 
 export type BootstrapInfo = {
-  token?: string;
   version?: string;
   api_base?: string;
   nativeHost?: boolean;
@@ -137,6 +137,8 @@ export type StatusPayload = {
   admin: {
     listen: string;
     token_required: boolean;
+    token_configured?: boolean;
+    token_source?: string;
     requests: number;
     last_error?: string;
   };
@@ -276,26 +278,9 @@ function bootstrap(): BootstrapInfo | undefined {
   return window.__ND_BOOTSTRAP;
 }
 
-/**
- * The token from the injected bootstrap, then a `?token=` in the URL (which is
- * stored and stripped so a reload keeps working), then whatever the operator
- * typed into the Settings tab.
- */
+/** The token the operator signed in with, for this browser session only. */
 export function adminToken(): string {
-  const injected = bootstrap()?.token;
-  if (injected) {
-    return injected;
-  }
-
   try {
-    const fromUrl = new URLSearchParams(window.location.search).get("token");
-    if (fromUrl) {
-      window.sessionStorage.setItem(TOKEN_KEY, fromUrl);
-      const url = new URL(window.location.href);
-      url.searchParams.delete("token");
-      window.history.replaceState({}, "", url.toString());
-      return fromUrl;
-    }
     return window.sessionStorage.getItem(TOKEN_KEY) ?? "";
   } catch {
     return "";
@@ -362,6 +347,8 @@ function post<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export const api = {
+  /** Checks the token without reading anything else. 401 means it is wrong; 503 means setup has not run. */
+  session: () => request<{ ok: boolean; version: string; token_source: string }>("/api/session"),
   status: () => request<StatusPayload>("/api/status"),
   config: () => request<ConfigPayload>("/api/config"),
 

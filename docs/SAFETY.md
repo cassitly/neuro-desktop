@@ -11,8 +11,9 @@ Read it before you give Neuro a new capability, and before you open a port.
 | Policy | `permissions.go`, `permission_requests.go`, `admin_permissions.go` | scopes (on, requestable), allow and deny lists, approvals, and the requests Neuro files |
 | Rate limits | `ratelimit.go` | a sliding window per scope, shared by Neuro and by watchers |
 | Shell firewall | `shellfirewall.go` (server) and `controller/shell.py` (agent) | allowlist, dangerous patterns, timeouts |
-| Executor hub | `executor_hub.go` | a token for every agent, and no listening beyond loopback without one |
-| Dashboard | `admin_server.go` | loopback by default; writes need a token elsewhere |
+| Executor hub | `executor_hub.go` | a token for every agent, and no listening beyond loopback without one. The link is plain TCP for now (section 6) |
+| Dashboard | `admin_server.go`, `dashboard_token.go`, `setup.go` | every `/api` route needs the dashboard token that `setup` makes, with no exception for loopback |
+| Setup | `setup.go`, `dashboard_token.go`, `relay_host.go` | one relay token file for both sides; the dashboard token kept only as a SHA-256 hash, mode 0600 |
 | Relay | `relay_host.go` (host), `relay.go` (client, and the gates on watcher commands) | a token, browsers refused, frame limits |
 | Extensions and catalog | `catalog_trust.go`, `extensions.go`, `mcp.go` | signatures, publishers, install mode, a clean environment for MCP servers |
 | Vision | `vision.go`, `desktop/apps/nd-vision-server` | a token off loopback, reads only inside one directory |
@@ -20,9 +21,9 @@ Read it before you give Neuro a new capability, and before you open a port.
 
 ## 2. Layers, in the order an action passes through them
 
-1. **Connection.** Neuro's API is outbound. The executor hub checks its token. The
-   dashboard needs a token off loopback. The relay needs its token, and refuses
-   browsers.
+1. **Connection.** Neuro's API is outbound. The executor hub checks its token, over a
+   link that is not encrypted yet. Every dashboard API call needs the dashboard token,
+   on any address. The relay needs its token, and refuses browsers.
 2. **Operator brake.** A paused bridge, or a present kill-switch file, refuses every
    action except the stop-safe set (section 3).
 3. **Hard deny.** Actions in `NEURO_DENY_ACTIONS` are refused whatever the policy says.
@@ -96,13 +97,18 @@ controller (so the executor is not defenceless if it is driven directly).
 
 ## 6. Network exposure
 
-- **Dashboard.** It binds to `127.0.0.1:8300` by default. Binding anywhere else needs
-  `NEURO_ADMIN_TOKEN`. Non-GET requests without the token get `403`, and the bridge warns
-  loudly at startup.
+- **Dashboard.** It binds to `127.0.0.1:8300` by default. Every `/api` route except
+  `/health` needs the dashboard token, in the `X-ND-Token` header or as a Bearer token.
+  A query parameter is never read, and there is no exception for loopback, so a script,
+  a browser, or a proxy on this machine needs the token too. A server with no token
+  answers `503` and says to run `setup`. A wrong token gets `401`. The shell page is
+  served without a token and with `Cache-Control: no-store`, because it holds no secret.
 - **Executor hub.** With `NEURO_EXECUTOR_TOKEN` set, every agent must present it. Without
   one, the hub listens on loopback only. It refuses to start on any other address and
   says why. Before this rule, a hub with no token accepted any client as the executor,
-  and that client received Neuro's commands.
+  and that client received Neuro's commands. The link is plain TCP, so the token and the
+  commands can be read on the wire. On an untrusted network, tunnel the port over SSH.
+  TLS with a pinned certificate is an open item in `docs/PRODUCTION_TODO.md`.
 - **Relay host.** Loopback by default. It refuses any request with an `Origin` header
   (so a web page cannot connect), refuses binary frames, refuses the upstream sample token
   and any token under 16 characters, and limits each connection's frame rate. Anything
@@ -123,7 +129,9 @@ controller (so the executor is not defenceless if it is driven directly).
 - `NEURO_EXTENSION_INSTALL_MODE=metadata_only` (the default) records the install and
   fetches nothing. `git_clone` fetches the item's pinned commit from its `https`
   repository, and only for a verified item.
-- `NEURO_EXTENSIONS_ALLOW_UNSIGNED` lets unsigned items be fetched. It exists for a lab
+- `NEURO_EXTENSIONS_ALLOW_UNSIGNED` lets unsigned items be fetched, and only in a
+  development build (`go build -tags neurodev`, which `dev.sh` and `dev.ps1` use). A
+  release build ignores it, and logs once that it is ignored. It exists for a lab
   machine. Do not set it on a machine Neuro controls.
 - The shipped signature uses a key that the maintainer generated for this repository.
   Rotate to your own publisher key before you rely on the signatures. See
@@ -137,6 +145,10 @@ action. Relay commands are recorded as `relay_command`. The dashboard's `/api/au
 endpoint reads it. Every refusal path records an entry, which is what makes a stuck model
 debuggable after the fact. Tokens are never written.
 
+One gap: a request that fails the dashboard token check is answered `401` but is not
+written to the audit log. The server counts it in memory only. This is an open item in
+`docs/PRODUCTION_TODO.md`.
+
 ## 9. Verify it yourself
 
 ```bash
@@ -145,6 +157,8 @@ go test -race -count=1 ./...                                  # everything
 go test -count=1 -run 'Relay|Watcher' -v ./                   # the relay and watcher gates
 go test -count=1 -run 'ExecutorHub' -v ./                     # the hub's token and loopback rules
 go test -count=1 -run 'WeakModel|EscapeHatch|ExamplePolicy' -v ./   # refusals and the escape hatch
+go test -count=1 -run 'Setup|DashboardCredential|RelayClientToken|Admin' -v ./   # setup, the dashboard token, and the API guard
+go test -count=1 -tags neurodev -run 'UnsignedEscapeHatch' -v ./     # the dev-only unsigned switch, in a dev build
 python3 ../../tools/ci/repo_checks.py                         # the repository checks (run from this folder)
 ```
 

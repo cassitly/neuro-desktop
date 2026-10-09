@@ -998,3 +998,47 @@ button.danger {
 .requestable-row { display: flex; gap: 12px; align-items: center; margin: 12px 0; padding: 10px 12px; border-radius: 8px; background: var(--surface, #161a22); }
 .requestable-row p { margin: 4px 0 0; font-size: 0.9rem; opacity: 0.85; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Sign-in gate: shown until the server accepts the dashboard token. */
+.signin-root {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.signin-card {
+  width: min(440px, 100%);
+  padding: 28px;
+  border-radius: 12px;
+  background: rgba(20, 22, 30, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.signin-card h1 {
+  margin: 0 0 4px;
+  font-size: 1.4rem;
+}
+
+.signin-card h2 {
+  margin: 12px 0 8px;
+  font-size: 1.1rem;
+}
+
+.signin-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.signin-form input {
+  flex: 1;
+  min-width: 0;
+}
+
+.signin-error {
+  color: #ff8a8a;
+  margin: 12px 0 0;
+}
