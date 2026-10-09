@@ -81,6 +81,19 @@ echo "[4/4] Agent (backend/python/controller)"
 )
 echo "      -> backend/python/controller (syntax checked${RUN_TESTS:+, tests run})"
 
+echo "[+] Go client, slice 1 (apps/neuro-client-go). Not shipped yet: the Python client is"
+echo "    the one in the bundle. This checks the port that is under way."
+(
+  cd apps/neuro-client-go
+  if [[ "$RUN_TESTS" == "1" ]]; then
+    go vet ./...
+    go test -count=1 ./...
+  fi
+  mkdir -p dist
+  go build -o "dist/neuro-client-go${BIN_EXT}" .
+)
+echo "      -> apps/neuro-client-go/dist/neuro-client-go${BIN_EXT}"
+
 echo
 echo "Build complete."
 echo "  Run from source:      ./scripts/bundle/dev.sh"
