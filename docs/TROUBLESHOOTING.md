@@ -156,9 +156,9 @@ the `X-ND-Token` header only. A `?token=` in the URL is ignored.
   launcher uses `agent/`. On Linux, the usual cause is missing Python headers, so the
   `evdev` package cannot build: install `python3-dev`. A Python linked without a shared
   `libpython` fails in PyInstaller with `Python shared library … was not found`; use a
-  Python that ships one. The sandbox where this was developed had neither, so the Linux
-  client build was not verified there. On Windows, run the build from a Windows shell
-  with Python 3.11 or 3.12 on the PATH.
+  Python that ships one. CI builds the Linux client on Ubuntu with `setup-python`, which
+  provides both. On Windows, run the build from a Windows shell with Python 3.11 or 3.12
+  on the PATH. The Windows build is not run in CI yet.
 - **`neuro-client` says `giving up` and exits 1 with `--once`.** It could not reach the
   server's hub. Check the address and the port, and that `NEURO_EXECUTOR_LISTEN` is not
   loopback-only on the server. Without `--once` it keeps retrying.

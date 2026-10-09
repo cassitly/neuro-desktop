@@ -175,8 +175,9 @@ so pip builds it from source. That needs the Python development headers (`Python
 Debian and Ubuntu, `sudo apt install python3-dev` installs them. PyInstaller also needs a
 Python built with a shared `libpython`, and a Python that was linked statically is
 refused ("Python shared library ... was not found"). The script prints this hint when the
-install fails. The development sandbox for this repository had neither, so the Linux
-client build is not verified end to end there (see the verification section below).
+install fails. CI builds `neuro-client` on Ubuntu with `actions/setup-python` (the
+`client-build` job), so that path is checked on every push. The sandbox where this was
+developed had neither the headers nor a shared `libpython`, so the build was not run there.
 
 **The executor link is not encrypted yet.** The token and every command cross the
 network as plain TCP. On an untrusted network, keep the hub on loopback and tunnel it:
