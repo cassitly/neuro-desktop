@@ -171,9 +171,8 @@ func (s *stopSwitch) status() map[string]interface{} {
 type auditor struct {
 	path string
 
-	mu   sync.Mutex
-	file *os.File
-	err  string
+	mu  sync.Mutex
+	err string
 }
 
 func newAuditor() *auditor {
@@ -202,19 +201,19 @@ func (a *auditor) record(event string, fields map[string]interface{}) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.file == nil {
-		if dir := filepath.Dir(a.path); dir != "" && dir != "." {
-			_ = os.MkdirAll(dir, 0755)
-		}
-		file, err := os.OpenFile(a.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-		if err != nil {
-			a.err = err.Error()
-			return
-		}
-		a.file = file
+	// Open per write rather than holding the file. A held handle keeps the file
+	// locked on Windows, so nothing else can delete or rotate the log while the
+	// bridge runs. Audit writes are rare, so reopening costs nothing that shows.
+	if dir := filepath.Dir(a.path); dir != "" && dir != "." {
+		_ = os.MkdirAll(dir, 0755)
 	}
-
-	if _, err := a.file.Write(line); err != nil {
+	file, err := os.OpenFile(a.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		a.err = err.Error()
+		return
+	}
+	defer file.Close()
+	if _, err := file.Write(line); err != nil {
 		a.err = err.Error()
 	}
 }

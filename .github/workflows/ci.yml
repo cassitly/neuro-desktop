@@ -115,8 +115,10 @@ jobs:
         run: |
           tail -n 120 /tmp/go-test.log > /tmp/tail.txt 2>/dev/null || echo "no log" > /tmp/tail.txt
           {
-            echo "CI debug for ${{ matrix.os }} (temporary): last 120 lines of go test"
+            echo "CI debug for ${{ matrix.os }} (temporary): every failure, then the last 120 lines of go test"
             echo '```'
+            grep -E -- '--- FAIL|^FAIL|panic:|signal:|dyld' /tmp/go-test.log | head -80 || true
+            echo "--- tail ---"
             cat /tmp/tail.txt
             echo '```'
           } > /tmp/comment.md
@@ -140,6 +142,8 @@ jobs:
       - name: Go tests with the race detector
         if: matrix.os == 'ubuntu-latest'
         working-directory: desktop/apps/neuro-integration
+        env:
+          CGO_ENABLED: "1"
         run: go test -race -count=1 ./...
 
       # ---------------------------------------------------------------
