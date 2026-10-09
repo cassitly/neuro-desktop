@@ -89,11 +89,13 @@ jobs:
           set -o pipefail
           go test -count=1 -v ./... 2>&1 | tee /tmp/go-test.log
           status=${PIPESTATUS[0]}
-          # Each failing test becomes an annotation, so the run's page and API show
-          # what broke without the raw log (which is not always downloadable).
-          grep -E -- '--- FAIL|_test\.go:[0-9]+:|panic:' /tmp/go-test.log | head -60 | while IFS= read -r line; do
-            echo "::error title=go test::${line//%/%25}"
-          done
+          # On failure, the last lines of the output go into an annotation. The run's
+          # page and API show it without the raw log (which is not always downloadable).
+          if [ "$status" != "0" ]; then
+            tail -n 60 /tmp/go-test.log > /tmp/go-test-tail.txt
+            msg="$(python3 -c "import sys; print(sys.stdin.read().replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))" < /tmp/go-test-tail.txt)"
+            echo "::error title=go test output (last 60 lines)::${msg}"
+          fi
           exit "$status"
 
       # The server has OS-specific branches (paths, platform keys, tray/shell
