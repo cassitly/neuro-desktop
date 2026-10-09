@@ -76,6 +76,7 @@ func (f *fakeRelay) serve(conn *websocket.Conn) {
 	token, _ := registration["auth_token"].(string)
 	if token != f.token {
 		_ = conn.WriteJSON(map[string]interface{}{"error": "invalid auth token"})
+		closeAfterAnswer(conn) // as the real host does: let the client read the refusal first
 		return
 	}
 	if registration["type"] != "integration" {

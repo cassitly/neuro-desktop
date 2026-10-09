@@ -76,6 +76,20 @@ const (
 
 var relayNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 _.\-]{0,63}$`)
 
+// closeAfterAnswer closes a refused connection without losing the refusal. Closing
+// a TCP socket at once can reset it before the peer has read what was written. On
+// Windows the peer then reports "connection reset" instead of the reason. So the
+// host waits, for at most a couple of seconds, for the peer to hang up first.
+func closeAfterAnswer(conn *websocket.Conn) {
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			break
+		}
+	}
+	_ = conn.Close()
+}
+
 // relayPeer is one connected integration or watcher.
 type relayPeer struct {
 	kind     string // "integration" or "neuro-os"
@@ -236,7 +250,7 @@ func (h *relayHost) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	peer, err := h.register(conn, r.RemoteAddr)
 	if err != nil {
-		_ = conn.Close()
+		closeAfterAnswer(conn)
 		return
 	}
 	h.serve(peer)
