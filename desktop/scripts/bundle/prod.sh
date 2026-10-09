@@ -42,19 +42,24 @@ rm -rf dist
 mkdir -p "$DIST/"
 
 # --------------------------------------------------
-# ABOUT THE SHIPPED LAYOUT
+# ABOUT THE SHIPPED LAYOUT (three programs; see docs/ARCHITECTURE.md)
 # --------------------------------------------------
-#   $SERVER        the application: Neuro API client, dashboard API, executor hub
-#   agent/         the process that executes commands, run on each controlled PC
-#   frontend/      the dashboard client the server serves at /ui/
-#   config/, catalog/        policy example, game profiles, docs
+#   $SERVER           the server: Neuro API client, dashboard API, executor hub,
+#                     vision. Runs on the machine with the power to spare.
+#   neuro-dashboard   the dashboard program: serves frontend/ and forwards the
+#                     API to the server. Can run on another machine.
+#   neuro-client/     the program for the PC Neuro controls: the agent as one
+#                     executable (only if it could be built here; see below).
+#   agent/            the Python agent. The fallback when neuro-client/ is absent.
+#   frontend/         the dashboard client (the server also serves it at /ui/)
+#   config/, catalog/ policy example, game profiles, docs
 # The Rust executor and the C++ supervisor are not shipped (see
 # docs/ARCHITECTURE.md).
 
 # --------------------------------------------------
-# BUILD GO INTEGRATION
+# BUILD GO PROGRAMS
 # --------------------------------------------------
-echo "[1/3] Building the server (Go)..."
+echo "[1/3] Building the server and the dashboard program (Go)..."
 
 mkdir -p apps/neuro-integration/dist
 pushd apps/neuro-integration > /dev/null
@@ -63,6 +68,13 @@ go build -o "dist/$SERVER" .
 popd > /dev/null
 
 cp "apps/neuro-integration/dist/$SERVER" "$DIST/"
+
+DASHBOARD="neuro-dashboard$BIN_EXT"
+mkdir -p apps/neuro-dashboard/dist
+pushd apps/neuro-dashboard > /dev/null
+go build -o "dist/$DASHBOARD" .
+popd > /dev/null
+cp "apps/neuro-dashboard/dist/$DASHBOARD" "$DIST/"
 
 mkdir -p "$DIST/integration-docs"
 cp \
@@ -157,6 +169,18 @@ cp backend/python/requirements.txt "$PY_DIST/requirements.txt"
 cp backend/python/requirements-windows.txt "$PY_DIST/requirements-windows.txt" 2>/dev/null || true
 
 echo "      ✓ agent bundled"
+
+# neuro-client: the agent packaged as one executable, for the PC Neuro controls,
+# so that machine needs no Python install. PyInstaller builds it on this machine
+# (it cannot cross-compile), and on Linux the build needs the Python headers.
+# When it fails, the bundle still works: the launcher falls back to agent/.
+if [[ "${NEURO_BUNDLE_SKIP_CLIENT:-0}" == "1" ]]; then
+  echo "  ! NEURO_BUNDLE_SKIP_CLIENT=1: no neuro-client in this bundle"
+elif NEURO_CLIENT_OUT="$PWD/$DIST/neuro-client" scripts/build-client.sh; then
+  echo "      ✓ neuro-client built"
+else
+  echo "  ! neuro-client was not built (see the message above). The bundle uses agent/."
+fi
 
 # --------------------------------------------------
 # METADATA + LAUNCHERS

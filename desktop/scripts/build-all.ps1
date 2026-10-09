@@ -1,8 +1,8 @@
 # ============================================================
 # desktop/scripts/build-all.ps1 — Windows build for the shipped product.
 #
-# The product is the Go server, the Python agent and the dashboard (see
-# docs/ARCHITECTURE.md). Usage, from the desktop\ folder:
+# The product is the Go server, the Go dashboard program, the Python agent and the
+# dashboard page (see docs/ARCHITECTURE.md). Usage, from the desktop\ folder:
 #   .\scripts\build-all.ps1              # build + test
 #   .\scripts\build-all.ps1 -NoTest      # build only
 # ============================================================
@@ -22,7 +22,7 @@ function Invoke-Checked([string]$What, [scriptblock]$Block) {
 
 Write-Host '=== neuro-desktop build (windows) ==='
 
-Write-Host '[1/3] Server (apps/neuro-integration)'
+Write-Host '[1/4] Server (apps/neuro-integration)'
 Push-Location 'apps/neuro-integration'
 try {
     if (-not $NoTest) {
@@ -36,7 +36,21 @@ try {
 }
 Write-Host '      -> apps/neuro-integration/dist/neuro-integration.exe'
 
-Write-Host '[2/3] Dashboard (frontend)'
+Write-Host '[2/4] Dashboard program (apps/neuro-dashboard)'
+Push-Location 'apps/neuro-dashboard'
+try {
+    if (-not $NoTest) {
+        Invoke-Checked 'go vet (dashboard)' { go vet ./... }
+        Invoke-Checked 'go test (dashboard)' { go test -count=1 ./... }
+    }
+    New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
+    Invoke-Checked 'go build (dashboard)' { go build -o 'dist/neuro-dashboard.exe' . }
+} finally {
+    Pop-Location
+}
+Write-Host '      -> apps/neuro-dashboard/dist/neuro-dashboard.exe'
+
+Write-Host '[3/4] Dashboard (frontend)'
 Push-Location 'frontend'
 try {
     if (Test-Path 'package-lock.json') {
@@ -50,7 +64,7 @@ try {
 }
 Write-Host '      -> frontend/dist'
 
-Write-Host '[3/3] Agent (backend/python/controller)'
+Write-Host '[4/4] Agent (backend/python/controller)'
 Push-Location 'backend/python'
 try {
     Invoke-Checked 'python compileall' { python -m compileall -q controller | Out-Null }

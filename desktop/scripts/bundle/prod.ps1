@@ -5,9 +5,12 @@
 #
 # Produces dist\neuro-desktop\ with:
 #   neuro-integration.exe   the server (Neuro client + dashboard API + hub)
-#   agent\                  the Python agent + its requirements
+#   neuro-dashboard.exe     the dashboard program (serves frontend\, forwards the API)
+#   neuro-client\           the program for the PC Neuro controls (only if it could be built)
+#   agent\                  the Python agent + its requirements (fallback for neuro-client)
 #   frontend\               dashboard client, served at /ui/
 #   catalog\, config\       game profiles, policy example, docs
+# Not verified on Windows from the development environment: see docs/PRODUCTION_TODO.md.
 # ============================================================
 param(
     [switch]$SkipFrontend,
@@ -31,7 +34,7 @@ try {
     # ----------------------------------------------------------
     # 1. Server (Go)
     # ----------------------------------------------------------
-    Write-Host '[1/3] Building the server...'
+    Write-Host '[1/3] Building the server and the dashboard program...'
     Push-Location 'apps/neuro-integration'
     try {
         New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
@@ -43,6 +46,17 @@ try {
         Pop-Location
     }
     Copy-Item "apps/neuro-integration/dist/$Server" "$Dist/$Server" -Force
+
+    Push-Location 'apps/neuro-dashboard'
+    try {
+        New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
+        & go build -trimpath -o 'dist/neuro-dashboard.exe' .
+        if ($LASTEXITCODE -ne 0) { throw 'go build (neuro-dashboard) failed' }
+    }
+    finally {
+        Pop-Location
+    }
+    Copy-Item 'apps/neuro-dashboard/dist/neuro-dashboard.exe' "$Dist/neuro-dashboard.exe" -Force
 
     # ----------------------------------------------------------
     # 2. Dashboard client
@@ -98,6 +112,22 @@ try {
             Write-Host "      ! could not vendor the runtime: $_"
             Write-Host '        The bundle runs with the system python + agent\requirements.txt'
         }
+    }
+
+    # neuro-client: the agent as one executable, for the PC Neuro controls. It is
+    # built here with PyInstaller. If that fails, the bundle still works: the
+    # launcher falls back to agent\.
+    try {
+        $env:NEURO_CLIENT_OUT = Join-Path (Resolve-Path $Dist) 'neuro-client'
+        & (Join-Path $PSScriptRoot '..\build-client.ps1')
+        Write-Host '      neuro-client built'
+    }
+    catch {
+        Write-Host "      ! neuro-client was not built: $_"
+        Write-Host '        The bundle uses agent\ instead.'
+    }
+    finally {
+        Remove-Item Env:NEURO_CLIENT_OUT -ErrorAction SilentlyContinue
     }
 
     Copy-Item 'config' "$Dist/config" -Recurse -Force

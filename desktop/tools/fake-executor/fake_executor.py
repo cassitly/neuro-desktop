@@ -73,7 +73,7 @@ def status_payload() -> dict:
         "mouse_position": {"x": 960, "y": 540},
         "running_processes": [name.strip() for name in processes.split(",") if name.strip()],
         "recent_actions": [],
-        "screenshot_path": None,
+        "screenshot_png_b64": None,
     }
 
 

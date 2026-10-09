@@ -332,16 +332,16 @@ func TestRelayTokenPolicy(t *testing.T) {
 func TestRelayGeneratesATokenWhenNoneIsSet(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "relay-token")
-	token, where, err := resolveRelayToken("", file)
+	token, where, created, err := resolveRelayToken("", file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if where != file || len(token) < 32 {
-		t.Fatalf("token = %q, where = %q", token, where)
+	if where != file || len(token) < 32 || !created {
+		t.Fatalf("token = %q, where = %q, created = %v", token, where, created)
 	}
-	again, _, err := resolveRelayToken("", file)
-	if err != nil || again != token {
-		t.Fatalf("the generated token should persist across restarts: %q vs %q (%v)", token, again, err)
+	again, _, reused, err := resolveRelayToken("", file)
+	if err != nil || again != token || reused {
+		t.Fatalf("the generated token should persist across restarts: %q vs %q (created again: %v, %v)", token, again, reused, err)
 	}
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(file)

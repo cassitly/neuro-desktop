@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -83,11 +81,7 @@ func TestSummarizeSendsImageAndExtractsSummary(t *testing.T) {
 	}))
 	defer server.Close()
 
-	dir := t.TempDir()
-	shot := filepath.Join(dir, "shot.png")
-	if err := os.WriteFile(shot, []byte("PNGDATA"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	shot := append([]byte("\x89PNG\r\n\x1a\n"), []byte("PNGDATA")...)
 	got, err := summarizeWithVisionServer(server.URL, shot, "")
 	if err != nil {
 		t.Fatalf("summarize failed: %v", err)

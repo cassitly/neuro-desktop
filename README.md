@@ -25,7 +25,7 @@ Neuro Desktop is a multi-language integration system that enables [Neuro-sama](h
 
 ### What Makes Neuro Desktop Special?
 
-- **Two languages on the machine**: Go (the server: Neuro API, permissions, audit, dashboard API, relay host) and Python (the agent that touches the machine), plus a TypeScript dashboard. The Rust and C++ parts were removed; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **Three programs, split so the controlled PC stays light**: the server (Go: Neuro API, permissions, audit, dashboard API, vision, relay host), the dashboard program (Go, optional: serves the dashboard page and forwards its API), and the client for the PC Neuro controls (the Python agent, packaged as one program with PyInstaller). The Rust and C++ parts were removed; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Human-Like Mouse Movement**: Advanced algorithmic pathfinding that mimics natural human mouse movements with Bézier curves and Perlin noise
 - **Powerful Script Language**: Simple yet expressive action scripting for complex automation tasks
 - **Automatic Recovery**: Built-in crash detection and automatic process restart capabilities
@@ -48,34 +48,42 @@ See **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)** for an honest “what works
 
 ## Architecture
 
-Neuro Desktop is a **server + agent** pair with a browser **client**. Per the
+Neuro Desktop runs as **three programs** and a web page. Per the
 [Neuro SDK](https://github.com/VedalAI/neuro-sdk), the server is a WebSocket
 **client** of Neuro's API server. Internally:
 
 - **Server** — `neuro-integration` (Go) talks to Neuro, owns the permission
-  policy, audit log, game catalog and relay link, serves the dashboard, and
-  listens for agents on TCP `:9876` (or uses file IPC on the same machine).
-- **Agent** — `desktop/backend/python/controller/agent.py` runs on the PC Neuro
-  controls (`python3 -m controller.agent --bridge host:9876`) and is the only
-  process that touches that machine.
-- **Dashboard client** — the TypeScript frontend, served by the server at
-  `/ui/`; the admin's browser is the client in the client-server sense.
+  policy, audit log, game catalog, relay link and vision client, serves the dashboard,
+  and listens for clients on TCP `:9876` (or uses file IPC on the same machine).
+- **Dashboard program** — `neuro-dashboard` (Go, optional) serves the dashboard page on
+  the PC you sit at and forwards only its API to the server. It holds no secret and adds
+  no token of its own.
+- **Client** — `neuro-client`, the Python agent packaged as one program, runs on the PC
+  Neuro controls and is the only process that touches that machine. It carries out what
+  the server sends, and nothing else. From source it is
+  `python3 -m controller.agent --bridge host:9876`.
+- **Dashboard page** — the TypeScript frontend, served by the server at `/ui/` and by the
+  dashboard program.
+
+The split exists so that the PC Neuro controls does not need to be powerful.
 
 ```
 ┌──────────────────┐     Neuro WS      ┌─────────────────────────────┐
 │  Neuro API       │◄─────────────────►│  SERVER (Go)                │
-│  (Vedal)         │                   │  dashboard :8300/ui         │
+│  (Vedal)         │                   │  dashboard API :8300/ui     │
 └──────────────────┘                   │  executor hub :9876         │
-        ▲                              └──────────────┬──────────────┘
-        │ HTTP (browser)                              │ JSON-lines
-┌───────┴──────────┐                   ┌──────────────▼──────────────┐
-│  DASHBOARD       │                   │  AGENT (Python)             │
-│  (the client)    │                   │  mouse/keyboard/scripts/shell│
-└──────────────────┘                   └─────────────────────────────┘
+                                       └──────┬───────────────┬──────┘
+                       dashboard API (token)  │               │ JSON-lines
+┌──────────────────┐                  ┌───────▼───────┐ ┌─────▼─────────────────┐
+│  DASHBOARD PAGE  │◄── forwards ─────┤ DASHBOARD     │ │  CLIENT (neuro-client)│
+│  in your browser │                  │ PROGRAM (opt.)│ │  on the PC Neuro      │
+└──────────────────┘                  └───────────────┘ │  controls: input,     │
+                                                        │  screen, shell        │
+                                                        └───────────────────────┘
 ```
 
-`docs/ARCHITECTURE.md` explains the consolidation (Rust and C++ are no longer on
-the shipping path), `docs/EXECUTOR_PROTOCOL.md` is the server↔agent wire format,
+`docs/ARCHITECTURE.md` explains the consolidation and the split (Rust and C++ are no longer on
+the shipping path), `docs/EXECUTOR_PROTOCOL.md` is the server↔client wire format,
 and `docs/RELAY.md` covers coexisting with other integrations.
 
 ### Split-machine quick start
@@ -88,9 +96,12 @@ and `docs/RELAY.md` covers coexisting with other integrations.
 export NEURO_EXECUTOR_TOKEN="$(openssl rand -hex 24)"
 ./neuro-integration --ws-url ws://localhost:8000 --executor-listen 0.0.0.0:9876
 
-# PC Neuro should control (agent) — graphical session, NO sudo.
-# Give the agent the same NEURO_EXECUTOR_TOKEN value.
-cd desktop/backend/python && python3 -m controller.agent --bridge <server-lan-ip>:9876 --token "$NEURO_EXECUTOR_TOKEN"
+# PC Neuro should control (client) — graphical session, NO sudo.
+# Give it the same NEURO_EXECUTOR_TOKEN value. Built with scripts/build-client.sh, it is
+# one program that needs no Python on this PC (copy the neuro-client folder over):
+./neuro-client --bridge <server-lan-ip>:9876 --token "$NEURO_EXECUTOR_TOKEN"
+# From source instead (Python and the requirements needed):
+# cd desktop/backend/python && python3 -m controller.agent --bridge <server-lan-ip>:9876 --token "$NEURO_EXECUTOR_TOKEN"
 ```
 
 The executor token and the agent's commands cross the network in plain TCP for now.
@@ -241,10 +252,12 @@ export NEURO_DENY_ACTIONS="type_text,key_press"     # a hard deny list the dashb
 
 | Component | Language | Role |
 |-----------|----------|------|
-| **neuro-integration** | Go | **Server**: Neuro API, permissions, audit, game interface, dashboard API, executor hub |
-| **controller/agent.py** | Python | **Agent**: input control, script parsing, shell, telemetry (the only part that touches the machine) |
+| **neuro-integration** | Go | **Server**: Neuro API, permissions, audit, game interface, dashboard API, executor hub, vision client |
+| **neuro-dashboard** (`apps/neuro-dashboard`) | Go | **Dashboard program** (optional): serves the dashboard page and forwards `/api` and `/health` to the server. Stdlib only |
+| **neuro-client** (`apps/neuro-client`, built by `scripts/build-client.sh`) | Python, PyInstaller | **Client** for the PC Neuro controls: the agent as one program. Input, script parsing, shell, telemetry; the only part that touches that machine |
+| **controller/agent.py** | Python | The agent that `neuro-client` runs (also runnable from source as `python3 -m controller.agent`) |
 | **controller/\*** | Python | Drivers the agent uses: `actions`, `desktop`, `shell`, `platform_intents`, `controls/` |
-| **frontend** | TypeScript | **Dashboard client**, served by the server at `/ui/` |
+| **frontend** | TypeScript | **Dashboard page**, served by the server at `/ui/` and by the dashboard program |
 | **relay host** (`neuro-integration relay`) | Go | Neuro Relay intermediary: lets other integrations and Neuro-OS watchers share the connection |
 | **nd-vision-server** | Python | Optional vision service the server calls through `NEURO_VISION_URL` (stdlib HTTP, Pillow optional) |
 | **MCP servers** | any | Optional extension servers. The server starts one only after Vedal enables it on the Extensions page |
@@ -257,7 +270,7 @@ export NEURO_DENY_ACTIONS="type_text,key_press"     # a hard deny list the dashb
 # Go 1.22+ — the server (required)
 # Download from https://go.dev/dl/
 
-# Python 3.10+ — the agent (required)
+# Python 3.10+ — the client, from source (PyInstaller builds neuro-client)
 python3 --version
 
 # Node.js 18+ — only to build the dashboard client
@@ -272,9 +285,12 @@ node --version
 1. Download the latest release archive
 2. Extract it anywhere
 3. Run `start.bat` (Windows) or `./start.sh` (Linux/macOS): that runs the one-time
-   setup, then starts the server, the local agent and the dashboard together. The
+   setup, then starts the server, the local client and the dashboard together. The
    first start prints the dashboard token once. Copy it; you type it into the
-   dashboard's sign-in page
+   dashboard's sign-in page. A release bundle also holds `neuro-dashboard` (run it on
+   your own PC when the dashboard should not run on the server) and, when it could be
+   built, the `neuro-client/` folder for the PC Neuro controls. See `README.txt` in the
+   bundle, and `docs/DEPLOYMENT.md`
 
 **Option 2: Build from Source**
 
@@ -296,10 +312,14 @@ cd desktop/apps/neuro-integration && go build -o neuro-integration .
 ./neuro-integration setup          # creates the relay token and PRINTS the dashboard token once
 ./neuro-integration                # starts the server and the dashboard
 
-# 2. Agent (PC Neuro should control; the same machine in a dev setup)
+# 2. Client (PC Neuro should control; the same machine in a dev setup)
 cd desktop/backend/python && python3 -m controller.agent --bridge 127.0.0.1:9876
+#    or, once built with scripts/build-client.sh: dist/neuro-client/neuro-client --bridge 127.0.0.1:9876
 
 # 3. Dashboard: http://127.0.0.1:8300/ui/ — sign in with the token from step 1
+#    or, on your own PC: go build -o neuro-dashboard . (in apps/neuro-dashboard), then
+#    ./neuro-dashboard --server http://127.0.0.1:8300 --listen 127.0.0.1:8310 and open
+#    http://127.0.0.1:8310/ui/ (reach the server's admin port over SSH)
 ```
 
 `setup` is safe to run again: it keeps the tokens that exist, and `setup --check`
@@ -308,7 +328,7 @@ makes a new one. A running server keeps the old token until it restarts.
 
 Or stage the whole thing at once: `./scripts/bundle/dev.sh` (Linux/macOS) /
 `.\scripts\bundle\dev.ps1` (Windows). The server prints every connection attempt,
-so you can see immediately whether Neuro, the agent and the dashboard are up.
+so you can see immediately whether Neuro, the client and the dashboard are up.
 
 ## Usage
 
@@ -495,12 +515,14 @@ desktop/
 │   ├── neuro-integration/     # Go server: Neuro API, permissions, audit, dashboard API,
 │   │                          #   relay host, MCP bridge, signed catalog, game interface
 │   │   └── third_party/neuro-integration-sdk/   # the Go SDK port (replaced in go.mod)
+│   ├── neuro-dashboard/       # Go dashboard program: serves the page, forwards /api and /health
+│   ├── neuro-client/          # entry point for the PyInstaller build of the client
 │   └── nd-vision-server/      # optional Python vision service (NEURO_VISION_URL)
-├── backend/python/            # Python agent (controller/) and its tests
+├── backend/python/            # Python client/agent (controller/) and its tests
 ├── catalog/                   # signed extension index, publisher keys, game profiles
 ├── config/                    # example permission policy and integration config
 ├── frontend/                  # TypeScript dashboard, served by the server at /ui/
-├── scripts/                   # build and bundle scripts (dev, prod)
+├── scripts/                   # build and bundle scripts (dev, prod), build-client (PyInstaller)
 └── tools/                     # CI checks, fake executor, Ollama test client
 docs/                          # architecture, safety, capabilities, relay, deployment
 ```
@@ -510,7 +532,7 @@ docs/                          # architecture, safety, capabilities, relay, depl
 Paths below are relative to `desktop/`.
 
 ```bash
-# 1. Build the server and the dashboard (Windows: .\scripts\build-all.ps1)
+# 1. Build the server, the dashboard program and the dashboard page (Windows: .\scripts\build-all.ps1)
 make all
 
 # 2. Run in development mode: a -tags neurodev build, set up, then started
@@ -518,11 +540,13 @@ make all
 
 # 3. Run tests. CI runs these too, plus the repository checks.
 (cd apps/neuro-integration && go test -race -count=1 ./... && go test -race -count=1 -tags neurodev ./...)   # the second run covers the dev-only unsigned-extension switch
-python3 -m unittest discover backend/python/tests -t backend/python   # agent tests
+python3 -m unittest discover backend/python/tests -t backend/python   # client (agent) tests
+(cd apps/neuro-dashboard && go test -count=1 ./...)                     # dashboard program tests
 python3 tools/ci/repo_checks.py    # repository checks
 
-# 4. Build the release bundle (no -tags neurodev)
+# 4. Build the release bundle (no -tags neurodev). It also tries to build neuro-client
 ./scripts/bundle/prod.sh           # Windows: .\scripts\bundle\prod.ps1
+./scripts/build-client.sh          # neuro-client alone (Windows: .\scripts\build-client.ps1)
 ```
 
 ### Adding New Actions

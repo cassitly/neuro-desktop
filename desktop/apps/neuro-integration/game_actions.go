@@ -941,15 +941,18 @@ func (n *NDIntegration) buildGameObservation(vision bool, prompt string) (string
 		return "", err
 	}
 
-	screenshotPath, _ := status["screenshot_path"].(string)
+	shot, hasShot, shotErr := screenshotPNG(status)
+	if shotErr != nil {
+		log.Printf("Screenshot skipped: %v", shotErr)
+	}
 	summary := ""
 
 	visionURL := visionServerURL()
-	if vision && visionURL != "" && strings.TrimSpace(screenshotPath) != "" {
+	if vision && visionURL != "" && hasShot {
 		if prompt == "" {
 			prompt = "Describe what is happening in this game screenshot for an AI that is playing it. Mention the player's situation, the HUD, and anything urgent in one or two sentences."
 		}
-		captured, visionErr := summarizeWithVisionServer(visionURL, screenshotPath, prompt)
+		captured, visionErr := summarizeWithVisionServer(visionURL, shot, prompt)
 		if visionErr != nil {
 			log.Printf("Vision summarise failed: %v", visionErr)
 		} else {
@@ -965,8 +968,8 @@ func (n *NDIntegration) buildGameObservation(vision bool, prompt string) (string
 	if activeWindow, ok := status["active_window"].(string); ok && strings.TrimSpace(activeWindow) != "" {
 		lines = append(lines, fmt.Sprintf("- Active window: %s", activeWindow))
 	}
-	if strings.TrimSpace(screenshotPath) != "" {
-		lines = append(lines, fmt.Sprintf("- Screenshot: %s", screenshotPath))
+	if hasShot {
+		lines = append(lines, fmt.Sprintf("- Screenshot: captured (PNG, %d KB)", len(shot)/1024))
 	}
 	if summary != "" {
 		lines = append(lines, fmt.Sprintf("- Vision summary: %s", summary))

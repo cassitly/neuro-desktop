@@ -48,7 +48,8 @@ The bridge probes it to show the vision state on the dashboard.
 
 `POST /describe` takes a JSON object with either `image_base64` (a strictly decoded
 base64 image) or `image_path` (only inside `NEURO_VISION_ROOT`), plus an optional
-`prompt` (up to 2000 characters) and optional `metadata`. It returns
+`prompt` (up to 2000 characters) and optional `metadata`. The Neuro server always sends
+`image_base64`: it never sends a path. It returns
 `{"ok": true, "summary": …, "backend": …, "format": …, "width": …, "height": …, "text": …, "warnings": […]}`.
 
 Limits: 12 MiB per request body, 8 MiB per image, 2000 characters per prompt.

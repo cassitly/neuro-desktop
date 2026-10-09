@@ -6,6 +6,8 @@
 # Stages dist\dev and runs the server (dashboard at http://127.0.0.1:8300/ui/).
 # Start the agent separately on the PC Neuro should control:
 #   cd dist\dev\agent ; python -m controller.agent --bridge 127.0.0.1:9876
+# The dashboard program (optional, for split setups) is dist\dev\neuro-dashboard.exe.
+# Not verified on Windows from the development environment: see docs/PRODUCTION_TODO.md.
 # ============================================================
 $ErrorActionPreference = 'Stop'
 
@@ -32,6 +34,18 @@ try {
         Pop-Location
     }
     Copy-Item "apps/neuro-integration/dist/$Server" "$Dist/$Server" -Force
+
+    Write-Host 'Building the dashboard program (apps/neuro-dashboard)...'
+    Push-Location 'apps/neuro-dashboard'
+    try {
+        New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
+        & go build -o 'dist/neuro-dashboard.exe' .
+        if ($LASTEXITCODE -ne 0) { throw 'go build (neuro-dashboard) failed' }
+    }
+    finally {
+        Pop-Location
+    }
+    Copy-Item 'apps/neuro-dashboard/dist/neuro-dashboard.exe' "$Dist/neuro-dashboard.exe" -Force
 
     Write-Host 'Building the dashboard client...'
     Push-Location 'frontend'

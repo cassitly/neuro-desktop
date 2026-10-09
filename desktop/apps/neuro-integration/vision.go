@@ -15,8 +15,9 @@ import (
 )
 
 type visionRequest struct {
-	ImagePath   string                 `json:"image_path"`
-	ImageBase64 string                 `json:"image_base64,omitempty"`
+	// The image always travels as base64. The server never sends the vision
+	// server a path, because the screenshot may come from another machine.
+	ImageBase64 string                 `json:"image_base64"`
 	Prompt      string                 `json:"prompt"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 }
@@ -135,23 +136,48 @@ func probeVisionServer(force bool) visionStatus {
 	return status
 }
 
-func summarizeWithVisionServer(serverURL string, screenshotPath string, prompt string) (string, error) {
-	fileBytes, err := os.ReadFile(screenshotPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read screenshot: %w", err)
-	}
+// pngSignature is the first eight bytes of every PNG file.
+var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 
-	encodedImage := ""
-	if len(fileBytes) <= maxVisionImageBytes {
-		encodedImage = base64.StdEncoding.EncodeToString(fileBytes)
+// screenshotPNG returns the screenshot that a client sent with its status reply.
+// The client sends PNG bytes and never a path. A screenshot_path field from an
+// older client is ignored, so the server never opens a file that a client names.
+// ok is false when there is no screenshot.
+func screenshotPNG(status map[string]interface{}) (data []byte, ok bool, err error) {
+	encoded, _ := status["screenshot_png_b64"].(string)
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return nil, false, nil
 	}
+	data, err = base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, false, fmt.Errorf("the screenshot is not valid base64: %w", err)
+	}
+	if len(data) > maxVisionImageBytes {
+		return nil, false, fmt.Errorf("the screenshot is %d bytes, over the %d byte limit", len(data), maxVisionImageBytes)
+	}
+	if !bytes.HasPrefix(data, pngSignature) {
+		return nil, false, fmt.Errorf("the screenshot is not a PNG")
+	}
+	return data, true, nil
+}
+
+// summarizeWithVisionServer sends PNG bytes to the vision server and returns its
+// summary. The caller gets the bytes from screenshotPNG.
+func summarizeWithVisionServer(serverURL string, png []byte, prompt string) (string, error) {
+	if len(png) == 0 {
+		return "", fmt.Errorf("there is no screenshot to summarize")
+	}
+	if len(png) > maxVisionImageBytes {
+		return "", fmt.Errorf("the screenshot is %d bytes; the vision server takes at most %d", len(png), maxVisionImageBytes)
+	}
+	encodedImage := base64.StdEncoding.EncodeToString(png)
 
 	if strings.TrimSpace(prompt) == "" {
 		prompt = "Summarize what is happening on this desktop for Neuro. Keep it concise."
 	}
 
 	requestPayload := visionRequest{
-		ImagePath:   screenshotPath,
 		ImageBase64: encodedImage,
 		Prompt:      prompt,
 		Metadata: map[string]interface{}{

@@ -11,7 +11,9 @@ Read it before you give Neuro a new capability, and before you open a port.
 | Policy | `permissions.go`, `permission_requests.go`, `admin_permissions.go` | scopes (on, requestable), allow and deny lists, approvals, and the requests Neuro files |
 | Rate limits | `ratelimit.go` | a sliding window per scope, shared by Neuro and by watchers |
 | Shell firewall | `shellfirewall.go` (server) and `controller/shell.py` (agent) | allowlist, dangerous patterns, timeouts |
-| Executor hub | `executor_hub.go` | a token for every agent, and no listening beyond loopback without one. The link is plain TCP for now (section 6) |
+| Executor hub | `executor_hub.go` | a token for every agent, and no listening beyond loopback without one. Frame size limits (section 6). The link is plain TCP for now (section 6) |
+| Screenshots | `vision.go` (`screenshotPNG`), `controller/desktop.py` | the screenshot arrives as PNG bytes in the reply. The server checks the signature, the base64 and the size, and never opens a path that the client names |
+| Dashboard program | `desktop/apps/neuro-dashboard` | forwards only `/api/` and `/health`, adds no token, holds no secret. Its tests are in `dashboard_test.go` |
 | Dashboard | `admin_server.go`, `dashboard_token.go`, `setup.go` | every `/api` route needs the dashboard token that `setup` makes, with no exception for loopback |
 | Setup | `setup.go`, `dashboard_token.go`, `relay_host.go` | one relay token file for both sides; the dashboard token kept only as a SHA-256 hash, mode 0600 |
 | Relay | `relay_host.go` (host), `relay.go` (client, and the gates on watcher commands) | a token, browsers refused, frame limits |
@@ -103,18 +105,29 @@ controller (so the executor is not defenceless if it is driven directly).
   a browser, or a proxy on this machine needs the token too. A server with no token
   answers `503` and says to run `setup`. A wrong token gets `401`. The shell page is
   served without a token and with `Cache-Control: no-store`, because it holds no secret.
+- **Dashboard program.** `neuro-dashboard` listens on `127.0.0.1:8310` by default and
+  forwards only `/api/` and `/health` to the server. It adds no token and keeps the
+  caller's `X-ND-Token` or Bearer header, so the server makes the decision: a wrong or
+  missing token gets the server's `401`, and a server that is down gets a `502` with a
+  JSON reason. The shell is served with `Cache-Control: no-store`. A non-loopback listen
+  address or a plain-HTTP server on another machine prints a warning at start-up.
 - **Executor hub.** With `NEURO_EXECUTOR_TOKEN` set, every agent must present it. Without
   one, the hub listens on loopback only. It refuses to start on any other address and
   says why. Before this rule, a hub with no token accepted any client as the executor,
   and that client received Neuro's commands. The link is plain TCP, so the token and the
   commands can be read on the wire. On an untrusted network, tunnel the port over SSH.
   TLS with a pinned certificate is an open item in `docs/PRODUCTION_TODO.md`.
+  Frames are size-limited: the first frame (the hello, read before the token is
+  checked) at 64 KiB, and every later frame at 8 MiB. A frame over its limit closes the
+  connection, so a peer that never sends a newline cannot make the server buffer
+  without bound.
 - **Relay host.** Loopback by default. It refuses any request with an `Origin` header
   (so a web page cannot connect), refuses binary frames, refuses the upstream sample token
   and any token under 16 characters, and limits each connection's frame rate. Anything
   that holds the token can register, so keep the token secret.
 - **Vision server.** Loopback by default. Binding elsewhere needs `NEURO_VISION_TOKEN`. It
   reads image files only inside `NEURO_VISION_ROOT`, and never opens a path without one.
+  The Neuro server sends it image bytes only (`image_base64`), never a path.
 - **MCP servers.** Child processes that the bridge starts only after Vedal enables them,
   and only from the signed catalog. A child gets a small base environment and only the
   variables its catalog entry lists.
@@ -159,6 +172,8 @@ go test -count=1 -run 'ExecutorHub' -v ./                     # the hub's token 
 go test -count=1 -run 'WeakModel|EscapeHatch|ExamplePolicy' -v ./   # refusals and the escape hatch
 go test -count=1 -run 'Setup|DashboardCredential|RelayClientToken|Admin' -v ./   # setup, the dashboard token, and the API guard
 go test -count=1 -tags neurodev -run 'UnsignedEscapeHatch' -v ./     # the dev-only unsigned switch, in a dev build
+go test -count=1 -run 'ReadExecutorLine|ExecutorHubDrops|ExecutorHubAccepts|Screenshot' -v ./   # frame limits and screenshot bytes
+cd ../neuro-dashboard && go test -count=1 -v ./ && cd ../neuro-integration   # the dashboard program's proxy rules
 python3 ../../tools/ci/repo_checks.py                         # the repository checks (run from this folder)
 ```
 

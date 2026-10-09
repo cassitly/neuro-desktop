@@ -2,10 +2,14 @@
 # Neuro Desktop launcher (bundled). Installed as start.sh.
 #
 # Starts the server, which serves the dashboard at http://127.0.0.1:8300/ui/ and
-# talks to Neuro, and starts the local agent unless this is a split-machine
-# setup. Split machine:
+# talks to Neuro, and starts the agent on this PC unless this is a split-machine
+# setup. The agent is neuro-client/ when the bundle has it, else the Python agent
+# in agent/ (needs python3 with agent/requirements.txt installed).
+#
+# Split machine (see README.txt):
 #   server:  NEURO_NO_AGENT=1 ./start.sh --executor-listen 0.0.0.0:9876
-#   agent:   cd agent && python3 -m controller.agent --bridge <server-ip>:9876
+#   the PC Neuro controls: copy the neuro-client folder there and run
+#     ./neuro-client --bridge <server-ip>:9876 --token <executor token>
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -30,14 +34,27 @@ fi
 
 echo "Dashboard: http://127.0.0.1:8300/ui/ (sign in with the dashboard token)"
 
-if [[ "${NEURO_NO_AGENT:-0}" != "1" ]] && command -v python3 >/dev/null 2>&1; then
-  python3 -m controller.agent --bridge "${NEURO_AGENT_BRIDGE:-127.0.0.1:9876}" &
+# The agent on this PC. neuro-client needs no Python install, so it is preferred.
+AGENT_BIN="$PWD/neuro-client/neuro-client"
+AGENT_CMD=()
+if [[ -x "$AGENT_BIN" ]]; then
+  AGENT_CMD=("$AGENT_BIN")
+elif command -v python3 >/dev/null 2>&1; then
+  AGENT_CMD=(python3 -m controller.agent)
+fi
+
+if [[ "${NEURO_NO_AGENT:-0}" != "1" && ${#AGENT_CMD[@]} -gt 0 ]]; then
+  "${AGENT_CMD[@]}" --bridge "${NEURO_AGENT_BRIDGE:-127.0.0.1:9876}" &
   AGENT_PID=$!
   # The agent must not outlive the server, or the next start finds the port busy.
   trap 'kill "$AGENT_PID" 2>/dev/null || true' EXIT
 else
   echo "Agent not started here. On the PC Neuro should control:"
-  echo "  cd agent && python3 -m controller.agent --bridge <server-ip>:9876"
+  echo "  copy neuro-client/ there, then run: ./neuro-client --bridge <server-ip>:9876 --token <executor token>"
+  echo "  (no neuro-client in this bundle: cd agent && python3 -m controller.agent --bridge <server-ip>:9876)"
 fi
 
-exec "$SERVER_BIN" "$@"
+# Not exec: the EXIT trap above must still run when the server stops.
+status=0
+"$SERVER_BIN" "$@" || status=$?
+exit "$status"

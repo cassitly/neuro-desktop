@@ -32,6 +32,7 @@ on this machine allows.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import socket
@@ -45,7 +46,9 @@ from .gui_stub import describe_headless_reason, is_headless
 from .lib import initialize_driver
 
 PROTOCOL_VERSION = "2"
-MAX_LINE_BYTES = 8 * 1024 * 1024  # screenshots arrive as paths, not payloads
+# One JSON line per message. A screenshot travels inside one line as base64 PNG,
+# scaled down by desktop.capture_screen_png to a few MB at most.
+MAX_LINE_BYTES = 8 * 1024 * 1024
 
 # Commands this agent executes. Anything else in the bridge's command list is
 # handled inside the bridge (desktop shell intents, catalog, extensions, games).
@@ -151,12 +154,13 @@ class Agent:
         screen = self._safe(self.monitor.get_screen_size)
         position = self._safe(self.monitor.get_current_mouse_position)
 
-        screenshot_path = None
+        # The screenshot is returned as bytes. The server may be on another PC, and
+        # it must never be asked to open a file that this machine names.
+        screenshot_png_b64 = None
         if params.get("capture_screenshot") and not self.headless:
-            target = params.get("screenshot_path") or os.path.join(
-                os.environ.get("TMPDIR", "/tmp"), f"nd-capture-{int(time.time())}.png"
-            )
-            screenshot_path = self._safe(lambda: self.monitor.capture_screen_to_file(target))
+            png = self._safe(self.monitor.capture_screen_png)
+            if png:
+                screenshot_png_b64 = base64.b64encode(png).decode("ascii")
 
         return {
             "status": "running",
@@ -172,7 +176,7 @@ class Agent:
             "recent_actions": actions[-max_actions:] if actions else [],
             "screen": {"width": screen[0], "height": screen[1]} if screen else None,
             "mouse_position": {"x": position[0], "y": position[1]} if position else None,
-            "screenshot_path": screenshot_path,
+            "screenshot_png_b64": screenshot_png_b64,
         }
 
     # ------------------------------------------------------------------

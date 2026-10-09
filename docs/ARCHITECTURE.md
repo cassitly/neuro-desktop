@@ -1,8 +1,17 @@
 # Architecture
 
-Neuro Desktop lets Neuro-sama use a desktop. It is split into a **server** that
-receives Neuro's commands and applies Vedal's policy, an **agent** that performs
-them on the machine, and a **dashboard** that Vedal uses to control the server.
+Neuro Desktop lets Neuro-sama use a desktop. It runs as **three programs** and a web
+page:
+
+* the **server** (`neuro-integration`) receives Neuro's commands, applies Vedal's policy,
+  and does the heavy work (the dashboard API, the vision client, the relay);
+* the **dashboard program** (`neuro-dashboard`) serves the dashboard page and forwards
+  its API to the server. It is optional: the server serves the page too;
+* the **client** (`neuro-client`) runs on the PC Neuro controls. It carries out the
+  commands the server sends, and nothing else.
+
+The split exists so that the PC Neuro controls does not need to be powerful. The heavy
+work runs on the server, and that PC only needs the client.
 
 ```
                  Neuro API (websocket, Neuro-sama's backend)
@@ -10,21 +19,22 @@ them on the machine, and a **dashboard** that Vedal uses to control the server.
                                   ▼
  ┌─────────────────────── SERVER (Go, neuro-integration) ───────────────────────┐
  │ Neuro client (vendored SDK port)   policy · scopes · rate limits · audit     │
- │ stop switch: pause / kill file     executor hub ◀── agents (TCP, token)     │
- │ dashboard API + UI at /ui/         file IPC fallback (co-located agent)     │
- │ relay client ──▶ Neuro Relay (other integrations share the connection)      │
- │ relay host    (`neuro-integration relay`, optional, separate listener)       │
+ │ stop switch: pause / kill file     executor hub ◀── clients (TCP, token)    │
+ │ dashboard API + UI at /ui/         file IPC fallback (co-located client)    │
+ │ relay client ──▶ Neuro Relay       relay host (`relay` subcommand, optional) │
  │ MCP bridge ──▶ MCP servers Vedal enabled (child processes)                   │
  │ catalog (signed) · game profiles · extension state · vision client           │
  └──────────────────────────────────────────────────────────────────────────────┘
-          │ commands                                  ▲ results, telemetry
-          ▼                                           │
- ┌──────────── AGENT (Python, desktop/backend/python/controller) ────────────┐
- │ the only part that touches the machine: input, screen, shell, scripts      │
- │ runs on the desktop PC, or on another PC (split-machine); CLI-only is fine  │
- └────────────────────────────────────────────────────────────────────────────┘
+      ▲ dashboard API (token)                  │ commands        ▲ results, telemetry
+      │                                        ▼                 │
+ ┌──── DASHBOARD PROGRAM (Go, neuro-dashboard) ────┐   ┌──── CLIENT (neuro-client) ────────┐
+ │ serves the dashboard page; forwards /api and    │   │ on the PC Neuro controls: input,  │
+ │ /health only. No secret, no policy, adds no     │   │ screen, shell, scripts. No UI,    │
+ │ token of its own. Optional.                     │   │ vision or policy. Python agent,   │
+ └─────────────────────────────────────────────────┘   │ packaged with PyInstaller.        │
+                                                       └───────────────────────────────────┘
 
- DASHBOARD (TypeScript + Vite, served by the server at /ui/) — Vedal's client:
+ DASHBOARD PAGE (TypeScript + Vite) — Vedal's client:
  Extensions · Games · Permissions · Status (Settings)
 ```
 
@@ -33,8 +43,9 @@ them on the machine, and a **dashboard** that Vedal uses to control the server.
 | Component | Where | Language | Role |
 | --- | --- | --- | --- |
 | Server | `desktop/apps/neuro-integration` | Go | Everything Neuro can reach, and every gate between Neuro and the machine |
-| Agent | `desktop/backend/python/controller` | Python (stdlib-first) | Executes commands on the machine; reconnects on its own |
-| Dashboard | `desktop/frontend` | TypeScript | Vedal's controls, served by the server |
+| Client (`neuro-client`) | `desktop/backend/python/controller`, entry `desktop/apps/neuro-client`, packaged by `desktop/scripts/build-client.sh` | Python (stdlib-first), PyInstaller | Executes commands on the PC Neuro controls; reconnects on its own. Also run from source as `python3 -m controller.agent` |
+| Dashboard program | `desktop/apps/neuro-dashboard` | Go (stdlib only) | Serves the dashboard page and forwards `/api` and `/health` to the server. Optional |
+| Dashboard page | `desktop/frontend` | TypeScript | Vedal's controls. The server serves it at `/ui/`; the dashboard program serves it too |
 | Relay host | the server binary, `relay` subcommand | Go | Neuro Relay socket for integrations and watchers |
 | Vision | `desktop/apps/nd-vision-server` | Python (stdlib HTTP) | Optional screen description for `game_observe` |
 | MCP servers | catalog-installed | any | Optional tools, started only after Vedal enables them |
@@ -71,6 +82,18 @@ Watcher commands from the relay take the same path, with the same gates
 
 ## Decisions
 
+* **Three programs, split at the process boundary.** The server and the dashboard
+  program are Go; the client is the Python agent packaged with PyInstaller as
+  `neuro-client`. The split puts the power on the server, not on the PC Neuro
+  controls. The alternative, a full rewrite of the client into Go now, was considered
+  and not done. The input and capture code is platform-specific, and it cannot be run
+  on Windows or macOS from the development environment. Rewriting it now would replace
+  code that is in use with code that nobody has run. A Go client is the documented next
+  step (`docs/PRODUCTION_TODO.md`). This decision can be revisited.
+* **Screenshots travel as bytes, never as paths.** The server may run on another PC.
+  The old design had the server open the path that the agent named, which was an
+  arbitrary-file-read risk. The status reply now carries `screenshot_png_b64`, and the
+  server checks the bytes before use. See `docs/EXECUTOR_PROTOCOL.md`.
 * **Two languages on the machine: Go and Python**, plus the TypeScript dashboard.
   Rust and C++ were removed from the shipped path, and `tools/ci/repo_checks.py`
   fails if they come back. The history is in `CHANGELOG.md`.
@@ -81,7 +104,8 @@ Watcher commands from the relay take the same path, with the same gates
   relay that the bundle did not ship keep their tokens in step.
 * **Development builds are separate.** The unsigned-extension switch
   (`NEURO_EXTENSIONS_ALLOW_UNSIGNED`) compiles in only with `-tags neurodev`, which the
-  development bundle uses. A release build has no way to turn it on.
+  development bundle uses. A release build has no way to turn it on, and it logs once
+  that the variable is ignored.
 * **The server does not start other programs.** It does not start a relay, and it
   does not supervise the agent. Operators run each process (or the bundle's
   `start.sh` / `start.bat`) and point the server at the others.
@@ -100,8 +124,12 @@ Watcher commands from the relay take the same path, with the same gates
 
 ## Security boundaries
 
-* Agent connections require the executor token (`NEURO_EXECUTOR_TOKEN`). The link is
+* Client connections require the executor token (`NEURO_EXECUTOR_TOKEN`). The link is
   plain TCP until the pinned-TLS work in `docs/PRODUCTION_TODO.md` lands.
+* The dashboard program adds no token and holds no secret. It forwards the caller's
+  `X-ND-Token` (or `Authorization: Bearer`) to the server unchanged, and the server
+  decides. It forwards only `/api/` and `/health`.
+* The server reads no file that a client names (see screenshots, above).
 * Every dashboard API call needs the dashboard token that `setup` makes. There is no
   exception for loopback. The server keeps only the token's SHA-256 hash.
 * The relay refuses browsers, binary frames, and weak tokens. Its token comes from the
@@ -116,11 +144,13 @@ Watcher commands from the relay take the same path, with the same gates
 | Server | `go test -race ./...` | CI on Linux, Windows and macOS (race detector on Linux) |
 | Server, development build | `go test -race -tags neurodev ./...` | CI on Linux |
 | Relay, MCP, vision, catalog, eval | see `.github/workflows/ci.yml` | their own CI jobs |
-| Agent | `python3 -m unittest discover backend/python/tests` | CI, with no display |
+| Agent (client) | `python3 -m unittest discover backend/python/tests` | CI, with no display |
+| Dashboard program | `go vet` and `go test ./...` in `desktop/apps/neuro-dashboard` | CI, all three systems |
+| Client build | `desktop/scripts/build-client.sh`, then `neuro-client --help` | CI on Linux (`client-build` job) |
 | Repository | `python3 desktop/tools/ci/repo_checks.py` | CI, first job |
 | Dashboard | `npm run build` in `desktop/frontend` | CI |
 | End to end | the `agent-e2e` job starts the server and the agent | CI |
 
-What is **not** verified here: the agent on a real Windows or macOS desktop
-(input, screen capture), and the dashboard visually. CI builds the server for
-those systems but cannot exercise the desktop.
+What is **not** verified here: the client on a real Windows or macOS desktop
+(input, screen capture), the PyInstaller build on Windows and macOS, and the dashboard
+page visually. CI builds the server for those systems but cannot exercise the desktop.

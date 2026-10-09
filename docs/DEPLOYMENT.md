@@ -4,17 +4,25 @@ This describes how to build, bundle, and run Neuro Desktop. It replaces the olde
 guide, which described the Rust executor and the C++ supervisor; both were removed
 (see `CHANGELOG.md`).
 
-There are two processes: the **server** (`neuro-integration`, Go), which is the PC
-Neuro uses and which talks to Neuro's API, and the **agent** (Python), which runs
-the commands on the desktop. They can run on one machine or on two. The dashboard
-is served by the server.
+There are three programs, and they can run on one machine or on three:
+
+* the **server** (`neuro-integration`, Go). It talks to Neuro's API, applies the policy,
+  does the vision work, and serves the dashboard at `/ui/`. Give it the spare power;
+* the **dashboard program** (`neuro-dashboard`, Go). It serves the same dashboard page
+  from another program and forwards its API to the server. It is optional;
+* the **client** (`neuro-client`, the Python agent packaged as one executable). It runs
+  on the PC Neuro controls, and it carries out the server's commands. It needs no
+  Python on that PC when it is built as a program.
+
+The reasons for the split are in `docs/ARCHITECTURE.md`.
 
 ## Requirements
 
 | What | Version | Needed for |
 | --- | --- | --- |
-| Go | 1.22 or newer (`go.mod` says 1.22) | the server |
-| Python | 3.12 is what CI runs; other 3.x versions are untested | the agent |
+| Go | 1.22 or newer (`go.mod` says 1.22) | the server and the dashboard program |
+| Python | 3.12 is what CI runs; other 3.x versions are untested | running the client from source, and building `neuro-client` |
+| PyInstaller | 6.22.3 (pinned in `scripts/build-client.sh`) | building `neuro-client` only |
 | Node.js | 22 is what CI runs | building the dashboard only |
 | Git | any | cloning |
 
@@ -33,21 +41,25 @@ From the repository root:
 cd desktop
 # the server
 (cd apps/neuro-integration && go build -o neuro-integration .)
-# the dashboard
+# the dashboard program (optional)
+(cd apps/neuro-dashboard && go build -o neuro-dashboard .)
+# the dashboard page
 (cd frontend && npm ci && npm run build)
-# the agent: nothing to build; it is Python
+# the client, for the PC Neuro controls: one executable (see "The client" below)
+./scripts/build-client.sh
 ```
 
-On Windows, use `go build -o neuro-integration.exe .` in `apps\neuro-integration`.
-`scripts/build-go.ps1` does the Go step for all three platforms.
+On Windows, use `go build -o neuro-integration.exe .` in `apps\neuro-integration`, and
+`.\scripts\build-client.ps1` for the client. `scripts/build-go.ps1` does the server for
+all three platforms.
 
 Before the first start, run `./neuro-integration setup` once (see Run). It creates the
 two secrets that the server, the relay host, and the dashboard share.
 
 ## Bundle
 
-The bundle scripts put the server, the dashboard, the agent, the catalog, and the
-policy into one folder:
+The bundle scripts put the server, the dashboard program, the client, the catalog, and
+the policy into one folder:
 
 | Platform | Development bundle | Release bundle |
 | --- | --- | --- |
@@ -59,9 +71,13 @@ The output is `desktop/dist/neuro-desktop/`:
 ```
 neuro-desktop/
 ├── neuro-integration(.exe)     the server
+├── neuro-dashboard(.exe)       the dashboard program (optional to run)
+├── neuro-client/               the client for the PC Neuro controls (release bundles,
+│                               when it could be built; see "The client")
+├── agent/                      the Python agent (controller/, requirements): the fallback
+│                               on this PC when neuro-client/ is absent
 ├── start.sh / start.bat        starts the server and the local agent
-├── agent/                      the Python agent (controller/, requirements)
-├── frontend/                   the dashboard
+├── frontend/                   the dashboard page
 ├── catalog/                    the signed extension index and publisher keys
 ├── config/                     example configuration
 ├── permissions.json            the policy (copied from the example; edit it)
@@ -69,7 +85,11 @@ neuro-desktop/
 └── README.txt
 ```
 
-Set `NEURO_BUNDLE_SKIP_VENV=1` to skip creating a Python virtual environment.
+`NEURO_BUNDLE_SKIP_VENV=1` skips creating a Python virtual environment for `agent/`.
+`NEURO_BUNDLE_SKIP_CLIENT=1` skips building `neuro-client/`. A release bundle tries to
+build it; when that fails (on Linux it needs the Python headers and a shared `libpython`,
+see below), the bundle is still made and the launcher uses `agent/`. Read the
+`!` lines in the build output.
 
 **Edit `permissions.json` before you start.** It is copied from the example, which is
 safe by default: the shell, system, filesystem, and extensions scopes are off. Neuro
@@ -91,25 +111,72 @@ sign-in token, and the server keeps only its hash. Every later start runs the sa
 step, which keeps the existing tokens and checks that they agree. If the check fails,
 the launcher stops and prints the line to fix.
 
-This starts the server and the local agent. `NEURO_NO_AGENT=1` starts only the
-server, for a split-machine setup where the agent runs elsewhere.
+This starts the server and the local agent: `neuro-client/` when the bundle has it, else
+the Python agent in `agent/`. `NEURO_NO_AGENT=1` starts only the server, for a split-machine
+setup where the client runs elsewhere.
 
 Open the dashboard at `http://127.0.0.1:8300/ui/` and sign in with the dashboard token.
 
 ### Split machines
 
-Run the server on the machine that runs Neuro. Run the agent on the desktop it should
-control. The agent always dials the server, so the desktop needs no inbound port:
+Run the server on the machine that does the work. Run the client on the PC Neuro
+controls. Optionally, run the dashboard program on the PC you sit at. The client always
+dials the server, so the PC it controls needs no inbound port:
 
 ```bash
-# on the desktop PC
+# on the PC Neuro controls: the built program, which needs no Python
+./neuro-client --bridge <server-ip>:9876 --token "$NEURO_EXECUTOR_TOKEN"
+# or, from source (needs Python and the requirements):
 python3 -m controller.agent --bridge <server-ip>:9876 --token "$NEURO_EXECUTOR_TOKEN"
 ```
 
-On the server, the hub must listen on an address the desktop can reach, for example
+On the server, the hub must listen on an address the client can reach, for example
 `NEURO_EXECUTOR_LISTEN=0.0.0.0:9876`, and `NEURO_EXECUTOR_TOKEN` must be set. The hub
 refuses to listen beyond loopback without a token, and it says why. Allow port 9876 from
-the desktop's address only.
+the client's address only. On the server's bundle, set `NEURO_NO_AGENT=1` so that
+`start.sh` does not start a client there.
+
+**The dashboard on another PC.** The server's admin port is on loopback by default, and
+it is plain HTTP. Forward it over SSH rather than opening it, then run the dashboard
+program against the forwarded port:
+
+```bash
+# on the PC you sit at
+ssh -L 8300:127.0.0.1:8300 user@<server-ip>          # keep this open
+./neuro-dashboard --server http://127.0.0.1:8300 --listen 127.0.0.1:8310
+# then open http://127.0.0.1:8310/ui/ and sign in with the dashboard token
+```
+
+The dashboard program adds no secret and no token of its own, so the sign-in is still the
+server's. It prints a warning when it listens beyond loopback or talks to a server over
+plain HTTP on another machine.
+
+### The client (`neuro-client`)
+
+The client is the Python agent, packaged with PyInstaller as one program for the OS it
+is built on. PyInstaller does not cross-compile: build the Windows client on Windows and
+the Linux client on Linux.
+
+```bash
+cd desktop
+./scripts/build-client.sh        # -> dist/neuro-client/neuro-client
+./dist/neuro-client/neuro-client --help
+```
+
+On Windows: `.\scripts\build-client.ps1` -> `dist\neuro-client\neuro-client.exe`.
+
+Copy the `neuro-client` folder to the PC Neuro controls, then run it with the server's
+address and the executor token. The program contains its own Python, so the PC needs no
+Python install. It holds no policy, no dashboard, and no vision, and it does only what
+the server sends.
+
+**Linux build prerequisites.** `pynput` depends on `evdev`, which has no prebuilt wheel,
+so pip builds it from source. That needs the Python development headers (`Python.h`). On
+Debian and Ubuntu, `sudo apt install python3-dev` installs them. PyInstaller also needs a
+Python built with a shared `libpython`, and a Python that was linked statically is
+refused ("Python shared library ... was not found"). The script prints this hint when the
+install fails. The development sandbox for this repository had neither, so the Linux
+client build is not verified end to end there (see the verification section below).
 
 **The executor link is not encrypted yet.** The token and every command cross the
 network as plain TCP. On an untrusted network, keep the hub on loopback and tunnel it:
@@ -138,7 +205,8 @@ ssh -L 8300:127.0.0.1:8300 user@server
 | Port | Process | Default address | Expose it? |
 | --- | --- | --- | --- |
 | 8300 | server: dashboard and admin API | `127.0.0.1:8300` (`NEURO_ADMIN_LISTEN`) | no; use SSH forwarding |
-| 9876 | server: executor hub, agents connect here | `127.0.0.1:9876` (`NEURO_EXECUTOR_LISTEN`) | only on a trusted LAN, with a token |
+| 8310 | dashboard program: the dashboard page and the forwarded API | `127.0.0.1:8310` (`NEURO_DASHBOARD_LISTEN`) | no; it is for your own PC |
+| 9876 | server: executor hub, clients connect here | `127.0.0.1:9876` (`NEURO_EXECUTOR_LISTEN`) | only on a trusted LAN, with a token |
 | 8765 | relay host: integrations and watchers | `127.0.0.1:8765` | only on loopback or a firewalled LAN |
 | 8766 | relay host: `/health` | `127.0.0.1:8766` | no |
 | 8610 | vision server | `127.0.0.1:8610` | no |
@@ -156,7 +224,8 @@ reach the machine from outside.
   are in `docs/RELAY.md`.
 - **Vision:** run `python3 -m nd_vision` from `desktop/apps/nd-vision-server` and set
   `NEURO_VISION_URL` and `NEURO_VISION_TOKEN` on the server. Details are in that
-  folder's README.
+  folder's README. The server sends each screenshot to it as image bytes, so the vision
+  service can run on a different machine from the client.
 
 The Extensions page shows whether each one is reachable.
 
@@ -193,6 +262,7 @@ Every environment variable the server reads is listed in `desktop/README.md`
 
 ```bash
 curl -s http://127.0.0.1:8300/health            # the server is up (the only public route)
+curl -s http://127.0.0.1:8310/health            # the dashboard program, if you run it: it forwards /health
 curl -s -H "X-ND-Token: <dashboard token>" http://127.0.0.1:8300/api/runtime   # bridge, relay, vision, and MCP state
 curl -s http://127.0.0.1:8766/health            # the relay host, if you run it
 curl -s http://127.0.0.1:8610/health            # the vision server, if you run it
@@ -218,12 +288,21 @@ run as a service on a headless machine, but that has not been tested here.
 ## What is verified here, and what is not
 
 Verified in CI: the server builds for Windows, macOS, and Linux; the server and agent
-test suites pass, including a run with `-tags neurodev`; the dashboard builds; the release
-bundle builds on Linux, and the dashboard is served from the bundle folder; the agent and
-server run end to end on Linux with no display; and the setup smoke test runs `setup`
-twice (the relay token and the dashboard token are created with mode 0600, the second run
-keeps both, and `setup --check` passes).
+test suites pass, including a run with `-tags neurodev`; the dashboard program's tests
+pass on all three systems; the dashboard page builds; the release bundle builds on Linux,
+and the server and the dashboard program serve it, with the dashboard refusing a request
+that has no token; the agent and server run end to end on Linux with no display; the
+setup smoke test runs `setup` twice (the relay token and the dashboard token are created
+with mode 0600, the second run keeps both, and `setup --check` passes); and the
+`client-build` job builds `neuro-client` on Linux and checks that it runs and reports a
+missing server.
 
-Not verified here: the bundle on a real Windows or macOS desktop, input and screen
-capture on a real desktop, and an installed (not built) release. Treat those as open
-until someone has run them.
+Verified in the development sandbox (not CI): the dashboard program against a running
+server (sign-in, 401 without a token, 200 with it, `/health`, `/admin` not forwarded, and
+the path traversal refused), and a client run from source that connected to the server's
+hub and was reported as connected through the API.
+
+Not verified: the bundle on a real Windows or macOS desktop, the client built on Windows
+or macOS (PyInstaller has not been run there), input and screen capture on a real
+desktop, and an installed (not built) release. Treat those as open until someone has run
+them.

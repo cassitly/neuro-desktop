@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Build everything the shipped product needs on Linux / macOS / Git Bash / WSL.
 #
-# The shipped product is two programs and a web page:
+# The shipped product is three programs and a web page:
 #   * the Go server (apps/neuro-integration) — talks to Neuro, enforces the
 #     permission policy, hosts the relay and the dashboard API;
+#   * the Go dashboard program (apps/neuro-dashboard) — serves the dashboard and
+#     forwards its API to the server (optional; for split setups);
 #   * the Python agent (backend/python/controller) — the only process that
-#     touches the machine Neuro controls (runs on the PC being controlled);
+#     touches the machine Neuro controls (runs on the PC being controlled;
+#     scripts/build-client.sh packages it as the neuro-client program);
 #   * the TypeScript dashboard (frontend), which the server serves at /ui/.
 #
 #   ./scripts/build-all.sh            # build + test
@@ -32,7 +35,7 @@ esac
 
 echo "=== neuro-desktop build ($OS_UNAME) ==="
 
-echo "[1/3] Server (apps/neuro-integration)"
+echo "[1/4] Server (apps/neuro-integration)"
 (
   cd apps/neuro-integration
   if [[ "$RUN_TESTS" == "1" ]]; then
@@ -44,7 +47,19 @@ echo "[1/3] Server (apps/neuro-integration)"
 )
 echo "      -> apps/neuro-integration/dist/neuro-integration${BIN_EXT}"
 
-echo "[2/3] Dashboard (frontend)"
+echo "[2/4] Dashboard program (apps/neuro-dashboard)"
+(
+  cd apps/neuro-dashboard
+  if [[ "$RUN_TESTS" == "1" ]]; then
+    go vet ./...
+    go test -count=1 ./...
+  fi
+  mkdir -p dist
+  go build -o "dist/neuro-dashboard${BIN_EXT}" .
+)
+echo "      -> apps/neuro-dashboard/dist/neuro-dashboard${BIN_EXT}"
+
+echo "[3/4] Dashboard (frontend)"
 (
   cd frontend
   if [[ -f package-lock.json ]]; then
@@ -56,7 +71,7 @@ echo "[2/3] Dashboard (frontend)"
 )
 echo "      -> frontend/dist"
 
-echo "[3/3] Agent (backend/python/controller)"
+echo "[4/4] Agent (backend/python/controller)"
 (
   cd backend/python
   python3 -m compileall -q controller >/dev/null
@@ -71,4 +86,6 @@ echo "Build complete."
 echo "  Run from source:      ./scripts/bundle/dev.sh"
 echo "  Release bundle:       ./scripts/bundle/prod.sh"
 echo "  Server binary:        apps/neuro-integration/dist/neuro-integration${BIN_EXT}"
+echo "  Dashboard program:    apps/neuro-dashboard/dist/neuro-dashboard${BIN_EXT}"
+echo "  neuro-client (PC):    scripts/build-client.sh   (PyInstaller; build on the PC's OS)"
 echo "  Agent (on the PC):    python3 -m controller.agent --bridge <server>:9876   (cwd: backend/python)"

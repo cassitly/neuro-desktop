@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -342,12 +343,47 @@ func (h *ExecutorHub) acceptLoop(ln net.Listener) {
 	}
 }
 
+const (
+	// maxExecutorHelloBytes caps the first frame. It is read before the token is
+	// checked, so anyone who can reach the port can send it: keep it small.
+	maxExecutorHelloBytes = 64 << 10
+	// maxExecutorLineBytes caps every frame after the hello. A status reply can carry
+	// a base64 screenshot: the client caps the PNG at 3 MiB, about 4 MiB as base64.
+	maxExecutorLineBytes = 8 << 20
+)
+
+// errExecutorLineTooLong is returned when a frame passes its size limit. The
+// connection is closed afterwards, because the rest of the frame cannot be skipped.
+var errExecutorLineTooLong = errors.New("executor frame is over the size limit")
+
+// readExecutorLine reads one newline-terminated frame of at most limit bytes,
+// newline included. It stops reading as soon as the limit is passed, so a peer
+// that never sends a newline cannot make the hub buffer without bound.
+func readExecutorLine(r *bufio.Reader, limit int) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(line)+len(chunk) > limit {
+			return nil, errExecutorLineTooLong
+		}
+		line = append(line, chunk...)
+		switch {
+		case err == nil:
+			return line, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			return nil, err
+		}
+	}
+}
+
 func (h *ExecutorHub) handleConnection(conn net.Conn) {
 	remote := conn.RemoteAddr().String()
 
 	reader := bufio.NewReader(conn)
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	line, err := reader.ReadBytes('\n')
+	line, err := readExecutorLine(reader, maxExecutorHelloBytes)
 	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		log.Printf("Executor handshake read failed from %s: %v", remote, err)
@@ -489,7 +525,7 @@ func (c *executorConn) readLoop(h *ExecutorHub) {
 	}()
 
 	for {
-		line, err := c.reader.ReadBytes('\n')
+		line, err := readExecutorLine(c.reader, maxExecutorLineBytes)
 		if err != nil {
 			if err != io.EOF {
 				log.Printf("Executor %s read error: %v", c.remote, err)

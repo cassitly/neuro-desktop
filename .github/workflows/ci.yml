@@ -75,7 +75,7 @@ jobs:
         working-directory: desktop/apps/neuro-integration
         shell: bash
         run: |
-          unformatted="$(gofmt -l .)"
+          unformatted="$(gofmt -l . ../neuro-dashboard)"
           if [[ -n "$unformatted" ]]; then
             echo "Unformatted Go files:"
             echo "$unformatted"
@@ -93,6 +93,15 @@ jobs:
       - name: Go tests (neuro-integration)
         working-directory: desktop/apps/neuro-integration
         run: go test -count=1 ./...
+
+      # The dashboard is a separate program: a small stdlib-only module with its
+      # own tests (token pass-through, only /api and /health forwarded, no-store,
+      # 502 when the server is down).
+      - name: Go vet and tests (neuro-dashboard)
+        working-directory: desktop/apps/neuro-dashboard
+        run: |
+          go vet ./...
+          go test -count=1 ./...
 
       # The server has OS-specific branches (paths, platform keys, tray/shell
       # hints). Compiling for the three shipped platforms on every change is how
@@ -188,6 +197,10 @@ jobs:
   agent-e2e:
     name: Server + agent end to end
     runs-on: ubuntu-latest
+    env:
+      # The dashboard API needs a token. CI sets a fixed one: the server accepts
+      # NEURO_ADMIN_TOKEN on its own (no setup run needed), and the calls below send it.
+      NEURO_ADMIN_TOKEN: ci-dashboard-token-0123456789-abcdef
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -231,7 +244,7 @@ jobs:
           set -euo pipefail
           python -m controller.agent --bridge 127.0.0.1:9876 > /tmp/agent.log 2>&1 &
           for _ in $(seq 1 30); do
-            status="$(curl -fsS http://127.0.0.1:8399/api/status)"
+            status="$(curl -fsS -H "X-ND-Token: $NEURO_ADMIN_TOKEN" http://127.0.0.1:8399/api/status)"
             if echo "$status" | grep -q '"connected": *true'; then
               echo "$status" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['executor']['connected'] is True; print('executor connected, profile:', d['executor'].get('remote'))"
               exit 0
@@ -242,7 +255,7 @@ jobs:
 
       - name: The agent's telemetry is what the dashboard shows
         run: |
-          curl -fsS http://127.0.0.1:8399/api/actions | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['actions']), 'actions exposed')"
+          curl -fsS -H "X-ND-Token: $NEURO_ADMIN_TOKEN" http://127.0.0.1:8399/api/actions | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['actions']), 'actions exposed')"
 
       - name: Logs on failure
         if: failure()
@@ -323,7 +336,7 @@ jobs:
           cat /tmp/health.json
           grep -q '"ok":true' /tmp/health.json
           test "$(stat -c %a /tmp/relay-token-ci)" = "600"
-          grep -q "generated one" /tmp/relay.log
+          grep -q "generated a new relay token" /tmp/relay.log
 
       - name: Stop the relay
         if: always()
@@ -456,6 +469,8 @@ jobs:
   bundle:
     name: Release bundle (build, then serve the dashboard from it)
     runs-on: ubuntu-latest
+    env:
+      NEURO_ADMIN_TOKEN: ci-dashboard-token-0123456789-abcdef
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -477,6 +492,8 @@ jobs:
         working-directory: desktop
         env:
           NEURO_BUNDLE_SKIP_VENV: "1"
+          # neuro-client is built (and smoke-tested) by its own job below.
+          NEURO_BUNDLE_SKIP_CLIENT: "1"
         run: |
           set -euo pipefail
           (cd frontend && npm ci && npm run build)
@@ -487,7 +504,8 @@ jobs:
         run: |
           set -euo pipefail
           test -x neuro-integration
-          test -f start.sh && sh -n start.sh
+          test -x neuro-dashboard
+          test -f start.sh && bash -n start.sh
           test -f permissions.json
           test -f frontend/index.html
           test -f catalog/index.json && test -f catalog/publishers.json
@@ -501,30 +519,78 @@ jobs:
             NEURO_UI_DIR="$PWD/frontend" NEURO_PERMISSIONS_FILE="$PWD/permissions.json" \
             NEURO_AUDIT_LOG=/tmp/bundle-audit.log ./neuro-integration > /tmp/bundle-server.log 2>&1 &
           echo $! > /tmp/bundle-server.pid
+          # The split-machine dashboard program, pointed at that server.
+          ./neuro-dashboard --server http://127.0.0.1:8311 --listen 127.0.0.1:8312 > /tmp/bundle-dashboard.log 2>&1 &
+          echo $! > /tmp/bundle-dashboard.pid
           for i in $(seq 1 40); do
-            if curl -sf http://127.0.0.1:8311/ui/ -o /tmp/ui.html; then break; fi
+            if curl -sf http://127.0.0.1:8311/health -o /dev/null; then break; fi
+            sleep 0.25
+          done
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8312/ui/ -o /tmp/ui.html; then break; fi
             sleep 0.25
           done
           grep -q 'src="./assets/' /tmp/ui.html
-          curl -sf http://127.0.0.1:8311/api/runtime | grep -q '"state": "running"'
+          # The server's API answers with the token; the dashboard forwards it.
+          curl -sf -H "X-ND-Token: $NEURO_ADMIN_TOKEN" http://127.0.0.1:8311/api/runtime | grep -q '"state": "running"'
+          curl -sf -H "X-ND-Token: $NEURO_ADMIN_TOKEN" http://127.0.0.1:8312/api/runtime | grep -q '"state": "running"'
+          # Without the token the dashboard must refuse, not answer.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8312/api/runtime)" = "401"
 
-      - name: Stop the server
+      - name: Stop the server and the dashboard
         if: always()
         run: |
-          if [ -f /tmp/bundle-server.pid ]; then kill "$(cat /tmp/bundle-server.pid)" || true; fi
+          for f in /tmp/bundle-dashboard.pid /tmp/bundle-server.pid; do
+            if [ -f "$f" ]; then kill "$(cat "$f")" || true; fi
+          done
 
-      - name: Server log on failure
+      - name: Server and dashboard logs on failure
         if: failure()
-        run: cat /tmp/bundle-server.log || true
+        run: cat /tmp/bundle-server.log /tmp/bundle-dashboard.log 2>/dev/null || true
 
   # ---------------------------------------------------------------
   # Release gate: one check that branch protection can require. It fails if any
   # other job did not succeed, including jobs that were skipped.
   # ---------------------------------------------------------------
+  # ---------------------------------------------------------------
+  # neuro-client, the program for the PC Neuro controls: the Python agent packaged
+  # with PyInstaller. Built on Linux here. The Windows build is not run by CI yet
+  # (docs/PRODUCTION_TODO.md).
+  # ---------------------------------------------------------------
+  client-build:
+    name: neuro-client (PyInstaller) builds and runs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build neuro-client
+        working-directory: desktop
+        run: ./scripts/build-client.sh
+
+      - name: The packaged program starts and reports a missing server
+        working-directory: desktop/dist/neuro-client
+        run: |
+          set -euo pipefail
+          ./neuro-client --help | grep -q -- '--bridge'
+          # Nothing listens on port 1. The program must say so and exit 1, not hang.
+          set +e
+          timeout 30 ./neuro-client --bridge 127.0.0.1:1 --once > /tmp/client.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/client.log
+          test "$code" = "1"
+          grep -q "giving up" /tmp/client.log
+
   release-gate:
     name: Release gate (every required job succeeded)
     if: always()
-    needs: [repo-checks, build-and-test, agent-e2e, python-cli-only, relay-host, mcp, vision, catalog-verify, weak-model-eval, bundle]
+    needs: [repo-checks, build-and-test, agent-e2e, python-cli-only, relay-host, mcp, vision, catalog-verify, weak-model-eval, bundle, client-build]
     runs-on: ubuntu-latest
     steps:
       - name: Check the results

@@ -1,3 +1,4 @@
+import io
 import time
 import threading
 from typing import List, Tuple, Optional, Dict, Any
@@ -30,6 +31,27 @@ try:
     from PIL import Image
 except ImportError:  # pragma: no cover - pillow is a hard dependency of the executor
     Image = None
+
+# A screenshot is sent to the server as PNG inside one JSON line. These bounds keep
+# that line well under the executor's 8 MiB limit, even for a large or busy screen.
+SCREENSHOT_MAX_SIDE = 1600
+SCREENSHOT_MAX_BYTES = 3 * 1024 * 1024
+
+
+def _fit_within(image, max_side: int):
+    """Scale an image down so its longest side is at most max_side pixels."""
+    width, height = image.size
+    longest = max(width, height)
+    if longest <= max_side:
+        return image
+    scale = max_side / float(longest)
+    return image.resize((max(1, round(width * scale)), max(1, round(height * scale))))
+
+
+def _encode_png(image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 class DesktopMonitor:
@@ -163,13 +185,22 @@ class DesktopMonitor:
             screenshot = sct.grab(monitor)
             return Image.frombytes("RGB", screenshot.size, screenshot.rgb)
 
-    def capture_screen_to_file(self, path: str) -> str:
-        image = self.capture_screen()
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        image.save(path)
-        return path
+    def capture_screen_png(
+        self, max_side: int = SCREENSHOT_MAX_SIDE, max_bytes: int = SCREENSHOT_MAX_BYTES
+    ) -> bytes:
+        """Capture the screen as PNG bytes, scaled to fit the executor's line limit.
+
+        The bytes are returned in the status reply. They are never written to a
+        path that the server could then open.
+        """
+        if Image is None:
+            raise NoDisplayError("Screenshot unavailable: Pillow is not installed on this machine.")
+        image = _fit_within(self.capture_screen(), max_side)
+        data = _encode_png(image)
+        while len(data) > max_bytes and max(image.size) > 320:
+            image = _fit_within(image, int(max(image.size) * 0.75))
+            data = _encode_png(image)
+        return data
 
     def get_platform(self) -> str:
         if sys.platform.startswith("win"):

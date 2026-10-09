@@ -39,7 +39,7 @@ These come from the executor, which is the agent on the desktop.
 
 | Message | Why | What to do |
 | --- | --- | --- |
-| `no executor client connected` | no agent is connected to the hub | start the agent (`start.sh`, or `python3 -m controller.agent --bridge …`) |
+| `no executor client connected` | no client is connected to the hub | start the client: `start.sh` on this PC, or `neuro-client --bridge <server>:9876 --token …` on the PC Neuro controls (`python3 -m controller.agent …` from source) |
 | `timeout after … waiting for executor result (the action may still be running)` | the agent is slow or stuck | do not resend the action. Look at the agent's terminal. `reset_controls` clears queued input and releases held keys |
 | `executor disconnected while the command was running` | the agent restarted or lost the network | the agent reconnects by itself. Check that it is running again |
 | `invalid or missing executor token` (in the server log) | the agent's token does not match | set the same `NEURO_EXECUTOR_TOKEN` on both sides |
@@ -90,6 +90,17 @@ the `X-ND-Token` header only. A `?token=` in the URL is ignored.
   printed. Do not put the token in a URL you share.
 - **The page loads but has no assets.** Open the dashboard at `/ui/`, not at the root.
   The bundle's asset links are relative, and CI checks that.
+- **The dashboard program answers `502`.** Its JSON reply says `the Neuro Desktop server
+  at … did not answer`. The program is running, but the server it forwards to (`--server`,
+  default `http://127.0.0.1:8300`) is not. Start the server, or fix the address. Over SSH,
+  check that the tunnel is still open.
+- **The dashboard program exits with code 2.** It was started with a bad flag or address.
+  `--server` must be an `http://` or `https://` URL. The variables are
+  `NEURO_DASHBOARD_LISTEN`, `NEURO_DASHBOARD_SERVER`, and `NEURO_UI_DIR`.
+- **The dashboard program says `no dashboard found`.** It looks for a folder with an
+  `index.html` next to the program, in `frontend/` and `frontend/dist`. Point it at the
+  built folder with `--ui-dir`. `--ui-dir … has no index.html` means the folder is not the
+  built one: run `npm run build` in `desktop/frontend`.
 
 ## The relay
 
@@ -141,6 +152,18 @@ the `X-ND-Token` header only. A `?token=` in the URL is ignored.
   `npm run build` in `desktop/frontend`.
 - **The bundle is missing a file.** Rebuild it with `scripts/bundle/prod.sh` (or `.ps1`).
   The bundle is written to `desktop/dist/neuro-desktop/`.
+- **`neuro-client` was not built.** The build prints `!` and the bundle still works: the
+  launcher uses `agent/`. On Linux, the usual cause is missing Python headers, so the
+  `evdev` package cannot build: install `python3-dev`. A Python linked without a shared
+  `libpython` fails in PyInstaller with `Python shared library … was not found`; use a
+  Python that ships one. The sandbox where this was developed had neither, so the Linux
+  client build was not verified there. On Windows, run the build from a Windows shell
+  with Python 3.11 or 3.12 on the PATH.
+- **`neuro-client` says `giving up` and exits 1 with `--once`.** It could not reach the
+  server's hub. Check the address and the port, and that `NEURO_EXECUTOR_LISTEN` is not
+  loopback-only on the server. Without `--once` it keeps retrying.
+- **`neuro-client` connects, then is refused.** The executor token differs. Use the same
+  value on both sides (`NEURO_EXECUTOR_TOKEN` on the server, `--token` on the client).
 
 ## Platform notes
 

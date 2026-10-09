@@ -11,7 +11,8 @@ Last updated: 2026-10-09
 | Piece | Binary / path | Role |
 |-------|---------------|------|
 | **Bridge (server)** | `neuro-integration` | Neuro WebSocket client, permissions, TCP executor hub `:9876`, admin HTTP `:8300` |
-| **Agent** | `desktop/backend/python/controller/agent.py` | Mouse/keyboard/scripts/shell on the controlled machine (the only part that touches it) |
+| **Dashboard program** | `neuro-dashboard` (`desktop/apps/neuro-dashboard`) | Optional. Serves the dashboard page and forwards only `/api` and `/health` to the server. No secret of its own |
+| **Client** (`neuro-client`) | `desktop/backend/python/controller/agent.py`, packaged by `desktop/scripts/build-client.sh` | Mouse/keyboard/scripts/shell on the controlled machine (the only part that touches it). Runs from source too |
 | **Local Neuro mock** | `desktop/tools/ollama-neuro` | Randy-like tester using Ollama + `heredos/rwkv7:2.9b` |
 | **Operator dashboard** | `desktop/frontend`, served by the bridge at `/ui/` | Live permissions, extensions, games and status |
 | **Fake executor** | `desktop/tools/fake-executor` | Protocol simulator for the dashboard (never injects input) |
@@ -19,10 +20,11 @@ Last updated: 2026-10-09
 | **MCP bridge** | inside the bridge | Runs the MCP servers Vedal enabled from the signed catalog, as child processes |
 | **Vision server** | `desktop/apps/nd-vision-server` | Optional screen description, reached through `NEURO_VISION_URL` |
 
-**Split machines:** the server runs where Neuro runs; the agent runs on the PC Neuro should control
-(`python3 -m controller.agent --bridge <server-ip>:9876`). One machine: point the agent at loopback, or use
-`NEURO_IPC_FILE` for file IPC. The Rust executor and the C++ supervisor were removed; see
-`docs/ARCHITECTURE.md`.
+**Split machines:** the server runs where Neuro runs and does the heavy work. The client runs on the
+PC Neuro should control (`neuro-client --bridge <server-ip>:9876`, or `python3 -m controller.agent --bridge
+<server-ip>:9876` from source). The dashboard can run on your own PC through `neuro-dashboard`. One machine:
+point the client at loopback, or use `NEURO_IPC_FILE` for file IPC. The Rust executor and the C++
+supervisor were removed; see `docs/ARCHITECTURE.md`.
 
 **Co-located:** the agent can run on the same PC. With no TCP connection, the server uses file IPC (`NEURO_IPC_FILE`).
 
@@ -131,7 +133,8 @@ Unsupported intents on an OS fail with a clear error (e.g. macOS clipboard histo
 - Extensions come from the signed catalog only. Neuro can install one (`install_extension`) when the `extensions` scope is on, and it can ask for that scope with `request_permission`
 - MCP servers from the catalog run as child processes, only after Vedal enables them. Their tools appear as actions under the `extensions` scope
 - `game_observe` (and the dashboard's “Show me what Neuro sees”) captures a
-  screenshot and asks the vision server for a summary
+  screenshot and asks the vision server for a summary. The screenshot travels to the
+  server as PNG bytes, not as a path, so the server can run on another PC
 
 ### Working alongside other integrations
 
@@ -192,6 +195,8 @@ Not done:
 
 - A public plugin marketplace. The catalog has one item, the `memory` MCP server, and one publisher key that the maintainer must replace before relying on the signatures.
 - A native tray. This was decided against, not postponed: the dashboard is served by the server and works headless, and a tray could not be built or verified in this environment. See `docs/PRODUCTION_TODO.md`.
+- A Go client. The client is still the Python agent, packaged with PyInstaller. A Go rewrite is the next step, deferred until the input and capture code can be run on Windows and macOS. See `docs/ARCHITECTURE.md`.
+- A client build verified on Windows or macOS. The Linux client build is in CI; the Windows and macOS builds have not been run.
 - Process supervision by the server. The server does not start other programs (no relay process, no agent). Operators start each process.
 - An encrypted executor link. The executor token and the commands travel as plain TCP. Tunnel the port over SSH on an untrusted network. Pinned TLS is open in `docs/PRODUCTION_TODO.md`.
 - Reverse connections (the server dialing the agent). They are allowed in the design, and they must be authenticated, but they are not built.

@@ -8,6 +8,10 @@ This project aims to follow semantic versioning once stable releases begin.
 
 ### Added
 
+- **Three programs** (decision recorded in `docs/ARCHITECTURE.md`): the server, the dashboard program, and the client for the PC Neuro controls. The split is at the process boundary, and the client is not rewritten in Go yet.
+- **Dashboard program** `desktop/apps/neuro-dashboard` (Go, stdlib only): serves the built dashboard page and forwards only `/api/` and `/health` to the server. It adds no token and keeps the caller's. It answers `502` when the server is down. Flags `--listen`, `--server`, and `--ui-dir`, with `NEURO_DASHBOARD_LISTEN`, `NEURO_DASHBOARD_SERVER`, and `NEURO_UI_DIR`. Tests: `dashboard_test.go`.
+- **Client build** `desktop/scripts/build-client.sh` (and `build-client.ps1`): packages the Python agent with PyInstaller (pinned, 6.22.3) as `neuro-client`, with its own Python inside. Entry point `desktop/apps/neuro-client/neuro_client.py`. The release bundle builds it when it can, and the launcher uses the Python agent when it cannot.
+- **CI**: a `client-build` job (builds `neuro-client` on Linux and checks that it reports a missing server), and a dashboard vet and test step in `build-and-test`.
 - **Setup** (`neuro-integration setup`, with `--check` and `--rotate-dashboard`): the first-run step. It creates the relay token that the relay host and the server share (`relay-token`, mode 0600), then the dashboard token. The dashboard token is printed once, and only its SHA-256 hash is stored (`dashboard-token`, mode 0600). Running it again keeps what exists. Exit codes: 0 complete, 1 something to fix, 2 bad usage. `setup_test.go` covers the first run, a second run, rotation, and the mismatch checks.
 - **Dashboard sign-in**: the dashboard shows a sign-in page until the server accepts the dashboard token. `GET /api/session` checks a token. The browser keeps the token in `sessionStorage`, for that browser session only.
 - **Development build tag** `neurodev`: the unsigned-extension switch is compiled in only when the tag is set. `dev.sh` and `dev.ps1` build with it. `/api/config` features now report `dev_build` and `unsigned_extensions_allowed`.
@@ -58,6 +62,9 @@ This project aims to follow semantic versioning once stable releases begin.
 
 ### Changed
 
+- **Screenshots travel as bytes, never as paths.** `get_status` returns `screenshot_png_b64` (a PNG scaled to at most 1 600 px and 3 MiB, then base64). The server no longer reads a path that the client names, which was an arbitrary-file read when the server ran on another PC. The server checks the PNG signature, the base64, and the 8 MiB limit. The vision service receives `image_base64`; the server no longer sends `image_path`.
+- **Executor frame limits:** the hello is capped at 64 KiB, because it is read before the token check. Later frames are capped at 8 MiB. A frame over its limit closes the connection, so the hub never buffers without bound.
+- **Launchers** (`start.sh`, `start.bat`): run `neuro-client` when the bundle has it, else the Python agent. The bundle README describes the three programs.
 - **Security:** every `/api` route except `/health` needs the dashboard token, with no exception for loopback. The token travels in the `X-ND-Token` header or as a Bearer token. A `?token=` query parameter is not read. The shell is served with no token and with `Cache-Control: no-store`. Before, reads were open on loopback, and the token was injected into the page as `window.__ND_BOOTSTRAP`.
 - **Relay token source:** the relay host and the server read one file, `NEURO_RELAY_TOKEN_FILE` (default `./relay-token`). `NEURO_RELAY_TOKEN` and `NEURO_RELAY_AUTH_TOKEN` are overrides, and each must equal the file. A missing or disagreeing token leaves the relay link off and says why; the rest of the server keeps running. A relay token file that is present but invalid is reported and never overwritten.
 - `NEURO_ADMIN_TOKEN` is now an override of the stored dashboard token. It must be at least 16 characters, and it must match the stored token when both exist.
@@ -96,6 +103,9 @@ This project aims to follow semantic versioning once stable releases begin.
 
 ### Fixed
 
+- The bundle launcher used `exec` for the server, so its cleanup trap never ran and the local agent could outlive the server and keep the port busy. The server now runs as a child, and the trap stops the agent.
+- CI: the `agent-e2e` and `bundle` jobs called the dashboard API without a token, and got `503` since the token rule. They now send a fixed `NEURO_ADMIN_TOKEN`, and the bundle job checks that the dashboard program refuses a request with no token.
+- The relay host says `generated a new relay token` when it creates the token file, and the CI check matches that wording.
 - Issue #16 (Nakashireyumi/neuro-desktop): the relay and the server no longer depend on a token copied by hand. `setup` writes the one file that both read, and `setup --check` says when they disagree.
 - Windows: the audit log is opened per write, so nothing holds it locked; a relay host refusal is no longer reported as a connection reset, because the host waits for the client to read it first.
 - macOS: the test binaries are built without cgo, which the server does not need. They no longer fail to load (`missing LC_UUID`).

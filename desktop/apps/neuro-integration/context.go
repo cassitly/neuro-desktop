@@ -144,8 +144,10 @@ func buildDesktopContextMessage(status map[string]interface{}, visionSummary str
 		lines = append(lines, fmt.Sprintf("- Running processes sample: %s", strings.Join(runningProcesses, ", ")))
 	}
 
-	if screenshotPath, ok := status["screenshot_path"].(string); ok && strings.TrimSpace(screenshotPath) != "" {
-		lines = append(lines, fmt.Sprintf("- Screenshot path: %s", screenshotPath))
+	if shot, ok, shotErr := screenshotPNG(status); shotErr != nil {
+		lines = append(lines, fmt.Sprintf("- Screenshot: unusable (%v)", shotErr))
+	} else if ok {
+		lines = append(lines, fmt.Sprintf("- Screenshot: captured (PNG, %d KB)", len(shot)/1024))
 	}
 
 	if strings.TrimSpace(visionSummary) != "" {
@@ -163,8 +165,11 @@ func (n *NDIntegration) getDesktopContext(captureScreenshot bool) (string, error
 
 	visionSummary := ""
 	if serverURL := visionServerURL(); serverURL != "" {
-		if screenshotPath, ok := status["screenshot_path"].(string); ok && strings.TrimSpace(screenshotPath) != "" {
-			summary, visionErr := summarizeWithVisionServer(serverURL, screenshotPath, "")
+		shot, ok, shotErr := screenshotPNG(status)
+		if shotErr != nil {
+			log.Printf("Vision skipped: %v", shotErr)
+		} else if ok {
+			summary, visionErr := summarizeWithVisionServer(serverURL, shot, "")
 			if visionErr != nil {
 				log.Printf("Vision summarize failed: %v", visionErr)
 			} else {

@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Development bundle: build the server + dashboard, stage the agent and config,
-# then run the whole thing from one directory — no Rust, no sudo.
+# Development bundle: build the server and the dashboard program, stage the agent
+# and config, then run the whole thing from one directory — no Rust, no sudo.
+# The agent runs from source here; neuro-client (PyInstaller) is for release bundles.
 #
 #   ./scripts/bundle/dev.sh
 #   NEURO_BUNDLE_NO_LAUNCH=1 ./scripts/bundle/dev.sh   # stage only
 #
 # Staged layout (desktop/dist/dev):
 #   neuro-integration      the server: Neuro API client + dashboard API + hub
+#   neuro-dashboard        the dashboard program (optional; split setups)
 #   agent/controller/      the agent that executes commands on this machine
 #   frontend/              the dashboard client, served at /ui/
 #   catalog/, config/, permissions.json
@@ -59,6 +61,14 @@ echo "Building the server (apps/neuro-integration)..."
 )
 cp "apps/neuro-integration/dist/$SERVER" "$DIST/$SERVER"
 
+echo "Building the dashboard program (apps/neuro-dashboard)..."
+(
+  cd apps/neuro-dashboard
+  mkdir -p dist
+  go build -o "dist/neuro-dashboard$BIN_EXT" .
+)
+cp "apps/neuro-dashboard/dist/neuro-dashboard$BIN_EXT" "$DIST/"
+
 echo "Building the dashboard client (frontend)..."
 (
   cd frontend
@@ -101,6 +111,8 @@ echo "   The relay host and the server on this machine share ./relay-token, so n
 echo "   A relay on another machine needs the same token value: copy the file's value there."
 echo
 echo "3. Dashboard: http://127.0.0.1:8300/ui/"
+echo "   Split: ./neuro-dashboard --server http://<server>:8300 --listen 127.0.0.1:8310"
+echo "   serves the same UI from another program and forwards only the API."
 echo
 
 if [[ "${NEURO_BUNDLE_NO_LAUNCH:-0}" == "1" ]]; then

@@ -5,33 +5,37 @@ keys, run scripts and shell commands, play games that have no integration of
 their own, and read the desktop back as context. Vedal/you get a dashboard to
 watch it, grant permissions, and pause or kill anything at any time.
 
-## The three pieces
+## The three programs
 
 ```
-┌─────────────────────────────┐        ┌──────────────────────────────┐
-│  Neuro API (ws://…)         │        │  Dashboard client (browser)  │
-└──────────┬──────────────────┘        └───────────┬──────────────────┘
-           │ neuro-sdk (Go)                        │ HTTP, same-origin /ui/
-┌──────────▼───────────────────────────────────────▼──────────────────┐
+┌─────────────────────────────┐
+│  Neuro API (ws://…)         │
+└──────────┬──────────────────┘
+           │ neuro-sdk (Go)
+┌──────────▼───────────────────────────────────────────────────────────┐
 │  SERVER — desktop/apps/neuro-integration (Go)                        │
 │  • talks to Neuro (actions, context, results)                        │
-│  • serves the dashboard API and the UI bundle                        │
+│  • serves the dashboard API and the dashboard page at /ui/           │
 │  • owns the permission policy, audit log, kill switch, game catalog  │
-│  • forwards machine commands to the agent                            │
+│  • vision client; forwards machine commands to the client            │
 └──────────┬───────────────────────────────────────────────────────────┘
            │ executor protocol (JSON lines) or file IPC
 ┌──────────▼───────────────────────────────────────────────────────────┐
-│  AGENT — desktop/backend/python/controller/agent.py (Python)         │
+│  CLIENT (neuro-client) — desktop/backend/python/controller (Python)  │
 │  • runs on the PC Neuro controls (usually the same machine)          │
 │  • mouse/keyboard via pyautogui, screen capture, windows, shell      │
+│  • built as one program with PyInstaller: no Python needed there     │
 │  • refuses input on a headless machine and says why                  │
 └──────────────────────────────────────────────────────────────────────┘
+
+Dashboard page (your browser) ──HTTP /ui/──► the server, or the DASHBOARD PROGRAM
+(`neuro-dashboard`, optional, on your own PC), which forwards only /api and /health.
 ```
 
-The server executes *decisions*; the agent executes *actions*. The admin
-dashboard is a client of the server. See `docs/ARCHITECTURE.md` for why the
-project was consolidated to Go + Python (and what was removed), and
-`docs/EXECUTOR_PROTOCOL.md` for the wire protocol between the two.
+The server executes *decisions*; the client executes *actions*. The dashboard
+is a client of the server. See `docs/ARCHITECTURE.md` for why the project is split
+into these programs (and why the client is not rewritten in Go yet), and
+`docs/EXECUTOR_PROTOCOL.md` for the wire protocol between the server and the client.
 
 ## Quick start
 
@@ -42,12 +46,16 @@ go build -o neuro-integration .
 ./neuro-integration setup
 NEURO_SDK_WS_URL=ws://127.0.0.1:8000 ./neuro-integration
 
-# 2. Agent (on the PC Neuro should control — same machine in dev)
+# 2. Client (on the PC Neuro should control — same machine in dev)
 cd desktop/backend/python
 python3 -m controller.agent --bridge 127.0.0.1:9876
+#    or the built program: ./scripts/build-client.sh, then dist/neuro-client/neuro-client --bridge 127.0.0.1:9876
 
 # 3. Dashboard: sign in with the token from step 1
 xdg-open http://127.0.0.1:8300/ui/      # macOS: open, Windows: start
+#    or on your own PC (the server's admin port reached over SSH):
+#    cd apps/neuro-dashboard && go build -o neuro-dashboard .
+#    ./neuro-dashboard --server http://127.0.0.1:8300 --listen 127.0.0.1:8310
 ```
 
 `setup` creates the relay token (`relay-token`, shared by the relay host and the
@@ -58,13 +66,15 @@ and `start.bat` run it on every start.
 Everything can also be built and staged in one step:
 
 ```bash
-./scripts/build-all.sh            # server + dashboard + agent syntax check
+./scripts/build-all.sh            # server + dashboard program + dashboard page + client syntax check
 ./scripts/bundle/dev.sh           # stages dist/dev and launches the server
 NEURO_BUNDLE_SKIP_VENV=1 ./scripts/bundle/prod.sh   # release bundle in dist/neuro-desktop
+./scripts/build-client.sh         # neuro-client: the client as one program (PyInstaller)
 ```
 
-The bundle's `start.sh` / `start.bat` launch the server and the local agent
-together; `NEURO_NO_AGENT=1` skips the agent for a split-machine setup.
+The bundle's `start.sh` / `start.bat` launch the server and the local client
+together (`neuro-client/` when the bundle has it, else the Python agent);
+`NEURO_NO_AGENT=1` skips the client for a split-machine setup.
 
 ## Layout
 
@@ -73,14 +83,16 @@ desktop/
 ├── apps/
 │   ├── neuro-integration/    SERVER (Go): Neuro client, dashboard API, executor hub, policy,
 │   │                         relay host (`relay` subcommand), MCP bridge, signed catalog
+│   ├── neuro-dashboard/      DASHBOARD PROGRAM (Go, stdlib only): serves the page, forwards /api and /health
+│   ├── neuro-client/         entry point for the PyInstaller build of the CLIENT
 │   └── nd-vision-server/     optional vision service (Python, stdlib HTTP; Pillow optional)
 ├── backend/python/
-│   ├── controller/           AGENT + drivers (agent.py, actions.py, controls/, shell.py)
+│   ├── controller/           CLIENT / AGENT + drivers (agent.py, actions.py, controls/, shell.py)
 │   └── tests/                unittest suite for the agent and the safety rules
-├── frontend/                 DASHBOARD CLIENT (TypeScript + Vite, no framework)
+├── frontend/                 DASHBOARD PAGE (TypeScript + Vite, no framework)
 ├── catalog/                  game profiles, catalog index, live extension state
 ├── config/                   example policy (no config file: settings are env vars)
-├── scripts/                  build-all.*, build-go.ps1, bundle/{dev,prod}.*, templates/
+├── scripts/                  build-all.*, build-go.ps1, build-client.*, bundle/{dev,prod}.*, templates/
 ├── tools/
 │   ├── ci/repo_checks.py     dependency-free repository checks (what CI runs first)
 │   ├── fake-executor/        protocol simulator for the server (no input is ever generated)
@@ -94,9 +106,12 @@ desktop/
 | --- | --- |
 | `NEURO_SDK_WS_URL` / `-ws-url` | Neuro API websocket (`ws://localhost:8000` by default) |
 | `NEURO_ADMIN_LISTEN` | dashboard address (`127.0.0.1:8300`) |
+| `NEURO_DASHBOARD_LISTEN` / `--listen` | **dashboard program only**: its address (`127.0.0.1:8310`). A non-loopback address prints a warning |
+| `NEURO_DASHBOARD_SERVER` / `--server` | **dashboard program only**: the server it forwards `/api` and `/health` to (`http://127.0.0.1:8300`). Plain HTTP to another machine prints a warning |
+| `NEURO_UI_DIR` / `--ui-dir` | **dashboard program only**: the built page folder (it contains `index.html`); found next to the program when empty |
 | `NEURO_ADMIN_TOKEN` | optional override of the dashboard token; at least 16 characters, and it must equal the token `setup` printed. Every `/api` route needs the token, loopback included |
 | `NEURO_DASHBOARD_TOKEN_FILE` | where the dashboard token's SHA-256 hash is kept (`./dashboard-token`, mode 0600). `setup` writes it |
-| `NEURO_EXECUTOR_LISTEN` / `-executor-listen` | hub address agents connect to (`127.0.0.1:9876`) |
+| `NEURO_EXECUTOR_LISTEN` / `-executor-listen` | hub address clients (agents) connect to (`127.0.0.1:9876`) |
 | `NEURO_EXECUTOR_TOKEN` | shared secret every agent must present. Required before the hub listens beyond loopback. It is sent in plain TCP (see `docs/SAFETY.md`, section 6) |
 | `NEURO_IPC_FILE` | file-IPC fallback path for a co-located agent |
 | `NEURO_PERMISSIONS_FILE` | policy file (see `config/permissions.example.json`) |
@@ -153,8 +168,14 @@ timeout.
 cd desktop/apps/neuro-integration && go test -race ./...    # -race needs cgo (CI runs it on Linux)
 cd desktop/apps/neuro-integration && go test -race -tags neurodev ./...   # the dev-only switch's tests
 
+# dashboard program (Go, stdlib only): the proxy rules, the sign-in pass-through, 502 when the server is down
+cd desktop/apps/neuro-dashboard && go vet ./... && go test -count=1 ./...
+
 # agent + safety rules (Python, no third-party deps needed)
 cd desktop/backend/python && python3 -m unittest discover -s tests -t .
+
+# the client as one program (Linux/macOS; Windows: scripts/build-client.ps1). Needs Python headers on Linux
+./scripts/build-client.sh && ./dist/neuro-client/neuro-client --help
 
 # everything CI runs first: JSON/JSONC, policy parity, catalog, docs, file sizes,
 # stale references, the ollama brain tests
@@ -182,6 +203,8 @@ explored) on a machine with no display and without touching anything.
 | Dashboard answers `503`: "the dashboard has no token yet" | Run `neuro-integration setup`, then sign in with the token it prints. |
 | Dashboard answers `503` with "does not match the dashboard token" | `NEURO_ADMIN_TOKEN` disagrees with the stored token. Unset it, or set it to the printed token. |
 | Dashboard answers `401` | The token is wrong or missing. Send it in the `X-ND-Token` header or as a Bearer token. A `?token=` query parameter is not read. |
+| Dashboard program answers `502` | It is running, but the server at `--server` did not answer. Start the server, or fix the address (see `docs/TROUBLESHOOTING.md`) |
+| `scripts/build-client.sh` fails on Linux with `Python.h` or `evdev` | `pynput` needs `evdev`, which builds from source. Install the Python development headers (`sudo apt install python3-dev`) and run it again |
 
 ## Removed
 

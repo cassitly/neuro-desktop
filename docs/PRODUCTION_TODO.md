@@ -37,10 +37,27 @@ Check these directly; this file does not keep a copy of their issue lists.
   setup smoke test. Not checked here: the sign-in page in a real browser, and the
   Windows and macOS bundles.
 
-- [ ] **Three separate binaries** (proposed, not started; scope to be confirmed). The
-  dashboard, the neuro client on the controlled PC, and the server would be three
-  programs. The controlled PC would hold no admin UI and no policy, so Neuro cannot
-  change her own permissions from there.
+- [x] **Three separate programs: the server, the dashboard program, and the client.**
+  The server (`neuro-integration`, Go) keeps the policy, the Neuro connection, the
+  dashboard API, and the vision client. The dashboard program (`neuro-dashboard`, Go,
+  stdlib only) serves the page and forwards only `/api` and `/health`, with no secret of
+  its own. The client (`neuro-client`) is the Python agent packaged with PyInstaller by
+  `scripts/build-client.sh` (`build-client.ps1` for Windows). It holds no policy, no
+  dashboard, and no vision, so Neuro cannot change her own permissions from the
+  controlled PC. The split is at the process boundary; the server still serves `/ui/` for
+  single-machine use. Tests: `apps/neuro-dashboard/dashboard_test.go`. Not verified: the
+  PyInstaller build on Windows and macOS, and a built client running on a real desktop.
+
+- [ ] **Client rewrite in Go** (the next step, not started). It would replace the Python
+  client with a Go program, so the controlled PC runs one language. It is deferred because
+  the input and screen-capture code is platform-specific: rewriting it now would replace
+  code in use with code that cannot be run on Windows or macOS from the development
+  environment. The decision is recorded in `docs/ARCHITECTURE.md`.
+
+- [ ] **Verify the Windows and macOS client builds and the Windows launchers.** Not run
+  anywhere yet: `scripts/build-client.ps1`, `scripts/bundle/prod.ps1` and `dev.ps1` (the
+  new dashboard and client steps), `templates/start.bat`, and the PyInstaller build on
+  macOS. CI builds only the Linux client.
 
 - [ ] **Authenticated reverse connections, and pinned TLS for the executor link.** The
   design allows the server to dial the client, and it requires that connection to be
@@ -51,6 +68,11 @@ Check these directly; this file does not keep a copy of their issue lists.
 
 - [ ] **Log failed dashboard sign-ins.** A `401` for a wrong dashboard token is counted in
   memory only. It is not written to the audit log, and it is not logged.
+
+- [ ] **Check a real screenshot end to end.** The screenshot travels as PNG bytes and is
+  tested with a fake capture and with Pillow's size limits, but no real screen has been
+  captured through the server and a vision service in one run. Also not run: the vision
+  summary against a live `nd-vision-server`.
 
 - [ ] **License file.** The README says the project is MIT-licensed and links to a
   `LICENSE` file. The repository has no `LICENSE` file. The maintainer must add it,
@@ -88,6 +110,18 @@ Check these directly; this file does not keep a copy of their issue lists.
 
 ## Completed
 
+- Screenshots travel as bytes, never as paths. The status reply carries
+  `screenshot_png_b64`, and the server checks the signature, the base64, and the size
+  (8 MiB) before use. The server no longer opens a path that a client names, which was an
+  arbitrary-file read when the server ran on another PC. Tests: `screenshot_test.go`,
+  `vision_test.go`, `test_screenshot_bytes.py`.
+- The executor link limits frames: the hello at 64 KiB (read before the token check), and
+  every later frame at 8 MiB. Tests: `executor_frame_test.go`.
+- The relay host says when it generates its token, and the first-run check in CI matches
+  that wording.
+- The bundle launcher prefers `neuro-client` and stops the agent when the server stops.
+  The old launcher's `exec` skipped the cleanup trap, so the agent could outlive the
+  server and hold the port.
 - The Go server: Neuro client (vendored SDK port), executor hub, dashboard API,
   permissions, audit, stop switch, and game interface.
 - The Python agent (`controller/agent.py`): input, high-level desktop intents, scripts,

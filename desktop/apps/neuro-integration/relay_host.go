@@ -251,18 +251,18 @@ func ensureRelayTokenFile(path string) (token string, created bool, err error) {
 // configured token wins. Otherwise the token in tokenFile is used, and one is
 // generated there when the file does not exist, so a fresh install is never
 // open with a known password. The second result is the file in use, if any.
-func resolveRelayToken(configured, tokenFile string) (string, string, error) {
+func resolveRelayToken(configured, tokenFile string) (token, path string, created bool, err error) {
 	if configured != "" {
 		if err := validateRelayToken(configured); err != nil {
-			return "", "", err
+			return "", "", false, err
 		}
-		return configured, "", nil
+		return configured, "", false, nil
 	}
-	token, _, err := ensureRelayTokenFile(tokenFile)
+	token, created, err = ensureRelayTokenFile(tokenFile)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
-	return token, tokenFile, nil
+	return token, tokenFile, created, nil
 }
 
 func (h *relayHost) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -668,7 +668,7 @@ func runRelayCommand(args []string, stdout, stderr io.Writer) int {
 
 	logger := log.New(stderr, "[relay] ", log.LstdFlags)
 	configuredToken := strings.TrimSpace(os.Getenv("NEURO_RELAY_AUTH_TOKEN"))
-	token, tokenPath, err := resolveRelayToken(configuredToken, *tokenFile)
+	token, tokenPath, tokenCreated, err := resolveRelayToken(configuredToken, *tokenFile)
 	if err != nil {
 		fmt.Fprintf(stderr, "relay: %v\n", err)
 		return 2
@@ -730,7 +730,11 @@ func runRelayCommand(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if configuredToken == "" && tokenPath != "" {
-		logger.Printf("no NEURO_RELAY_AUTH_TOKEN set: using the relay token in %s (mode 0600); the server reads the same file", tokenPath)
+		if tokenCreated {
+			logger.Printf("generated a new relay token in %s (mode 0600); the server reads the same file", tokenPath)
+		} else {
+			logger.Printf("no NEURO_RELAY_AUTH_TOKEN set: using the relay token in %s (mode 0600); the server reads the same file", tokenPath)
+		}
 	}
 
 	signals := make(chan os.Signal, 1)

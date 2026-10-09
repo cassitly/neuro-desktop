@@ -4,9 +4,10 @@ The server decides *what* to do; the agent is the only process that touches a
 machine. They talk over one of three transports with the same message format:
 newline-delimited JSON (one object per line, UTF-8, no length prefix).
 
-* **agent → server** (`python3 -m controller.agent --bridge host:9876`). The agent always dials
-  out to the hub, so it needs no inbound port. The server's side is `NEURO_EXECUTOR_LISTEN`
-  (`-executor-listen`), which defaults to `127.0.0.1:9876`.
+* **agent → server** (`neuro-client --bridge host:9876` on the PC Neuro controls, or
+  `python3 -m controller.agent --bridge host:9876` from source; both run the same agent).
+  The agent always dials out to the hub, so it needs no inbound port. The server's side is
+  `NEURO_EXECUTOR_LISTEN` (`-executor-listen`), which defaults to `127.0.0.1:9876`.
 * **file IPC** (co-located only): the server writes the command to
   `NEURO_IPC_FILE` and polls `NEURO_IPC_FILE.response`.
 
@@ -40,6 +41,16 @@ The handshake is bounded (10 s): a client that connects and never says hello is
 closed, so a port probe cannot hold a slot. The token is compared in constant
 time and is required whenever the hub is not bound to loopback.
 
+**Frame size.** A frame is one line, and the hub reads it with a limit:
+
+* the hello is capped at **64 KiB**, because it is read before the token is checked;
+* every later frame is capped at **8 MiB**;
+* a frame over its limit closes the connection. The hub never buffers past the limit,
+  even when no newline ever arrives.
+
+The largest normal frame is a status reply with a screenshot: the agent caps the PNG
+at 3 MiB, which is about 4 MiB as base64.
+
 ## Commands
 
 The authoritative list is `executorCommands` in
@@ -60,7 +71,7 @@ a test on both sides.
 | `type_text` | `text` | types into the focused window |
 | `run_script` | `script` | the ACTION script language (`TYPE`, `MOVE`, `SHELL`, …) |
 | `shell_command` | `command`, `cwd?`, `timeout?` | shell firewall + allowlist; output is returned in `data.output` |
-| `get_status` | `max_open_windows?`, `max_processes?`, `max_actions?`, `capture_screenshot?`, `screenshot_path?` | telemetry; `headless` tells the truth about the session |
+| `get_status` | `max_open_windows?`, `max_processes?`, `max_actions?`, `capture_screenshot?` | telemetry; `headless` tells the truth about the session; the screenshot comes back as bytes (below) |
 | `execute_queue` / `clear_action_queue` | — | queue control (below) |
 | `shutdown_gracefully` / `shutdown_immediately` | — | releases input, then exits |
 
@@ -68,6 +79,25 @@ Anything else in the action registry (desktop shell intents, catalog, extension
 commands, `game_*`) is handled **inside the server** and never forwarded;
 `sendToExecutor` rejects them with an explicit error rather than sending them to
 an agent that could not run them.
+
+## Screenshots travel as bytes
+
+`get_status` with `capture_screenshot: true` returns the screen in the reply:
+
+```jsonc
+{"status": "running", "headless": false, ..., "screenshot_png_b64": "iVBORw0KGgo…"}
+```
+
+* `screenshot_png_b64` is a base64 PNG, scaled so its long side is at most 1 600 px and
+  its size is at most 3 MiB. It is `null` when no screenshot was asked for, when the
+  session is headless, or when capture failed.
+* The server never opens a path that the agent names. An older `screenshot_path` field
+  is ignored, and the server does not read files on the agent's behalf. The reason is
+  that the server may run on another PC, and a path there would be an arbitrary file
+  read. The server checks the bytes (PNG signature, base64, size limit of 8 MiB) before
+  it uses them.
+* The vision service receives the same bytes as `image_base64`. It also accepts
+  `image_path`, but only inside its own `NEURO_VISION_ROOT`, and the server does not send it.
 
 ## Queueing
 
@@ -103,9 +133,12 @@ server cannot make the agent do more than the policy on that machine allows.
 
 * Server: `desktop/apps/neuro-integration/executor_hub_test.go`,
   `executor_commands_test.go`, `executor_liveness_test.go` (round trip, token
-  rejection, slow command, timeout, replacement, ping/drop).
+  rejection, slow command, timeout, replacement, ping/drop), `executor_frame_test.go`
+  (the frame limits, an oversized hello refused before auth, a screenshot-sized reply
+  kept whole), and `screenshot_test.go` (the PNG check and the size limit).
 * Agent: `desktop/backend/python/tests/test_agent.py` (handshake, ping, malformed
   frames, rejection, queue semantics, file IPC, and the cross-language command
-  parity check).
+  parity check) and `test_screenshot_bytes.py` (the screenshot is scaled and encoded
+  as bytes, and the status reply carries it).
 * Simulator: `desktop/tools/fake-executor/fake_executor.py` — no input is ever
   generated, so the whole server can be exercised on a headless machine.
