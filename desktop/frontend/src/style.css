@@ -970,3 +970,31 @@ button.danger {
 .list-items .denied {
   color: var(--danger);
 }
+
+/* Live runtime (Extensions page) */
+.runtime-panel { margin: 0 0 16px; }
+.runtime-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.runtime-card { border: 1px solid var(--border, #2a2f3a); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; background: var(--surface, #161a22); }
+.runtime-card header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.runtime-card small { opacity: 0.8; word-break: break-all; }
+.runtime-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.04em; }
+.runtime-badge--ok, .runtime-card--ok { border-color: #2f7d4f; }
+.runtime-badge--ok { background: #1f4d33; color: #bff3d2; }
+.runtime-badge--warn { background: #4d3f1f; color: #ffe7a6; }
+.runtime-badge--bad { background: #5a2323; color: #ffc9c9; }
+.runtime-badge--muted { background: #2a2f3a; color: #b8c0cc; }
+.runtime-card--bad { border-color: #8a3a3a; }
+.runtime-card--warn { border-color: #8a7330; }
+.runtime-error { color: #ffc9c9; }
+
+/* Permission requests (Permissions page) */
+.permission-requests { border: 1px solid var(--border, #2a2f3a); border-radius: 12px; padding: 14px 16px; margin: 0 0 18px; }
+.permission-requests h3 { margin: 14px 0 6px; font-size: 0.95rem; }
+.request-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.request-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; background: var(--surface, #161a22); }
+.request-item p { margin: 4px 0; }
+.request-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.request-recent { list-style: none; margin: 0; padding: 0; font-size: 0.9rem; }
+.requestable-row { display: flex; gap: 12px; align-items: center; margin: 12px 0; padding: 10px 12px; border-radius: 8px; background: var(--surface, #161a22); }
+.requestable-row p { margin: 4px 0 0; font-size: 0.9rem; opacity: 0.85; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

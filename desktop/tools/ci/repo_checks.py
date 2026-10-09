@@ -130,9 +130,24 @@ def check_catalog() -> None:
         item_id = item.get("id")
         if not item_id:
             fail(f"catalog item without an id: {item}")
-        elif item_id in seen:
+            continue
+        if item_id in seen:
             fail(f"catalog id {item_id!r} appears twice")
         seen.add(item_id)
+        # The bridge refuses to install an item that is not signed. The
+        # signature itself is checked by `neuro-integration catalog verify` in
+        # CI; this only catches entries that were added without one.
+        if not item.get("publisher") or not item.get("signature"):
+            fail(f"catalog item {item_id!r} has no publisher or signature (sign it with `catalog sign`)")
+        repository = item.get("repository", "")
+        if repository and not repository.startswith("https://"):
+            fail(f"catalog item {item_id!r} must use an https:// repository, got {repository!r}")
+        for hint in item.get("launch_hints", []):
+            if ".exe" in hint.lower():
+                fail(f"catalog item {item_id!r} has a Windows-only launch hint: {hint!r}")
+    publishers_path = os.path.join(REPO_ROOT, "desktop", "catalog", "publishers.json")
+    if not os.path.exists(publishers_path):
+        fail("desktop/catalog/publishers.json is missing (the bridge trusts nobody without it)")
 
     games_dir = os.path.join(REPO_ROOT, "desktop", "catalog", "games")
     profiles = [name for name in os.listdir(games_dir) if name.endswith(".json")] if os.path.isdir(games_dir) else []
@@ -263,10 +278,21 @@ def check_no_stale_paths() -> None:
         "neuro-relay.exe",
         "cargo build",
         "cargo test",
+        # Removed with the Go relay host: the shim, the process supervision
+        # it fed, and the upstream repositories that were wrong.
+        "relay-compat",
+        "NEURO_RELAY_COMMAND",
+        "NEURO_RELAY_CONFIG",
+        "NEURO_RELAY_MAX_RESTARTS",
+        "process_restarts",
+        "process_managed_here",
+        "recassity/neuro-relay",
+        "Ubuntufanboy/neuro-desktop",
     )
     skip_dirs = {".git", "node_modules", "dist", "__pycache__", ".venv", "target"}
     # This file contains the needles on purpose; it is the check, not a reference.
-    skip_files = {os.path.relpath(__file__, REPO_ROOT)}
+    # CHANGELOG.md is the history of those removals, so it is allowed to name them.
+    skip_files = {os.path.relpath(__file__, REPO_ROOT), "CHANGELOG.md"}
     hits = []
     for root, dirs, files in os.walk(REPO_ROOT):
         dirs[:] = [d for d in dirs if d not in skip_dirs]

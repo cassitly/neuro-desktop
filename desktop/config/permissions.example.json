@@ -32,30 +32,44 @@
   "denied_actions": [
     "shutdown_immediately",
     "lock_workstation",
-    "install_extension",
     "game_launch"
   ],
   "scopes": {
     "input": {
-      "allowed": true
-    },
-    "filesystem": {
-      "allowed": false
-    },
-    "process": {
-      "allowed": true
-    },
-    "network": {
-      "allowed": true
-    },
-    "system": {
-      "allowed": false
+      "allowed": true,
+      "requestable": false
     },
     "vision": {
-      "allowed": true
+      "allowed": true,
+      "requestable": false
     },
     "game": {
-      "allowed": true
+      "allowed": true,
+      "requestable": false
+    },
+    "process": {
+      "allowed": true,
+      "requestable": false
+    },
+    "network": {
+      "allowed": true,
+      "requestable": false
+    },
+    "filesystem": {
+      "allowed": false,
+      "requestable": true
+    },
+    "extensions": {
+      "allowed": false,
+      "requestable": true
+    },
+    "shell": {
+      "allowed": false,
+      "requestable": false
+    },
+    "system": {
+      "allowed": false,
+      "requestable": false
     }
   }
 }

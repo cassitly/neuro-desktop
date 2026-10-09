@@ -14,13 +14,11 @@ Protocol (newline-delimited JSON — the same one ``executor_hub.go`` speaks):
     agent -> {"type": "result", "id": "...", "success": true, "data": {...}}
     bridge -> {"type": "ping", "id": "..."} ; agent -> {"type": "pong", "id": "..."}
 
-Two ways to run it:
+Ways to run it:
 
-    # connect out to a bridge (works across machines, no inbound port needed)
+    # connect out to the bridge's executor hub (works across machines, and the
+    # agent needs no inbound port; the hub checks the token)
     python3 -m controller.agent --bridge 127.0.0.1:9876 --token "$NEURO_EXECUTOR_TOKEN"
-
-    # or listen on the controlled machine, for a bridge that dials in
-    python3 -m controller.agent --listen 0.0.0.0:9877 --token "$NEURO_EXECUTOR_TOKEN"
 
     # or pick up commands from the bridge's file-IPC fallback (no TCP at all)
     python3 -m controller.agent --ipc-file "$NEURO_IPC_FILE"
@@ -516,31 +514,6 @@ def connect_role(bridge: str, token: Optional[str], once: bool) -> int:
         time.sleep(2)
 
 
-def listen_role(bind: str, token: Optional[str]) -> int:
-    host, _, port = bind.partition(":")
-    port = int(port or "9877")
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((host or "0.0.0.0", port))
-    server.listen(1)
-    print(f"[agent] listening on {host or '0.0.0.0'}:{port} for a bridge connection")
-
-    agent = Agent()
-    while True:
-        conn, addr = server.accept()
-        print(f"[agent] bridge connected from {addr[0]}:{addr[1]}")
-        try:
-            if serve_session(conn, agent, token, peer=f"{addr[0]}:{addr[1]}"):
-                return 0
-        except (ConnectionError, OSError, PermissionError) as exc:
-            print(f"[agent] session ended: {exc}")
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
 def ipc_file_role(path: str, once: bool = False) -> int:
     """Serve the bridge's file-IPC fallback: poll `path`, answer `path.response`.
 
@@ -620,11 +593,6 @@ def main(argv: Optional[list] = None) -> int:
         help="host:port of the bridge executor hub to connect to (default: %(default)s)",
     )
     target.add_argument(
-        "--listen",
-        default=os.environ.get("NEURO_AGENT_LISTEN"),
-        help="host:port to listen on instead, for a bridge that dials in",
-    )
-    target.add_argument(
         "--ipc-file",
         default=None,
         help="serve the bridge file-IPC fallback at this path (NEURO_IPC_FILE)",
@@ -644,10 +612,6 @@ def main(argv: Optional[list] = None) -> int:
     if args.ipc_file:
         print("[agent] role: file IPC (same machine as the bridge)")
         return ipc_file_role(args.ipc_file, args.once)
-
-    if args.listen:
-        print("[agent] role: server (listening); the controlled machine owns the socket")
-        return listen_role(args.listen, args.token or None)
 
     print("[agent] role: client (connecting out); the bridge owns the socket")
     if is_headless():

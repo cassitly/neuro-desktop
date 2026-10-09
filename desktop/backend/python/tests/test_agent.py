@@ -180,7 +180,7 @@ class CommandCoverageTest(unittest.TestCase):
 
 
 class SessionTest(unittest.TestCase):
-    """The wire protocol from executor_client.rs, now on the Python side."""
+    """The wire protocol between the server and the agent, on the Python side."""
 
     def _bridge(self, conn, token_ok=True, commands=None):
         """Act as the Go bridge on the other end of a socket pair."""

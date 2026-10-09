@@ -6,10 +6,25 @@ import {
   type PermissionPolicyFile,
   type ScopeName,
 } from "./api";
+import PermissionRequests from "./PermissionRequests";
 
-type ScopeConfig = { allowed: boolean; limits?: { max_actions_per_minute?: number } };
+type ScopeConfig = {
+  allowed: boolean;
+  requestable?: boolean;
+  limits?: { max_actions_per_minute?: number };
+};
 
 const SCOPE_DESCRIPTIONS: Record<ScopeName, { title: string; description: string; icon: string }> = {
+  shell: {
+    title: "Shell Commands",
+    description: "Run commands on this PC. Explicit consent: stays off unless you turn it on yourself.",
+    icon: "💻",
+  },
+  extensions: {
+    title: "Extensions",
+    description: "Install catalog extensions and run MCP servers. Explicit consent: off by default.",
+    icon: "🧩",
+  },
   input: {
     title: "Input Control",
     description: "Mouse, keyboard, and desktop interaction actions",
@@ -72,6 +87,7 @@ function normalisePolicy(raw: PermissionPolicyFile): PermissionPolicyFile {
     const incoming = raw.scopes?.[scope];
     scopes[scope] = {
       allowed: Boolean(incoming?.allowed),
+      requestable: Boolean(incoming?.requestable),
       limits: { max_actions_per_minute: incoming?.limits?.max_actions_per_minute ?? 0 },
     };
   }
@@ -278,6 +294,8 @@ export default function PermissionsPage() {
         </div>
       </header>
 
+      <PermissionRequests onChanged={() => void load()} />
+
       {saveState.kind === "error" && <div className="scope-warning">⚠️ {saveState.message}</div>}
       {saveState.kind === "saved" && <div className="save-notice">✅ {saveState.message}</div>}
 
@@ -344,6 +362,26 @@ export default function PermissionsPage() {
               />
               <span className="toggle-slider" />
             </label>
+          </div>
+
+          <div className="requestable-row">
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={Boolean(selectedConfig?.requestable)}
+                onChange={(event) => updateScope(selectedScope, { requestable: event.target.checked })}
+              />
+              <span className="toggle-slider" />
+            </label>
+            <div>
+              <strong>Neuro may request this</strong>
+              <p>
+                Neuro can ask you for this scope. Approvals are temporary and can be revoked at any time.
+                {["shell", "system", "extensions"].includes(selectedScope)
+                  ? " This scope needs explicit consent: it stays off unless you switch it on yourself."
+                  : ""}
+              </p>
+            </div>
           </div>
 
           {!selectedConfig?.allowed && (

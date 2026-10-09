@@ -18,10 +18,14 @@ export type ScopeName =
   | "process"
   | "network"
   | "system"
-  | "vision";
+  | "vision"
+  | "shell"
+  | "extensions";
 
 export type ScopeConfig = {
   allowed: boolean;
+  /** Neuro may ask the operator to switch this scope on (request_permission). */
+  requestable?: boolean;
   limits?: {
     /** 0 or missing means unlimited. Enforced by the bridge. */
     max_actions_per_minute?: number;
@@ -73,13 +77,10 @@ export type RelayStatus = {
   registered: boolean;
   peer_count: number;
   peers?: Record<string, string>;
-  process_restarts: number;
   last_error?: string;
   last_event?: string;
   last_seen?: string;
-  process_managed_here: boolean;
   reserved_actions?: string[];
-  supervised_by?: string;
 };
 
 export type GameProfileSummary = {
@@ -150,6 +151,12 @@ export type CatalogItem = {
   homepage?: string;
   tags?: string[];
   launch_hints?: string[];
+  publisher?: string;
+  commit?: string;
+  /** verified | unsigned | untrusted | invalid (see catalog_trust.go). */
+  signature_state?: string;
+  signature_detail?: string;
+  mcp?: { command: string; args?: string[] };
 };
 
 export type InstalledExtension = {
@@ -162,6 +169,55 @@ export type InstalledExtension = {
   description?: string;
   type?: string;
   repository?: string;
+  trust?: string;
+  signature_state?: string;
+};
+
+export type PermissionRequest = {
+  id: string;
+  scope: ScopeName;
+  reason: string;
+  minutes: number;
+  status: "pending" | "approved" | "denied";
+  granted_minutes?: number;
+  requested_at: string;
+  decided_at?: string;
+  granted_until?: string;
+  note?: string;
+};
+
+export type PermissionGrant = {
+  scope: ScopeName;
+  granted_at: string;
+  /** Empty or missing means the grant lasts until it is revoked. */
+  expires_at?: string;
+  reason?: string;
+  request_id?: string;
+};
+
+export type PermissionRequestsPayload = {
+  pending: PermissionRequest[];
+  recent: PermissionRequest[];
+  grants: PermissionGrant[];
+  requestable: ScopeName[];
+};
+
+export type RuntimeState = {
+  state: string;
+  [key: string]: unknown;
+};
+
+export type RuntimePayload = {
+  ok: boolean;
+  checked_at: string;
+  bridge: RuntimeState & { uptime_seconds: number; admin_listen?: string; paused?: boolean };
+  executor: RuntimeState & { connected: boolean };
+  relay: RuntimeState & { enabled: boolean; url?: string; peer_count: number; last_error?: string };
+  vision: RuntimeState & { configured: boolean; url?: string; backend?: string; latency_ms?: number; error?: string };
+  mcp: RuntimeState & {
+    running: number;
+    servers: { id: string; state: string; tools?: string[]; last_error?: string; trust?: string }[];
+  };
 };
 
 export type ExtensionsPayload = {
@@ -350,4 +406,17 @@ export const api = {
     post<{ ok: boolean; observation: string }>("/api/games/observe", { vision }),
 
   relay: () => request<{ ok: boolean; relay: RelayStatus }>("/api/relay"),
+
+  runtime: () => request<RuntimePayload>("/api/runtime"),
+
+  permissionRequests: () => request<PermissionRequestsPayload>("/api/permission-requests"),
+  decidePermissionRequest: (id: string, approve: boolean, minutes?: number) =>
+    post<{ ok: boolean; message?: string }>(
+      `/api/permission-requests/${encodeURIComponent(id)}/${approve ? "approve" : "deny"}`,
+      approve && minutes !== undefined ? { minutes } : {},
+    ),
+  revokePermissionGrant: (scope: ScopeName) =>
+    post<{ ok: boolean; message?: string }>(
+      `/api/permissions/grants/${encodeURIComponent(scope)}/revoke`,
+    ),
 };

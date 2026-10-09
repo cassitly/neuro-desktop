@@ -1,3 +1,4 @@
+import RuntimePanel from "./RuntimePanel";
 import { useCallback, useEffect, useState } from "react";
 import GamesPanel from "./GamesPanel";
 import PermissionsPage from "./PermissionsPage";
@@ -177,6 +178,8 @@ export default function App() {
       {activeTab === "games" && <GamesPanel executor={status?.executor ?? null} />}
 
       {activeTab === "extensions" && (
+        <>
+        <RuntimePanel />
         <main className="manager-main manager-main--extensions">
           <aside className="manager-sidebar">
             <section>
@@ -207,7 +210,9 @@ export default function App() {
                 >
                   <div>
                     <strong>{item.name || item.id}</strong>
-                    <small>{item.enabled ? "Enabled" : "Disabled"}</small>
+                    <small>
+                    {item.enabled ? "Enabled" : "Disabled"} · signature {item.signature_state ?? item.trust ?? "unknown"}
+                  </small>
                   </div>
                 </button>
               ))}
@@ -221,7 +226,7 @@ export default function App() {
                   >
                     <div>
                       <strong>{item.name}</strong>
-                      <small>Not installed</small>
+                      <small>Not installed · signature {item.signature_state ?? "unknown"}</small>
                     </div>
                   </button>
                 ))}
@@ -319,6 +324,7 @@ export default function App() {
             )}
           </section>
         </main>
+        </>
       )}
 
       {activeTab === "settings" && (
