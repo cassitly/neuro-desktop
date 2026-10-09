@@ -912,6 +912,12 @@ func buildIPCCommand(
 		} else if cwd, err := shellCWD(); err == nil && cwd != "" {
 			cmdParams["cwd"] = cwd
 		}
+		// The server owns the shell policy. The agent receives the effective
+		// lists with every command, so it never needs its own copy of the
+		// environment to agree with this one.
+		allowlist, _, _, _ := loadShellRules()
+		cmdParams["allowlist"] = append([]string{}, allowlist...)
+		cmdParams["denylist"] = splitListEnv("NEURO_SHELL_DENYLIST")
 		return IPCCommand{
 			Type:   CmdShellCommand,
 			Params: cmdParams,

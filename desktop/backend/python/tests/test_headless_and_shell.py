@@ -152,7 +152,7 @@ class ShellFirewallTest(unittest.TestCase):
         if sys.platform.startswith("win"):
             self.skipTest("sleep syntax differs on Windows")
         with self.assertRaises(shell.ShellTimeoutError):
-            shell.run("python3 -c 'import time; time.sleep(5)'", timeout=0.5)
+            shell.run("python3 -c 'while True: pass'", timeout=0.5)
 
     def test_output_is_truncated(self):
         os.environ["NEURO_SHELL_ALLOWLIST"] = "python3"
@@ -190,6 +190,63 @@ class ActionParserShellVerbTest(unittest.TestCase):
         parser.parse('SHELL "echo from-neuro"')
         self.assertIn("from-neuro", parser.last_shell_output)
         self.assertIsNotNone(keyboard)
+
+
+class ShellPolicyOwnershipTest(unittest.TestCase):
+    """The server owns the shell policy; the agent honours it and can only narrow it."""
+
+    def setUp(self):
+        self.saved = {key: os.environ.get(key) for key in ("NEURO_SHELL_ALLOWLIST", "NEURO_SHELL_DENYLIST")}
+        os.environ["NEURO_SHELL_ALLOWLIST"] = ""
+        os.environ["NEURO_SHELL_DENYLIST"] = ""
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_server_policy_is_enough_without_a_local_allowlist(self):
+        # The live failure: the server allowed echo, the agent had no env and refused.
+        out = shell.run("echo hello", policy={"allowlist": ["echo"], "denylist": []})
+        self.assertIn("exit code: 0", out)
+        self.assertIn("hello", out)
+
+    def test_empty_server_allowlist_refuses_and_says_where_to_fix_it(self):
+        with self.assertRaises(shell.ShellDeniedError) as ctx:
+            shell.check_command("echo hi", policy={"allowlist": [], "denylist": []})
+        self.assertIn("on the server", str(ctx.exception))
+
+    def test_program_missing_from_server_allowlist_is_refused(self):
+        with self.assertRaises(shell.ShellDeniedError) as ctx:
+            shell.check_command("uname -a", policy={"allowlist": ["echo"], "denylist": []})
+        self.assertIn("server's shell allowlist", str(ctx.exception))
+
+    def test_local_allowlist_can_narrow_but_not_widen(self):
+        os.environ["NEURO_SHELL_ALLOWLIST"] = "ls"
+        with self.assertRaises(shell.ShellDeniedError) as ctx:
+            shell.check_command("echo hi", policy={"allowlist": ["echo", "ls"], "denylist": []})
+        self.assertIn("this machine's NEURO_SHELL_ALLOWLIST", str(ctx.exception))
+        # Widening: the server allows echo; a local list that does not name it still narrows.
+        self.assertEqual(shell.check_command("ls -la", policy={"allowlist": ["ls"], "denylist": []}), "ls -la")
+
+    def test_server_denylist_is_applied_on_the_agent(self):
+        with self.assertRaises(shell.ShellDeniedError):
+            shell.check_command("echo secret-word", policy={"allowlist": ["echo"], "denylist": ["secret-word"]})
+
+    def test_chaining_is_refused_even_for_an_allowlisted_program(self):
+        for command in ("echo a && whoami", "echo a; id", "echo a | sh", "echo $(id)", "echo a > /tmp/x", "echo `id`"):
+            with self.subTest(command=command), self.assertRaises(shell.ShellDeniedError) as ctx:
+                shell.check_command(command, policy={"allowlist": ["echo"], "denylist": []})
+            self.assertIn("one program per command", str(ctx.exception))
+
+    def test_legacy_server_without_a_policy_still_uses_the_local_env(self):
+        os.environ["NEURO_SHELL_ALLOWLIST"] = "echo"
+        self.assertEqual(shell.check_command("echo ok"), "echo ok")
+        os.environ["NEURO_SHELL_ALLOWLIST"] = ""
+        with self.assertRaises(shell.ShellDeniedError):
+            shell.check_command("echo ok")
 
 
 if __name__ == "__main__":

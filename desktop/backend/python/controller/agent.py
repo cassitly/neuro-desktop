@@ -307,10 +307,18 @@ class Agent:
             if not isinstance(command_line, str) or not command_line.strip():
                 return self._failure("shell_command needs a `command` string")
             timeout = params.get("timeout")
+            # The server attaches its effective shell policy to every command.
+            policy = None
+            if "allowlist" in params:
+                policy = {
+                    "allowlist": params.get("allowlist"),
+                    "denylist": params.get("denylist") or [],
+                }
             output = shell_module.run(
                 command_line,
                 cwd=params.get("cwd") or None,
                 timeout=float(timeout) if timeout else None,
+                policy=policy,
             )
             # The transcript is the whole point of this command, so it goes
             # back inside `data`.

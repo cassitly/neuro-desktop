@@ -256,6 +256,13 @@ def check_no_stale_paths() -> None:
         "native/process-handler",
         "native/c_cpp",
         "tests/integration/test-",
+        "apps/neuro-desktop",
+        "apps/process-handler",
+        "neuro-desktop.exe",
+        "process-handler.exe",
+        "neuro-relay.exe",
+        "cargo build",
+        "cargo test",
     )
     skip_dirs = {".git", "node_modules", "dist", "__pycache__", ".venv", "target"}
     # This file contains the needles on purpose; it is the check, not a reference.
@@ -287,50 +294,29 @@ def check_no_stale_paths() -> None:
     ok("no references to deleted paths")
 
 
-def check_process_handler_standalone() -> None:
-    """Compile and run the dependency-free process-handler test suite.
+def check_no_legacy_toolchains() -> None:
+    """The shipped product is Go + Python + TypeScript (docs/ARCHITECTURE.md).
 
-    This is the suite that actually runs in CI; the GoogleTest files next to it
-    need a network FetchContent of googletest and are advisory only.
+    Rust and C++ sources, and their build manifests, were removed on purpose.
+    This check stops them creeping back in without a decision recorded in the
+    architecture document.
     """
-    app_dir = os.path.join(REPO_ROOT, "desktop", "apps", "process-handler")
-    compiler = shutil.which("g++") or shutil.which("clang++") or shutil.which("c++")
-    if compiler is None:
-        ok("process-handler C++ tests skipped (no C++ compiler on PATH)")
+    banned_ext = {".rs", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp"}
+    banned_names = {"Cargo.toml", "Cargo.lock", "CMakeLists.txt"}
+    skip_dirs = {".git", "node_modules", "dist", "__pycache__", ".venv", "third_party"}
+    hits = []
+    for root, dirs, files in os.walk(REPO_ROOT):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        if os.path.basename(root) == ".cargo":
+            hits.append(os.path.relpath(root, REPO_ROOT) + "/")
+        for name in files:
+            if os.path.splitext(name)[1] in banned_ext or name in banned_names:
+                hits.append(os.path.relpath(os.path.join(root, name), REPO_ROOT))
+    if hits:
+        for hit in hits[:10]:
+            fail(f"legacy Rust/C++ artifact is back: {hit}")
         return
-
-    test_source = os.path.join(app_dir, "tests", "test_standalone.cpp")
-    if not os.path.exists(test_source):
-        fail("desktop/apps/process-handler/tests/test_standalone.cpp is missing")
-        return
-
-    with tempfile.TemporaryDirectory() as tmp:
-        binary = os.path.join(tmp, "process-handler-tests")
-        compile_cmd = [
-            compiler,
-            "-std=c++17",
-            "-pthread",
-            "-Isrc",
-            "-o",
-            binary,
-            os.path.join("src", "process_handler.cpp"),
-            os.path.join("tests", "test_standalone.cpp"),
-        ]
-        compiled = subprocess.run(
-            compile_cmd, cwd=app_dir, capture_output=True, text=True, timeout=300
-        )
-        if compiled.returncode != 0:
-            fail("process-handler does not compile: "
-                 + (compiled.stderr or compiled.stdout).strip().splitlines()[-1])
-            return
-
-        ran = subprocess.run([binary], capture_output=True, text=True, timeout=180)
-        if ran.returncode != 0:
-            tail = (ran.stdout + ran.stderr).strip().splitlines()
-            fail("process-handler tests failed: " + (tail[-1] if tail else "no output"))
-            return
-
-    ok("process-handler C++ tests pass (parser, validator, lifecycle)")
+    ok("no Rust or C++ sources or manifests in the shipped tree")
 
 
 def check_ollama_brain_tests() -> None:
@@ -376,7 +362,7 @@ def main() -> int:
     check_example_policies_match()
     check_catalog()
     check_python_syntax()
-    check_process_handler_standalone()
+    check_no_legacy_toolchains()
     check_ollama_brain_tests()
     check_docs()
     check_bundle_templates()

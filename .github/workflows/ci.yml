@@ -44,11 +44,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -63,26 +58,7 @@ jobs:
           cache-dependency-path: desktop/frontend/package-lock.json
 
       # ---------------------------------------------------------------
-      # Rust executor: advisory, and legacy.
-      #
-      # The Python agent replaced it (docs/ARCHITECTURE.md) and it is not part of
-      # the shipped bundle, so a failure here does not red the pipeline. It stays
-      # in the build matrix until the crate is deleted or moved to legacy/.
-      # ---------------------------------------------------------------
-      - name: Rust format check
-        continue-on-error: true
-        run: cargo fmt --manifest-path desktop/apps/neuro-desktop/Cargo.toml -- --check
-
-      - name: Rust unit tests (no display)
-        continue-on-error: true
-        run: cargo test --manifest-path desktop/apps/neuro-desktop/Cargo.toml
-        env:
-          # Ensure no accidental X11/Wayland use during unit tests.
-          DISPLAY: ""
-          WAYLAND_DISPLAY: ""
-
-      # ---------------------------------------------------------------
-      # Go bridge: required.
+      # Go server: required.
       # ---------------------------------------------------------------
       - name: Go format check
         shell: bash
@@ -163,24 +139,6 @@ jobs:
             exit 1
           fi
 
-      # ---------------------------------------------------------------
-      # process-handler: the *required* coverage is the dependency-free suite
-      # that `repo-checks` compiles and runs (parser, validator, process
-      # lifecycle). The CMake + GoogleTest files in the same directory need a
-      # network FetchContent and are therefore advisory here: they are kept so
-      # the optional suite still builds, but a failure does not red CI.
-      # ---------------------------------------------------------------
-      - name: process-handler CMake + GoogleTest suite (advisory)
-        continue-on-error: true
-        shell: bash
-        run: |
-          if ! command -v cmake >/dev/null 2>&1; then
-            echo "cmake not on PATH; skipping"
-            exit 0
-          fi
-          cmake -S desktop/apps/process-handler -B desktop/apps/process-handler/build-ci -DBUILD_TESTS=ON
-          cmake --build desktop/apps/process-handler/build-ci --config Release --parallel
-          ctest --test-dir desktop/apps/process-handler/build-ci -C Release --output-on-failure
 
   # The server and the agent are two languages and two processes; a unit test on
   # each side cannot see a protocol regression between them. This job starts

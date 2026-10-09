@@ -28,7 +28,7 @@ import re
 import shlex
 import subprocess
 import sys
-from typing import List, Optional, Tuple
+from typing import Any, List, Mapping, Optional, Tuple
 
 DEFAULT_TIMEOUT = 20.0
 MAX_TIMEOUT = 120.0
@@ -134,27 +134,78 @@ def first_token(command: str) -> str:
     return program.lower()
 
 
-def check_command(command: str) -> str:
-    """Return the normalised command, or raise ShellDeniedError explaining why not."""
+_CHAINING = re.compile(r"[;&|`<>\n\r]|\$\(|\$\{")
+_MAX_COMMAND_CHARS = 4000
+
+NOT_CONFIGURED_LOCAL = (
+    "Shell access is not configured: NEURO_SHELL_ALLOWLIST is empty, so no command may run. "
+    "Vedal can allow specific programs, e.g. NEURO_SHELL_ALLOWLIST=ls,cat,python3."
+)
+NOT_CONFIGURED_SERVER = (
+    "Shell access is not configured on the server: its NEURO_SHELL_ALLOWLIST is empty, so no command "
+    "may run. Vedal can allow specific programs on the server, e.g. NEURO_SHELL_ALLOWLIST=ls,cat,python3."
+)
+CHAINING_MESSAGE = (
+    "The shell firewall refused the command: it contains a shell operator (; & | < > ` $( or a newline). "
+    "Only one program per command "
+    "is allowed, with plain arguments. Split it into separate shell_command calls, one step each."
+)
+
+
+def _names(items: Any) -> List[str]:
+    if not isinstance(items, (list, tuple)):
+        return []
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def check_command(command: str, policy: Optional[Mapping[str, Any]] = None) -> str:
+    """Return the normalised command, or raise ShellDeniedError explaining why not.
+
+    ``policy`` is what the server sent with the command: ``allowlist`` and
+    ``denylist``. The server owns the shell policy and is the authority, so a
+    command that reaches this machine has already been approved there. This
+    machine's own ``NEURO_SHELL_ALLOWLIST`` can only narrow that list, never
+    widen it, and an empty local list narrows nothing. Without a server policy
+    (an older server) the local environment decides, as before.
+    """
     command = command.strip()
     if not command:
         raise ShellDeniedError("The command is empty. Pass the command line as the first argument.")
-
-    allowed = allowlist()
-    if not allowed:
+    if len(command) > _MAX_COMMAND_CHARS:
         raise ShellDeniedError(
-            "Shell access is not configured: NEURO_SHELL_ALLOWLIST is empty, so no command may run. "
-            "Vedal can allow specific programs, e.g. NEURO_SHELL_ALLOWLIST=ls,cat,python3."
+            f"The command is too long ({len(command)} characters, limit {_MAX_COMMAND_CHARS}). Split it into steps."
         )
+    if _CHAINING.search(command):
+        raise ShellDeniedError(CHAINING_MESSAGE)
+
+    local = allowlist()
+    server: Optional[List[str]] = None
+    server_denies: List[str] = []
+    if policy is not None and policy.get("allowlist") is not None:
+        server = _names(policy.get("allowlist"))
+        server_denies = _names(policy.get("denylist"))
+        if not server:
+            raise ShellDeniedError(NOT_CONFIGURED_SERVER)
+    elif not local:
+        raise ShellDeniedError(NOT_CONFIGURED_LOCAL)
 
     program = first_token(command)
-    if not allowlist_is_open() and program not in {item.lower() for item in allowed}:
-        raise ShellDeniedError(
-            f"Program {program!r} is not on the shell allowlist ({', '.join(sorted(allowed))}). "
-            "Vedal can add it with NEURO_SHELL_ALLOWLIST."
-        )
+    checks: List[Tuple[str, List[str]]] = []
+    if server is not None:
+        checks.append(("the server's shell allowlist", server))
+    if local:
+        checks.append(("this machine's NEURO_SHELL_ALLOWLIST", local))
+    for label, names in checks:
+        lowered = {name.lower() for name in names}
+        if "*" in lowered:
+            continue
+        if program not in lowered:
+            raise ShellDeniedError(
+                f"Program {program!r} is not on {label} ({', '.join(sorted(names))}). "
+                "Vedal can add it with NEURO_SHELL_ALLOWLIST on the server."
+            )
 
-    for pattern in deny_patterns():
+    for pattern in deny_patterns() + server_denies:
         if re.search(pattern, command, flags=re.IGNORECASE):
             raise ShellDeniedError(
                 "The command matches a blocked pattern and will not be run "
@@ -164,13 +215,18 @@ def check_command(command: str) -> str:
     return command
 
 
-def run(command: str, cwd: Optional[str] = None, timeout: Optional[float] = None) -> str:
+def run(
+    command: str,
+    cwd: Optional[str] = None,
+    timeout: Optional[float] = None,
+    policy: Optional[Mapping[str, Any]] = None,
+) -> str:
     """Run one command line and return a summary for Neuro.
 
     The exit code and a truncated transcript are included, because the model
     needs the exit status to know whether it worked.
     """
-    command = check_command(command)
+    command = check_command(command, policy)
     cwd = cwd or os.environ.get("NEURO_SHELL_CWD") or None
     timeout = timeout or shell_timeout()
     limit = max_output()

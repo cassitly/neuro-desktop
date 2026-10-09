@@ -30,6 +30,10 @@ import (
 // `NEURO_SHELL_ALLOWLIST=*` allows any program and logs a startup warning: it is
 // the operator explicitly accepting that Neuro has a shell.
 
+// shellChainingPattern matches shell operators that let one allowlisted program
+// run another command: ; & | < > backticks, $( and ${, and line breaks.
+var shellChainingPattern = regexp.MustCompile("[;&|`<>\\n\\r]|\\$\\(|\\$\\{")
+
 // builtInShellDenyPatterns are refused even when the program is allowlisted:
 // unrecoverable or sideways actions rather than merely powerful ones.
 var builtInShellDenyPatterns = []string{
@@ -151,6 +155,13 @@ func checkShellCommand(command string) error {
 	}
 	if len(command) > 4000 {
 		return fmt.Errorf("The command is too long (%d characters, limit 4000). Split it into steps.", len(command))
+	}
+	// One program per command. Chaining, pipes, redirection and substitution
+	// would let an allowlisted program run anything, so they are refused.
+	if shellChainingPattern.MatchString(command) {
+		return fmt.Errorf("The shell firewall refused the command: it contains a shell operator (; & | < > ` $( or a newline). " +
+			"Only one program per command is allowed, with plain arguments. " +
+			"Split it into separate shell_command calls, one step each.")
 	}
 
 	allowlist, open, deny, err := loadShellRules()

@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 # Build everything the shipped product needs on Linux / macOS / Git Bash / WSL.
 #
-# The shipped product is: a Go server (the bridge) + a Python agent (the process
-# that touches the machine) + a TypeScript dashboard that the server serves. The
-# Rust executor and the C++ supervisor are *not* part of it; they are kept as
-# reference/optional code and only built with the flags below.
+# The shipped product is two programs and a web page:
+#   * the Go server (apps/neuro-integration) — talks to Neuro, enforces the
+#     permission policy, hosts the relay and the dashboard API;
+#   * the Python agent (backend/python/controller) — the only process that
+#     touches the machine Neuro controls (runs on the PC being controlled);
+#   * the TypeScript dashboard (frontend), which the server serves at /ui/.
 #
-#   ./scripts/build-all.sh                  # server + dashboard + agent check
-#   ./scripts/build-all.sh --with-legacy    # also build the pieces above
+#   ./scripts/build-all.sh            # build + test
+#   ./scripts/build-all.sh --no-test  # build only
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-WITH_LEGACY=0
+RUN_TESTS=1
 for arg in "$@"; do
   case "$arg" in
-    --with-legacy|--legacy) WITH_LEGACY=1 ;;
+    --no-test|--skip-tests) RUN_TESTS=0 ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
@@ -30,15 +32,19 @@ esac
 
 echo "=== neuro-desktop build ($OS_UNAME) ==="
 
-echo "[1/3] Go server (apps/neuro-integration)"
-mkdir -p apps/neuro-integration/dist
+echo "[1/3] Server (apps/neuro-integration)"
 (
   cd apps/neuro-integration
+  if [[ "$RUN_TESTS" == "1" ]]; then
+    go vet ./...
+    go test -count=1 ./...
+  fi
+  mkdir -p dist
   go build -o "dist/neuro-integration${BIN_EXT}" .
 )
 echo "      -> apps/neuro-integration/dist/neuro-integration${BIN_EXT}"
 
-echo "[2/3] Dashboard client (frontend)"
+echo "[2/3] Dashboard (frontend)"
 (
   cd frontend
   if [[ -f package-lock.json ]]; then
@@ -50,28 +56,19 @@ echo "[2/3] Dashboard client (frontend)"
 )
 echo "      -> frontend/dist"
 
-echo "[3/3] Python agent + drivers"
-python3 -m compileall -q backend/python/controller >/dev/null
-echo "      -> backend/python/controller (no build step; syntax checked)"
-
-STEPS=3
-if [[ "$WITH_LEGACY" == "1" ]]; then
-  echo "[legacy] Rust executor (apps/neuro-desktop)"
-  (cd apps/neuro-desktop && cargo build --release) || echo "      ! cargo unavailable — skipped"
-
-  echo "[legacy] C++ supervisor (apps/process-handler)"
-  if command -v cmake >/dev/null 2>&1; then
-    cmake -S apps/process-handler -B apps/process-handler/build -DBUILD_TESTS=OFF >/dev/null
-    cmake --build apps/process-handler/build --config Release --parallel >/dev/null
-  else
-    echo "      ! cmake not found — skipped (the supervisor is not shipped anyway)"
+echo "[3/3] Agent (backend/python/controller)"
+(
+  cd backend/python
+  python3 -m compileall -q controller >/dev/null
+  if [[ "$RUN_TESTS" == "1" ]]; then
+    python3 -m unittest discover -s tests -t . >/dev/null
   fi
-fi
+)
+echo "      -> backend/python/controller (syntax checked${RUN_TESTS:+, tests run})"
 
 echo
 echo "Build complete."
-echo "  Bundle + run (dev):   ./scripts/bundle/dev.sh"
+echo "  Run from source:      ./scripts/bundle/dev.sh"
 echo "  Release bundle:       ./scripts/bundle/prod.sh"
 echo "  Server binary:        apps/neuro-integration/dist/neuro-integration${BIN_EXT}"
-echo "  Dashboard client:     frontend/dist"
-echo "  Agent:                python3 -m controller.agent --bridge 127.0.0.1:9876   (from desktop/backend/python)"
+echo "  Agent (on the PC):    python3 -m controller.agent --bridge <server>:9876   (cwd: backend/python)"
